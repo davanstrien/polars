@@ -149,6 +149,11 @@ impl HFAPIResponse {
     }
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct HFAPIError {
+    error: String,
+}
+
 /// API response is paginated with a `link` header.
 /// * https://huggingface.co/docs/hub/en/api#get-apidatasets
 /// * https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api?apiVersion=2022-11-28#using-link-headers
@@ -168,6 +173,8 @@ impl GetPages<'_> {
                 })
                 .await?;
 
+                let status = resp.status();
+
                 self.uri = resp
                     .headers()
                     .get("link")
@@ -175,6 +182,42 @@ impl GetPages<'_> {
                     .transpose()?;
 
                 let resp_bytes = resp.bytes().await.map_err(to_compute_err)?;
+
+                // Check if the response was successful
+                if !status.is_success() {
+                    // Try to parse as an error response
+                    if let Ok(error_resp) = serde_json::from_slice::<HFAPIError>(&resp_bytes) {
+                        // Check if this is a rate limit error
+                        let error_msg = &error_resp.error;
+                        if error_msg.to_lowercase().contains("rate limit") {
+                            polars_bail!(
+                                ComputeError:
+                                "HuggingFace API rate limit exceeded. {}\n\n\
+                                To increase your rate limit, authenticate with a HuggingFace token:\n\
+                                1. Create a token at https://huggingface.co/settings/tokens\n\
+                                2. Set the HF_TOKEN environment variable, or\n\
+                                3. Pass token via storage_options: storage_options={{'token': 'hf_...'}}\n\n\
+                                See: https://docs.pola.rs/user-guide/io/hugging-face/",
+                                error_msg
+                            );
+                        } else {
+                            polars_bail!(
+                                ComputeError:
+                                "HuggingFace API error (status {}): {}",
+                                status.as_u16(),
+                                error_msg
+                            );
+                        }
+                    }
+
+                    // If we couldn't parse as error response, return generic error
+                    polars_bail!(
+                        ComputeError:
+                        "HuggingFace API request failed with status {}: {}",
+                        status.as_u16(),
+                        String::from_utf8_lossy(&resp_bytes)
+                    );
+                }
 
                 Ok(resp_bytes)
             }
