@@ -9,9 +9,6 @@ use polars_core::error::{PolarsResult, polars_bail, to_compute_err};
 use polars_utils::pl_path::{CloudScheme, PlRefPath};
 use polars_utils::pl_str::PlSmallStr;
 
-#[cfg(feature = "cloud")]
-mod hugging_face;
-
 use crate::cloud::CloudOptions;
 
 #[allow(clippy::bind_instead_of_map)]
@@ -173,14 +170,14 @@ pub fn expand_paths(
     expand_paths_hive(paths, glob, hidden_file_prefix, cloud_options, false).map(|x| x.0)
 }
 
-struct HiveIdxTracker<'a> {
-    idx: usize,
-    paths: &'a [PlRefPath],
-    check_directory_level: bool,
+pub(crate) struct HiveIdxTracker<'a> {
+    pub idx: usize,
+    pub paths: &'a [PlRefPath],
+    pub check_directory_level: bool,
 }
 
 impl HiveIdxTracker<'_> {
-    fn update(&mut self, i: usize, path_idx: usize) -> PolarsResult<()> {
+    pub fn update(&mut self, i: usize, path_idx: usize) -> PolarsResult<()> {
         let check_directory_level = self.check_directory_level;
         let paths = self.paths;
 
@@ -251,7 +248,7 @@ pub fn expand_paths_hive(
 
             if first_path.scheme() == Some(CloudScheme::Hf) {
                 let (expand_start_idx, paths) = crate::pl_async::get_runtime().block_in_place_on(
-                    hugging_face::expand_paths_hf(
+                    crate::cloud::hf::expand_paths_hf(
                         paths,
                         check_directory_level,
                         cloud_options,
