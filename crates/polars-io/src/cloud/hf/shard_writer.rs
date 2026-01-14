@@ -7,14 +7,14 @@ use std::io::BufWriter;
 
 use arrow::datatypes::ArrowSchema;
 use arrow::record_batch::RecordBatch;
-use polars_error::{polars_err, PolarsResult};
+use polars_error::{PolarsResult, polars_err};
 use polars_parquet::read::ParquetError;
 use polars_parquet::write::{
-    array_to_columns, to_parquet_schema, ColumnWriteOptions, Compressor, DynIter,
-    DynStreamingIterator, FileWriter, SchemaDescriptor, WriteOptions,
+    ColumnWriteOptions, Compressor, DynIter, DynStreamingIterator, FileWriter, SchemaDescriptor,
+    WriteOptions, array_to_columns, to_parquet_schema,
 };
 
-use super::hashing_writer::{sha256_to_hex, HashingWriter};
+use super::hashing_writer::{HashingWriter, sha256_to_hex};
 use super::mmap_buffer::{MmapBuffer, MmapReadHandle};
 
 /// Type alias for the nested writer chain.

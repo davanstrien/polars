@@ -1,7 +1,7 @@
 //! HF Hub authentication and token handling.
 
 use polars_core::config;
-use polars_error::{polars_bail, PolarsResult};
+use polars_error::{PolarsResult, polars_bail};
 
 use crate::path_utils::resolve_homedir;
 

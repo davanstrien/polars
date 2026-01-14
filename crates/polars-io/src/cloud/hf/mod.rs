@@ -32,7 +32,7 @@ mod shard_writer;
 pub use auth::get_hf_token;
 // Re-export hashing writer
 #[cfg(feature = "hf_sink")]
-pub use hashing_writer::{sha256_to_hex, HashingWriter};
+pub use hashing_writer::{HashingWriter, sha256_to_hex};
 // Re-export mmap buffer
 #[cfg(feature = "hf_sink")]
 pub use mmap_buffer::{MmapBuffer, MmapReadHandle};

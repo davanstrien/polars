@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use polars_error::{to_compute_err, PolarsResult};
+use polars_error::{PolarsResult, to_compute_err};
 use polars_utils::pl_path::PlRefPath;
 
 use super::url::{HFPathParts, HFRepoLocation};
