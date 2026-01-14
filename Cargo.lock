@@ -3205,6 +3205,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "simd-json",
  "simdutf8",
  "strum 0.27.2",
