@@ -1,6 +1,6 @@
 //! HF Hub URL parsing and construction.
 
-use polars_error::{polars_bail, PolarsResult};
+use polars_error::{PolarsResult, polars_bail};
 
 use crate::utils::URL_ENCODE_CHARSET;
 
@@ -100,6 +100,18 @@ impl HFRepoLocation {
         format!(
             "https://huggingface.co/api/{}/{}/commit/{}",
             self.bucket, self.repository, encoded_revision
+        )
+    }
+
+    /// Returns URL for completing a multipart LFS upload.
+    ///
+    /// After uploading all parts to S3, this endpoint finalizes the multipart upload.
+    /// POST https://huggingface.co/{bucket}/{repo}.git/info/lfs/objects/{sha256}/finalize
+    #[cfg(feature = "hf_sink")]
+    pub fn get_lfs_multipart_complete_uri(&self, sha256: &str) -> String {
+        format!(
+            "https://huggingface.co/{}/{}.git/info/lfs/objects/{}/finalize",
+            self.bucket, self.repository, sha256
         )
     }
 }
@@ -336,5 +348,15 @@ mod tests {
 
         let parts = HFPathParts::try_from_uri("hf://spaces/org/my-space/app.py").unwrap();
         assert_eq!(parts.repo_type(), RepoType::Space);
+    }
+
+    #[cfg(feature = "hf_sink")]
+    #[test]
+    fn test_get_lfs_multipart_complete_uri() {
+        let loc = HFRepoLocation::new("datasets", "user/repo", "main");
+        assert_eq!(
+            loc.get_lfs_multipart_complete_uri("abc123def456"),
+            "https://huggingface.co/datasets/user/repo.git/info/lfs/objects/abc123def456/finalize"
+        );
     }
 }

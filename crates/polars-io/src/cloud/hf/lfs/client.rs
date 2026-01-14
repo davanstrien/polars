@@ -3,10 +3,13 @@
 //! Handles the LFS Batch API for upload coordination.
 
 use polars_core::config;
-use polars_error::{polars_bail, to_compute_err, PolarsResult};
+use polars_error::{PolarsResult, polars_bail, to_compute_err};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 
-use super::types::{LfsBatchRequest, LfsBatchResponse, LfsObjectRequest, LfsTransfer};
+use super::types::{
+    LfsBatchRequest, LfsBatchResponse, LfsMultipartCompleteRequest, LfsObjectRequest,
+    LfsPartCompletion, LfsTransfer,
+};
 use crate::cloud::hf::url::HFRepoLocation;
 use crate::cloud::options::USER_AGENT;
 use crate::pl_async::with_concurrency_budget;
@@ -140,6 +143,55 @@ impl LfsClient {
 
         self.send_request_with_retry(verify_url, Some(&body))
             .await?;
+        Ok(())
+    }
+
+    /// Complete a multipart upload after all parts are uploaded to S3.
+    ///
+    /// After `UploadExecutor::upload()` returns part completions, call this method
+    /// to finalize the multipart upload on HF Hub.
+    ///
+    /// # Arguments
+    /// * `sha256` - SHA256 hash of the complete file
+    /// * `parts` - Part completions with ETags from S3 responses
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Upload returns part completions for multipart transfers
+    /// if let Some(completions) = executor.upload(data, transfer, sha256).await? {
+    ///     lfs_client.complete_multipart(sha256, completions).await?;
+    /// }
+    /// ```
+    pub async fn complete_multipart(
+        &self,
+        sha256: &str,
+        parts: Vec<LfsPartCompletion>,
+    ) -> PolarsResult<()> {
+        if parts.is_empty() {
+            polars_bail!(ComputeError: "cannot complete multipart upload with no parts");
+        }
+
+        let complete_url = self.repo_location.get_lfs_multipart_complete_uri(sha256);
+
+        let request = LfsMultipartCompleteRequest {
+            oid: sha256.to_string(),
+            parts,
+        };
+
+        let body = serde_json::to_vec(&request).map_err(to_compute_err)?;
+
+        if config::verbose() {
+            eprintln!(
+                "Completing multipart upload for {} ({} parts)",
+                sha256,
+                request.parts.len()
+            );
+        }
+
+        self.send_bytes_request_with_retry(&complete_url, body)
+            .await?;
+
         Ok(())
     }
 

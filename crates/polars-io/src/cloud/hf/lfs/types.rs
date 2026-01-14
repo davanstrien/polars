@@ -232,6 +232,33 @@ impl LfsTransfer {
 }
 
 // ============================================================================
+// Multipart Completion Types
+// ============================================================================
+
+/// Part completion info with ETag from S3 response.
+///
+/// After uploading a part to the presigned S3 URL, the response includes
+/// an ETag header. This struct captures that for the completion request.
+#[derive(Debug, Clone, Serialize)]
+pub struct LfsPartCompletion {
+    /// Part number (1-indexed, matching the original LfsPartInfo)
+    pub part_number: u32,
+    /// ETag from S3 response header (includes surrounding quotes)
+    pub etag: String,
+}
+
+/// Request to complete a multipart upload.
+///
+/// Sent after all parts have been uploaded to S3.
+#[derive(Debug, Clone, Serialize)]
+pub struct LfsMultipartCompleteRequest {
+    /// SHA256 hash of the complete file
+    pub oid: String,
+    /// Completion info for each uploaded part
+    pub parts: Vec<LfsPartCompletion>,
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -496,18 +523,64 @@ mod tests {
         let json = serde_json::to_value(&request).unwrap();
 
         assert_eq!(json["operation"], "upload");
-        assert!(json["transfers"]
-            .as_array()
-            .unwrap()
-            .contains(&"basic".into()));
-        assert!(json["transfers"]
-            .as_array()
-            .unwrap()
-            .contains(&"multipart".into()));
+        assert!(
+            json["transfers"]
+                .as_array()
+                .unwrap()
+                .contains(&"basic".into())
+        );
+        assert!(
+            json["transfers"]
+                .as_array()
+                .unwrap()
+                .contains(&"multipart".into())
+        );
         assert_eq!(
             json["objects"][0]["oid"],
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
         assert_eq!(json["objects"][0]["size"], 0);
+    }
+
+    #[test]
+    fn test_part_completion_serialization() {
+        let completion = LfsPartCompletion {
+            part_number: 1,
+            etag: "\"abc123def456\"".to_string(),
+        };
+
+        let json = serde_json::to_string(&completion).unwrap();
+
+        assert!(json.contains("\"part_number\":1"));
+        assert!(json.contains("\"etag\":"));
+        // ETag value should be preserved with quotes
+        assert!(json.contains("abc123def456"));
+    }
+
+    #[test]
+    fn test_multipart_complete_request_serialization() {
+        let request = LfsMultipartCompleteRequest {
+            oid: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            parts: vec![
+                LfsPartCompletion {
+                    part_number: 1,
+                    etag: "\"etag1\"".to_string(),
+                },
+                LfsPartCompletion {
+                    part_number: 2,
+                    etag: "\"etag2\"".to_string(),
+                },
+            ],
+        };
+
+        let json = serde_json::to_value(&request).unwrap();
+
+        assert_eq!(
+            json["oid"],
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(json["parts"].as_array().unwrap().len(), 2);
+        assert_eq!(json["parts"][0]["part_number"], 1);
+        assert_eq!(json["parts"][1]["part_number"], 2);
     }
 }
