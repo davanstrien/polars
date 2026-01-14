@@ -168,6 +168,23 @@ If the `hf_sink` feature needs CI configuration:
 2. Use conventional commit format: `feat(hf-sink): <description>`
 3. Don't batch multiple tasks into one commit
 
+### Important: Research Before Implementation
+
+**Before writing any code for a task:**
+1. **Read existing code** - Understand the files you'll be modifying and their patterns
+2. **Search for similar patterns** - Look for how similar functionality is implemented elsewhere in polars
+3. **Check dependencies** - Understand what imports, traits, and types are available
+4. **Review reference implementations** - Check huggingface_hub library or other references mentioned in this plan
+5. **Understand the context** - Read surrounding code to match style, error handling, and conventions
+
+**Key questions to answer before coding:**
+- What existing patterns in polars should I follow?
+- What utilities/helpers already exist that I can reuse?
+- What error handling approach is used in similar code?
+- Are there existing tests I can use as templates?
+
+This research step prevents wasted effort and ensures consistency with the codebase.
+
 ### Daily Workflow
 
 ```bash
