@@ -13,8 +13,12 @@ pub(crate) use url::{HFPathParts, HFRepoLocation};
 
 // Write support (gated by hf_sink feature)
 #[cfg(feature = "hf_sink")]
-pub mod auth;
+mod auth;
 #[cfg(feature = "hf_sink")]
 pub mod error;
 #[cfg(feature = "hf_sink")]
 pub mod options;
+
+// Re-export auth function
+#[cfg(feature = "hf_sink")]
+pub use auth::get_hf_token;
