@@ -1,6 +1,6 @@
 //! HF Hub URL parsing and construction.
 
-use polars_error::{PolarsResult, polars_bail};
+use polars_error::{polars_bail, PolarsResult};
 
 use crate::utils::URL_ENCODE_CHARSET;
 
@@ -24,6 +24,12 @@ pub(crate) struct HFPathParts {
 }
 
 pub(crate) struct HFRepoLocation {
+    /// Repository bucket type: "datasets", "spaces", or "models"
+    bucket: String,
+    /// Repository ID: "user/repo" or "org/repo"
+    repository: String,
+    /// Git revision (unencoded)
+    revision: String,
     pub api_base_path: String,
     pub download_base_path: String,
 }
@@ -47,6 +53,9 @@ impl HFRepoLocation {
         );
 
         Self {
+            bucket: bucket.to_string(),
+            repository: repository.to_string(),
+            revision: revision.to_string(),
             api_base_path,
             download_base_path,
         }
@@ -65,6 +74,32 @@ impl HFRepoLocation {
             "{}{}",
             self.api_base_path,
             percent_encoding::percent_encode(rel_path.as_bytes(), HF_PATH_ENCODE_CHARSET)
+        )
+    }
+
+    /// Returns URL for LFS batch API (upload coordination).
+    ///
+    /// Used to request presigned upload URLs before uploading files to HF Hub.
+    /// POST https://huggingface.co/{bucket}/{repo}.git/info/lfs/objects/batch
+    #[cfg(feature = "hf_sink")]
+    pub fn get_lfs_batch_uri(&self) -> String {
+        format!(
+            "https://huggingface.co/{}/{}.git/info/lfs/objects/batch",
+            self.bucket, self.repository
+        )
+    }
+
+    /// Returns URL for Commit API (atomic commit).
+    ///
+    /// Used to atomically commit uploaded files to the repository.
+    /// POST https://huggingface.co/api/{bucket}/{repo}/commit/{revision}
+    #[cfg(feature = "hf_sink")]
+    pub fn get_commit_uri(&self) -> String {
+        let encoded_revision =
+            percent_encoding::percent_encode(self.revision.as_bytes(), URL_ENCODE_CHARSET);
+        format!(
+            "https://huggingface.co/api/{}/{}/commit/{}",
+            self.bucket, self.repository, encoded_revision
         )
     }
 }
@@ -130,6 +165,15 @@ impl HFPathParts {
         }
 
         Ok(this)
+    }
+
+    /// Returns the RepoType for this path.
+    ///
+    /// Converts the bucket string ("datasets", "spaces") to the corresponding RepoType enum.
+    #[cfg(feature = "hf_sink")]
+    pub fn repo_type(&self) -> super::options::RepoType {
+        super::options::RepoType::from_bucket_str(&self.bucket)
+            .expect("bucket validated in try_from_uri")
     }
 }
 
@@ -242,5 +286,55 @@ mod tests {
             loc.download_base_path,
             "https://huggingface.co/datasets/user/repo/resolve/refs%2Fconvert%2Fparquet/"
         );
+    }
+
+    #[cfg(feature = "hf_sink")]
+    #[test]
+    fn test_get_lfs_batch_uri() {
+        let loc = HFRepoLocation::new("datasets", "user/repo", "main");
+        assert_eq!(
+            loc.get_lfs_batch_uri(),
+            "https://huggingface.co/datasets/user/repo.git/info/lfs/objects/batch"
+        );
+
+        // Spaces should also work
+        let loc = HFRepoLocation::new("spaces", "org/my-space", "main");
+        assert_eq!(
+            loc.get_lfs_batch_uri(),
+            "https://huggingface.co/spaces/org/my-space.git/info/lfs/objects/batch"
+        );
+    }
+
+    #[cfg(feature = "hf_sink")]
+    #[test]
+    fn test_get_commit_uri() {
+        let loc = HFRepoLocation::new("datasets", "user/repo", "main");
+        assert_eq!(
+            loc.get_commit_uri(),
+            "https://huggingface.co/api/datasets/user/repo/commit/main"
+        );
+    }
+
+    #[cfg(feature = "hf_sink")]
+    #[test]
+    fn test_get_commit_uri_encodes_revision() {
+        // Revision with slashes should be percent-encoded
+        let loc = HFRepoLocation::new("datasets", "user/repo", "refs/convert/parquet");
+        assert_eq!(
+            loc.get_commit_uri(),
+            "https://huggingface.co/api/datasets/user/repo/commit/refs%2Fconvert%2Fparquet"
+        );
+    }
+
+    #[cfg(feature = "hf_sink")]
+    #[test]
+    fn test_hfpathparts_repo_type() {
+        use super::super::options::RepoType;
+
+        let parts = HFPathParts::try_from_uri("hf://datasets/user/repo/file.parquet").unwrap();
+        assert_eq!(parts.repo_type(), RepoType::Dataset);
+
+        let parts = HFPathParts::try_from_uri("hf://spaces/org/my-space/app.py").unwrap();
+        assert_eq!(parts.repo_type(), RepoType::Space);
     }
 }

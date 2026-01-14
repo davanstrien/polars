@@ -42,6 +42,22 @@ impl RepoType {
             RepoType::Space => "spaces",
         }
     }
+
+    /// Parse from bucket string (as used in hf:// URLs).
+    ///
+    /// # Examples
+    /// ```ignore
+    /// assert_eq!(RepoType::from_bucket_str("datasets"), Some(RepoType::Dataset));
+    /// assert_eq!(RepoType::from_bucket_str("invalid"), None);
+    /// ```
+    pub fn from_bucket_str(s: &str) -> Option<Self> {
+        match s {
+            "datasets" => Some(Self::Dataset),
+            "models" => Some(Self::Model),
+            "spaces" => Some(Self::Space),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for RepoType {
@@ -301,6 +317,18 @@ mod tests {
         assert_eq!(RepoType::Dataset.as_str(), "datasets");
         assert_eq!(RepoType::Model.as_str(), "models");
         assert_eq!(RepoType::Space.as_str(), "spaces");
+    }
+
+    #[test]
+    fn test_repo_type_from_bucket_str() {
+        assert_eq!(
+            RepoType::from_bucket_str("datasets"),
+            Some(RepoType::Dataset)
+        );
+        assert_eq!(RepoType::from_bucket_str("models"), Some(RepoType::Model));
+        assert_eq!(RepoType::from_bucket_str("spaces"), Some(RepoType::Space));
+        assert_eq!(RepoType::from_bucket_str("invalid"), None);
+        assert_eq!(RepoType::from_bucket_str(""), None);
     }
 
     #[test]
