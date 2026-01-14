@@ -49,6 +49,7 @@ strum = { workspace = true, optional = true }
 strum_macros = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["fs", "net", "rt-multi-thread", "time", "sync"], optional = true }
 sha2 = { workspace = true, optional = true }
+tempfile = { version = "3", optional = true }
 zmij = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 
@@ -134,7 +135,7 @@ aws = ["object_store/aws", "cloud", "reqwest"]
 azure = ["object_store/azure", "cloud"]
 gcp = ["object_store/gcp", "cloud"]
 http = ["object_store/http", "cloud"]
-hf_sink = ["cloud", "sha2"]
+hf_sink = ["cloud", "sha2", "tempfile"]
 temporal = ["dtype-datetime", "dtype-date", "dtype-time"]
 simd = []
 python = ["pyo3", "polars-error/python", "polars-utils/python"]

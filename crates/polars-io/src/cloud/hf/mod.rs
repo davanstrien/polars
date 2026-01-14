@@ -19,6 +19,8 @@ pub mod error;
 #[cfg(feature = "hf_sink")]
 mod hashing_writer;
 #[cfg(feature = "hf_sink")]
+mod mmap_buffer;
+#[cfg(feature = "hf_sink")]
 pub mod options;
 
 // Re-export auth function
@@ -27,3 +29,6 @@ pub use auth::get_hf_token;
 // Re-export hashing writer
 #[cfg(feature = "hf_sink")]
 pub use hashing_writer::{sha256_to_hex, HashingWriter};
+// Re-export mmap buffer
+#[cfg(feature = "hf_sink")]
+pub use mmap_buffer::{MmapBuffer, MmapReadHandle};
