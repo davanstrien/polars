@@ -19,6 +19,8 @@ pub mod error;
 #[cfg(feature = "hf_sink")]
 mod hashing_writer;
 #[cfg(feature = "hf_sink")]
+pub mod lfs;
+#[cfg(feature = "hf_sink")]
 mod mmap_buffer;
 #[cfg(feature = "hf_sink")]
 pub mod options;
