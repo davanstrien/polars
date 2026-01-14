@@ -22,6 +22,8 @@ mod hashing_writer;
 mod mmap_buffer;
 #[cfg(feature = "hf_sink")]
 pub mod options;
+#[cfg(feature = "hf_sink")]
+mod shard_writer;
 
 // Re-export auth function
 #[cfg(feature = "hf_sink")]
@@ -32,3 +34,6 @@ pub use hashing_writer::{sha256_to_hex, HashingWriter};
 // Re-export mmap buffer
 #[cfg(feature = "hf_sink")]
 pub use mmap_buffer::{MmapBuffer, MmapReadHandle};
+// Re-export shard writer
+#[cfg(feature = "hf_sink")]
+pub use shard_writer::{FinishedShard, HfShardWriter};
