@@ -1890,6 +1890,7 @@ Track work sessions here:
 | 2026-01-15 | 4.2.5 | Complete | Implemented `finalize()` for atomic commit. Method awaits `upload_task` completion, collects all `ShardCompletion` from `completion_rx`, creates `CommitClient`, builds `CommitOperationAdd` for each shard, executes atomic commit via `create_commit()`. Handles empty dataset case (no shards). Logs verbose output on success with commit URL and optional PR URL. Added import for `CommitClient`, `CommitOperation`, `CommitOperationAdd`. Code passes rustfmt. **Task 4.2 (Shard Writer Task) complete!** |
 | 2026-01-15 | Fix upstream | Complete | Fixed upstream polars-core feature-gating bugs blocking HF sink build. Two issues: (1) `GroupsIndicator` used without feature gate, (2) `ChunkUnique::unique_id` used without feature gate. Applied minimal fixes: added `#[cfg(feature = "algorithm_group_by")]` gates and default trait impl. 9 files modified. Commit `5b774a6324`. `cargo check -p polars-io --features hf_sink` now passes. |
 | 2026-01-15 | Diagnose next | Complete | Identified 11 remaining errors in polars-stream HF sink code. Two categories: (1) Module visibility - 5 errors, need to make modules public in polars-io. (2) API compatibility - 6 errors, DataFrame::rechunk, RecordBatch::try_new signature, ColumnWriteOptions::default API changes. Updated Known Issues with clear next steps. |
+| 2026-01-15 | 4.2.6 | Complete | **Fixed module visibility errors.** Changed 5 `mod` → `pub mod` in `polars-io/src/cloud/hf/mod.rs` (auth, hashing_writer, mmap_buffer, shard_writer, commit). Changed 2 `mod` → `pub mod` in `polars-io/src/cloud/hf/lfs/mod.rs` (client, upload). `cargo check -p polars-io --features hf_sink` passes. Remaining: 7 API compatibility errors in polars-stream (df.rechunk, RecordBatch::try_new, ColumnWriteOptions::default). |
 
 ---
 
@@ -1935,28 +1936,22 @@ Track work sessions here:
 
 **Current Status**:
 - ✅ `cargo check -p polars-io --features hf_sink` passes
-- ⚠️ `cargo check -p polars-stream --features hf_sink` has 11 errors (see below)
+- ⚠️ `cargo check -p polars-stream --features hf_sink` has 7 errors (API compatibility only)
 
 ### HF Sink Code Errors (2026-01-15)
 
-**Status**: ❌ Blocking - 11 compilation errors in `polars-stream/src/nodes/io_sinks/hf_sink/mod.rs`
+**Status**: ⚠️ Partially Fixed - 7 compilation errors remaining in `polars-stream/src/nodes/io_sinks/hf_sink/mod.rs`
 
-**Category 1: Module Visibility (5 errors)** - Easy fix
-```
-error[E0603]: module `commit` is private
-error[E0603]: module `client` is private
-error[E0603]: module `upload` is private
-error[E0603]: module `shard_writer` is private
-```
-**Fix**: Add `pub` to module declarations in `crates/polars-io/src/cloud/hf/mod.rs`
+**Category 1: Module Visibility** - ✅ FIXED (2026-01-15)
+- Made 5 modules public in `crates/polars-io/src/cloud/hf/mod.rs`
+- Made 2 modules public in `crates/polars-io/src/cloud/hf/lfs/mod.rs`
 
-**Category 2: API Compatibility (6 errors)** - Need investigation
+**Category 2: API Compatibility (7 errors)** - NEXT TO FIX
 ```
 error[E0599]: no method named `rechunk` found for DataFrame
 error[E0061]: RecordBatch::try_new takes 3 arguments but 2 supplied
 error[E0599]: no function `default` for ColumnWriteOptions
+error[E0596]: cannot borrow `df` as mutable
 error[E0282]: type annotations needed (3 instances in async closures)
 ```
-**Fix**: Update HF sink code to match current polars/arrow APIs
-
-**Next Step**: Fix Category 1 first (module visibility), then Category 2 (API compat)
+**Next Step**: Fix API compatibility errors (see Tasks B-E in plan file)
