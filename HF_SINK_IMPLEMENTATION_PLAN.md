@@ -10,8 +10,10 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ```
 ✅ Phases 0-4 complete (Foundation, Core Writer, LFS Protocol, Streaming Integration)
-🔄 Ready for Phase 5: Commit Coordination
+🔄 Phase 5: Commit Coordination - Task 5.1.1 complete, working on mode handling
 ```
+
+**Latest Commit:** `feat(hf-sink): add shared API types and list_existing_files helper (Task 5.1.1)`
 
 **Build Status:**
 ```bash
@@ -19,24 +21,27 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
 ```
 
-**Branch:** `feature/hf-hub-sink` (43 commits ahead)
+**Branch:** `feature/hf-hub-sink` (49 commits ahead, local only)
 
 ---
 
 ## What's Next
 
-### Task 5.1: CommitCoordinator
-Implement commit coordination to atomically commit all uploaded shards.
+### Task 5.1: Mode Handling for CommitCoordinator
+The coordinator logic already exists in `HfSinkNode::finalize()` (lines 624-714).
+What's missing is mode handling (ErrorIfExists, Overwrite, Append).
 
 **Key Files:**
-- `crates/polars-stream/src/nodes/io_sinks/hf_sink/coordinator.rs` - CommitCoordinator
-- `crates/polars-io/src/cloud/hf/commit.rs` - Commit API client
+- `crates/polars-io/src/cloud/hf/api.rs` - Shared API types (GetPages, list_existing_files)
+- `crates/polars-stream/src/nodes/io_sinks/hf_sink/mod.rs` - finalize() where mode logic goes
+- `crates/polars-io/src/cloud/hf/options.rs` - HfWriteMode enum
 
 **Subtasks:**
-- [ ] Implement `CommitCoordinator::register_completion()`
-- [ ] Implement `CommitCoordinator::execute_commit()`
-- [ ] Handle overwrite/append modes
-- [ ] Integration tests
+- [x] **5.1.1** Add `list_existing_files()` helper in api.rs
+- [ ] **5.1.2** Implement ErrorIfExists mode check in finalize()
+- [ ] **5.1.3** Implement Overwrite mode (delete + add) in finalize()
+- [ ] **5.1.4** Implement Append mode (renumber shards) in finalize()
+- [ ] **5.1.5** Integration tests for all modes
 
 ---
 
