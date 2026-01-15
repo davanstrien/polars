@@ -301,6 +301,8 @@ fn visualize_plan_rec(
             #[allow(unreachable_patterns)]
             _ => todo!(),
         },
+        #[cfg(feature = "hf_sink")]
+        PhysNodeKind::HfSink { input, .. } => ("hf-sink".to_string(), from_ref(input)),
         PhysNodeKind::PartitionedSink2 { input, options } => {
             let variant = match options.partition_strategy {
                 PartitionStrategyIR::Keyed { .. } => "partition-keyed",

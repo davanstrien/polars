@@ -192,6 +192,12 @@ pub enum PhysNodeKind {
         options: FileSinkOptions,
     },
 
+    #[cfg(feature = "hf_sink")]
+    HfSink {
+        input: PhysStream,
+        options: FileSinkOptions,
+    },
+
     PartitionedSink {
         input: PhysStream,
         base_path: Arc<PlRefPath>,
@@ -457,6 +463,12 @@ fn visit_node_inputs_mut(
             | PhysNodeKind::Rle(input)
             | PhysNodeKind::RleId(input)
             | PhysNodeKind::PeakMinMax { input, .. } => {
+                rec!(input.node);
+                visit(input);
+            },
+
+            #[cfg(feature = "hf_sink")]
+            PhysNodeKind::HfSink { input, .. } => {
                 rec!(input.node);
                 visit(input);
             },

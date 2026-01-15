@@ -26,7 +26,7 @@ This document outlines the implementation plan for native HF Hub write support i
 - ✅ Phase 3: LFS Protocol (types, client, upload executor, commit client)
 - 🔄 Phase 4: Streaming Integration (3/4 tasks - HfSinkNode implemented, compiles)
 
-**Next Step:** Task 4.4 - Wire HfSinkNode into PhysNodeKind (execution graph integration)
+**Next Step:** Task 4.4.2 - Add URL detection in lower_ir.rs (second of 4 subtasks in Task 4.4)
 
 **Local Commits (39 total):**
 - Branch: `feature/hf-hub-sink`
@@ -1333,21 +1333,102 @@ impl ShardWorker {
 **Commit checkpoint**: `git commit -m "feat(hf-sink): implement shard worker task for async processing"`
 
 ### Task 4.4: Integration with IOSinkNode Infrastructure
-**File**: Various in `crates/polars-stream/src/nodes/io_sinks/`
-**Status**: [ ] Not Started
+**Files**: Various in `crates/polars-stream/src/physical_plan/`
+**Status**: 🔄 In Progress
 **Dependencies**: 4.1, 4.2, 4.3
 **Estimate**: 6 hours
 
-- Register `HfSinkNode` as a sink target type
-- Wire up `hf://` URL detection in sink path resolution
-- Integrate with existing `IOSinkTarget` infrastructure
+**Goal**: Wire HfSinkNode into the execution graph so `sink_parquet("hf://...")` routes to HfSinkNode.
+
+#### Subtask 4.4.1: Add PhysNodeKind::HfSink Variant
+**File**: `crates/polars-stream/src/physical_plan/mod.rs`
+**Status**: [x] Complete (2026-01-15)
+**Estimate**: 30 min
+
+Add feature-gated `HfSink` variant to `PhysNodeKind` enum:
+```rust
+#[cfg(feature = "hf_sink")]
+HfSink {
+    input: PhysStream,
+    options: FileSinkOptions,
+},
+```
 
 **Acceptance Criteria**:
+- [x] `PhysNodeKind::HfSink` variant added with `#[cfg(feature = "hf_sink")]`
+- [x] Uses `FileSinkOptions` (HfSinkOptions parsed at graph conversion)
+- [x] `cargo check -p polars-stream --features hf_sink` passes
+
+**Commit**: `git commit -m "feat(hf-sink): add PhysNodeKind::HfSink variant (Task 4.4.1)"`
+
+#### Subtask 4.4.2: Add URL Detection in IR Lowering
+**File**: `crates/polars-stream/src/physical_plan/lower_ir.rs`
+**Status**: [ ] Not Started
+**Dependencies**: 4.4.1
+**Estimate**: 1 hour
+
+Detect `hf://` URLs in `SinkTypeIR::File` and route to `PhysNodeKind::HfSink`:
+```rust
+SinkTypeIR::File(options) if options.target.cloud_scheme() == Some(CloudScheme::Hf) => {
+    let input = lower_ir!(*input)?;
+    PhysNodeKind::HfSink { input, options: options.clone() }
+}
+```
+
+**Acceptance Criteria**:
+- [ ] `hf://` URLs routed to `HfSink` instead of `FileSink`
+- [ ] Other URLs (s3://, local, etc.) still go to `FileSink`
+- [ ] Build passes with feature flag
+
+**Commit**: `git commit -m "feat(hf-sink): add hf:// URL detection in lower_ir (Task 4.4.2)"`
+
+#### Subtask 4.4.3: Add Graph Conversion for HfSink
+**File**: `crates/polars-stream/src/physical_plan/to_graph.rs`
+**Status**: [ ] Not Started
+**Dependencies**: 4.4.2
+**Estimate**: 2 hours
+
+Add match arm to create `HfSinkNode` wrapped in `SinkComputeNode`:
+```rust
+#[cfg(feature = "hf_sink")]
+HfSink { input, options } => {
+    use crate::nodes::io_sinks::SinkComputeNode;
+    use crate::nodes::io_sinks::hf_sink::HfSinkNode;
+    use polars_io::cloud::hf::HfSinkOptions;
+
+    let input_schema = ctx.phys_sm[input.node].output_schema.clone();
+    let input_key = to_graph_rec(input.node, ctx)?;
+
+    // Parse HfSinkOptions from URL
+    let hf_options = HfSinkOptions::from_file_sink_options(&options)?;
+    let sink_options = SinkOptions::from(&options.unified_sink_args);
+
+    let node = HfSinkNode::new(hf_options, input_schema, sink_options)?;
+    ctx.graph.add_node(SinkComputeNode::from(node), [(input_key, input.port)])
+}
+```
+
+**Acceptance Criteria**:
+- [ ] `HfSink` creates `HfSinkNode` wrapped in `SinkComputeNode`
+- [ ] `HfSinkOptions::from_file_sink_options()` parses URL correctly
+- [ ] Build passes and integrates with graph
+
+**Commit**: `git commit -m "feat(hf-sink): add HfSink graph conversion (Task 4.4.3)"`
+
+#### Subtask 4.4.4: End-to-End Integration Test
+**Status**: [ ] Not Started
+**Dependencies**: 4.4.3
+**Estimate**: 2 hours
+
+Manual/automated test that `sink_parquet("hf://...")` creates the correct node:
+- Verify URL parsing works
+- Verify HfSinkNode is instantiated
+- Test with mock/real HF endpoint
+
+**Overall Acceptance Criteria**:
 - [ ] `sink_parquet("hf://...")` creates HfSinkNode
 - [ ] Options passed through from Python/Rust API
 - [ ] Works with existing sink infrastructure
-
-**Commit checkpoint**: `git commit -m "feat(hf-sink): integrate HfSinkNode with IOSinkNode infrastructure"`
 
 ---
 

@@ -342,6 +342,15 @@ fn to_graph_rec<'a>(
                 .add_node(IOSinkNode::new(config), [(input_key, input.port)])
         },
 
+        #[cfg(feature = "hf_sink")]
+        HfSink { input, options } => {
+            // TODO(Task 4.4.3): Implement HfSinkNode graph conversion
+            // For now, return an error since hf:// URLs are not yet routed here
+            polars_bail!(
+                ComputeError: "HF Hub sink not yet implemented - this code path should not be reached"
+            );
+        },
+
         PartitionedSink2 {
             input,
             options:
