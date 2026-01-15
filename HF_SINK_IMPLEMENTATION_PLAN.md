@@ -10,6 +10,31 @@ This document outlines the implementation plan for native HF Hub write support i
 
 ---
 
+## Current Status (2026-01-15)
+
+**🎉 Major Milestone: HF Sink Code Compiles!**
+
+```
+✅ cargo check -p polars-io --features hf_sink     PASSES
+✅ cargo check -p polars-stream --features hf_sink PASSES
+```
+
+**Completed Phases:**
+- ✅ Phase 0: Dev Setup (branch, build)
+- ✅ Phase 1: Foundation (options, URL parsing, auth)
+- ✅ Phase 2: Core Writer (HashingWriter, MmapBuffer, HfShardWriter)
+- ✅ Phase 3: LFS Protocol (types, client, upload executor, commit client)
+- 🔄 Phase 4: Streaming Integration (3/4 tasks - HfSinkNode implemented, compiles)
+
+**Next Step:** Task 4.4 - Wire HfSinkNode into PhysNodeKind (execution graph integration)
+
+**Local Commits (39 total):**
+- Branch: `feature/hf-hub-sink`
+- Status: 39 commits ahead of origin (not yet pushed)
+- Latest: `fix(hf-sink): resolve API compatibility errors in polars-stream (Task 4.2.7)`
+
+---
+
 ## Table of Contents
 
 1. [Phase 0: Development Setup](#phase-0-development-setup)
@@ -1808,7 +1833,7 @@ Phase 9 (Documentation)
   - [x] 3.3 Upload Executor (2026-01-14)
   - [x] 3.4 Commit API Client (2026-01-15)
 
-- [ ] **Phase 4: Streaming Integration** (2/4 tasks)
+- [x] **Phase 4: Streaming Integration** (3/4 tasks) - **CODE COMPILES!**
   - [x] 4.1 HfSinkNode Skeleton (2026-01-15) - Minimal skeleton
   - [x] 4.2 Shard Writer Task (re-scoped, combines original 4.2+4.3) - Complete (2026-01-15)
     - [x] 4.2.1 Define types and state (ShardCompletion, WriterState, shard_path) (2026-01-15)
@@ -1816,8 +1841,10 @@ Phase 9 (Documentation)
     - [x] 4.2.3 Implement upload_shard_task() (2026-01-15)
     - [x] 4.2.4 Wire up spawn_sink() (2026-01-15)
     - [x] 4.2.5 Implement finalize() for atomic commit (2026-01-15)
-  - [ ] 4.3 (Merged into 4.2)
-  - [ ] 4.4 IOSinkNode Integration
+    - [x] 4.2.6 Fix module visibility for cross-crate access (2026-01-15)
+    - [x] 4.2.7 Fix API compatibility errors in polars-stream (2026-01-15)
+  - [x] 4.3 (Merged into 4.2)
+  - [ ] 4.4 IOSinkNode Integration (wire HfSinkNode into PhysNodeKind)
 
 - [ ] **Phase 5: Commit Coordination** (0/2 tasks)
   - [ ] 5.1 CommitCoordinator
