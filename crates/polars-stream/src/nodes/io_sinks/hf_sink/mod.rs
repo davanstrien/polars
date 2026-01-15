@@ -11,12 +11,14 @@
 //! lf.sink_parquet("hf://datasets/user/repo/data/train.parquet", options)
 //! ```
 
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use polars_core::schema::SchemaRef;
 use polars_error::PolarsResult;
 use polars_io::cloud::hf::options::HfSinkOptions;
+use polars_io::cloud::hf::shard_writer::FinishedShard;
 use polars_plan::dsl::SinkOptions;
 
 use super::phase::PhaseOutcome;
@@ -26,6 +28,132 @@ use crate::async_primitives::connector::Receiver;
 use crate::execute::StreamingExecutionState;
 use crate::nodes::{JoinHandle, TaskPriority};
 use crate::utils::tokio_handle_ext::AbortOnDropHandle;
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+/// Default chunk size for buffering rows before encoding (256K rows).
+///
+/// This matches the ParquetSinkNode pattern where rows are accumulated
+/// before being written as a row group.
+#[allow(dead_code)]
+const DEFAULT_CHUNK_SIZE: usize = 256 * 1024;
+
+/// Default buffer capacity for shard completion channel.
+///
+/// Allows up to 16 shards to be queued for commit tracking before
+/// blocking the upload task.
+#[allow(dead_code)]
+const COMPLETION_CHANNEL_SIZE: usize = 16;
+
+// ============================================================================
+// Types for Shard Writer Task
+// ============================================================================
+
+/// Information about a completed shard ready for commit.
+///
+/// Contains all the metadata needed to create a `CommitOperationAdd`
+/// for the atomic commit to HF Hub.
+#[derive(Debug, Clone)]
+pub struct ShardCompletion {
+    /// Shard index (0, 1, 2, ...).
+    pub index: usize,
+    /// Path in the repository (e.g., "data/train-00000.parquet").
+    pub path_in_repo: String,
+    /// SHA256 hash of the file (lowercase hex, 64 characters).
+    pub sha256: String,
+    /// Size in bytes.
+    pub size: u64,
+    /// Number of rows in this shard.
+    pub num_rows: usize,
+}
+
+impl ShardCompletion {
+    /// Create from a `FinishedShard` and metadata.
+    ///
+    /// # Arguments
+    /// * `index` - Shard index number
+    /// * `path_in_repo` - Full path in the repository
+    /// * `shard` - Completed shard data from `HfShardWriter::finish()`
+    pub fn from_finished(index: usize, path_in_repo: String, shard: &FinishedShard) -> Self {
+        Self {
+            index,
+            path_in_repo,
+            sha256: shard.sha256.clone(),
+            size: shard.size,
+            num_rows: shard.num_rows,
+        }
+    }
+}
+
+/// Internal state for tracking shard writer progress.
+///
+/// Used by the writer task to track completed shards and maintain
+/// counters for metrics reporting.
+#[derive(Debug, Default)]
+pub struct WriterState {
+    /// Completed shards awaiting final commit.
+    pub completed: VecDeque<ShardCompletion>,
+    /// Current shard index (increments on each flush).
+    pub current_shard_index: usize,
+    /// Total rows written across all shards.
+    pub total_rows: usize,
+    /// Total bytes written across all shards.
+    pub total_bytes: u64,
+}
+
+impl WriterState {
+    /// Create a new empty state.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a completed shard.
+    ///
+    /// Updates total counters and adds the shard to the completion queue.
+    pub fn record_completion(&mut self, completion: ShardCompletion) {
+        self.total_rows += completion.num_rows;
+        self.total_bytes += completion.size;
+        self.completed.push_back(completion);
+    }
+
+    /// Get the next shard index and increment the counter.
+    ///
+    /// Returns the current index before incrementing.
+    pub fn next_shard_index(&mut self) -> usize {
+        let index = self.current_shard_index;
+        self.current_shard_index += 1;
+        index
+    }
+
+    /// Get the number of completed shards.
+    pub fn num_completed(&self) -> usize {
+        self.completed.len()
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Generate a shard file path.
+///
+/// Format: `{path_in_repo}/{split}-{index:05}.parquet`
+///
+/// # Examples
+/// ```ignore
+/// assert_eq!(shard_path("data", "train", 0), "data/train-00000.parquet");
+/// assert_eq!(shard_path("data", "train", 42), "data/train-00042.parquet");
+/// ```
+pub fn shard_path(path_in_repo: &str, split: &str, index: usize) -> String {
+    let path = path_in_repo.trim_end_matches('/');
+    format!("{}/{}-{:05}.parquet", path, split, index)
+}
+
+// ============================================================================
+// HfSinkNode
+// ============================================================================
 
 /// Streaming sink node for writing to Hugging Face Hub.
 ///
@@ -211,5 +339,111 @@ mod tests {
 
         let result = HfSinkNode::new(hf_options, schema, sink_options);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_shard_path_generation() {
+        // Basic case
+        assert_eq!(shard_path("data", "train", 0), "data/train-00000.parquet");
+
+        // With trailing slash (should be trimmed)
+        assert_eq!(shard_path("data/", "train", 5), "data/train-00005.parquet");
+
+        // Different split name
+        assert_eq!(
+            shard_path("output", "validation", 123),
+            "output/validation-00123.parquet"
+        );
+
+        // Nested path
+        assert_eq!(
+            shard_path("data/processed", "test", 42),
+            "data/processed/test-00042.parquet"
+        );
+
+        // Large index (5 digits)
+        assert_eq!(
+            shard_path("data", "train", 99999),
+            "data/train-99999.parquet"
+        );
+    }
+
+    #[test]
+    fn test_writer_state_default() {
+        let state = WriterState::default();
+        assert_eq!(state.current_shard_index, 0);
+        assert_eq!(state.total_rows, 0);
+        assert_eq!(state.total_bytes, 0);
+        assert_eq!(state.num_completed(), 0);
+        assert!(state.completed.is_empty());
+    }
+
+    #[test]
+    fn test_writer_state_next_shard_index() {
+        let mut state = WriterState::new();
+
+        // First call returns 0
+        assert_eq!(state.next_shard_index(), 0);
+
+        // Subsequent calls increment
+        assert_eq!(state.next_shard_index(), 1);
+        assert_eq!(state.next_shard_index(), 2);
+        assert_eq!(state.next_shard_index(), 3);
+
+        // Counter is now at 4
+        assert_eq!(state.current_shard_index, 4);
+    }
+
+    #[test]
+    fn test_writer_state_record_completion() {
+        let mut state = WriterState::default();
+
+        // Record first shard
+        state.record_completion(ShardCompletion {
+            index: 0,
+            path_in_repo: "data/train-00000.parquet".to_string(),
+            sha256: "abc123".repeat(10), // 60 chars
+            size: 1000,
+            num_rows: 100,
+        });
+
+        assert_eq!(state.total_rows, 100);
+        assert_eq!(state.total_bytes, 1000);
+        assert_eq!(state.num_completed(), 1);
+
+        // Record second shard
+        state.record_completion(ShardCompletion {
+            index: 1,
+            path_in_repo: "data/train-00001.parquet".to_string(),
+            sha256: "def456".repeat(10),
+            size: 2000,
+            num_rows: 200,
+        });
+
+        assert_eq!(state.total_rows, 300);
+        assert_eq!(state.total_bytes, 3000);
+        assert_eq!(state.num_completed(), 2);
+
+        // Verify order (FIFO)
+        assert_eq!(state.completed[0].index, 0);
+        assert_eq!(state.completed[1].index, 1);
+    }
+
+    #[test]
+    fn test_shard_completion_clone() {
+        let completion = ShardCompletion {
+            index: 42,
+            path_in_repo: "data/train-00042.parquet".to_string(),
+            sha256: "a".repeat(64),
+            size: 12345,
+            num_rows: 500,
+        };
+
+        let cloned = completion.clone();
+        assert_eq!(cloned.index, 42);
+        assert_eq!(cloned.path_in_repo, "data/train-00042.parquet");
+        assert_eq!(cloned.sha256.len(), 64);
+        assert_eq!(cloned.size, 12345);
+        assert_eq!(cloned.num_rows, 500);
     }
 }

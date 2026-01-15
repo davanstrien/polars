@@ -1810,8 +1810,13 @@ Phase 9 (Documentation)
 
 - [ ] **Phase 4: Streaming Integration** (1/4 tasks)
   - [x] 4.1 HfSinkNode Skeleton (2026-01-15) - Minimal skeleton
-  - [ ] 4.2 Morsel Router
-  - [ ] 4.3 Shard Worker Task
+  - [ ] 4.2 Shard Writer Task (re-scoped, combines original 4.2+4.3) - In Progress
+    - [x] 4.2.1 Define types and state (ShardCompletion, WriterState, shard_path) (2026-01-15)
+    - [ ] 4.2.2 Implement buffer_and_write_task()
+    - [ ] 4.2.3 Implement upload_shard_task()
+    - [ ] 4.2.4 Wire up spawn_sink()
+    - [ ] 4.2.5 Implement finalize() for atomic commit
+  - [ ] 4.3 (Merged into 4.2)
   - [ ] 4.4 IOSinkNode Integration
 
 - [ ] **Phase 5: Commit Coordination** (0/2 tasks)
@@ -1878,6 +1883,7 @@ Track work sessions here:
 | 2026-01-15 | 3.4.5 | Complete | Implemented `build_ndjson_payload()` static method on `CommitClient`. Takes summary, optional description, and slice of `CommitOperation`. Builds NDJSON payload: header line + operation lines (lfsFile for adds, deletedFile/deletedFolder for deletes based on trailing slash). 6 unit tests covering: header-only, with description, adds, deletes, mixed operations, newline format. Code passes rustfmt. |
 | 2026-01-15 | 3.4.6 | Complete | Implemented async `create_commit()` method on `CommitClient`. Added imports: `polars_core::config`, `polars_bail`, `to_compute_err`, `with_concurrency_budget`, `decode_json_response`. Added rate limit helpers: `parse_rate_limit_wait()`, `extract_rate_limit_wait()`. Three async methods: `create_commit()` (public), `send_commit_request()` (retry loop), `send_single_commit_request()` (HTTP POST with `Content-Type: application/x-ndjson`). Supports `create_pr=true` query parameter. 3 unit tests for rate limit parsing. **Task 3.4 (Commit API Client) functionally complete! Phase 3 (LFS Protocol) complete!** |
 | 2026-01-15 | 4.1 | Complete | Implemented HfSinkNode skeleton for polars-stream integration. Created `crates/polars-stream/src/nodes/io_sinks/hf_sink/mod.rs` following ParquetSinkNode patterns. Struct has 4 fields: `options: Arc<HfSinkOptions>`, `input_schema: SchemaRef`, `sink_options: SinkOptions`, `io_task`. Implemented SinkNode trait: `name()` → "hf-sink", `is_sink_input_parallel()` → false (serial for shard batching), `do_maintain_order()` → from sink_options, `spawn_sink()` → placeholder draining task. Added `hf_sink` feature to `polars-stream/Cargo.toml`. 2 unit tests for construction/validation. Code passes rustfmt. Full build blocked by upstream GroupsIndicator issue. **Phase 4 started!** |
+| 2026-01-15 | 4.2.1 | Complete | Implemented types and state for shard writer task. Re-scoped Tasks 4.2+4.3 into a combined "Shard Writer Task" (single-writer with background uploads, fail-fast error handling). Added to `hf_sink/mod.rs`: `ShardCompletion` struct (index, path, sha256, size, rows), `WriterState` struct (tracking completed shards, counters), `shard_path()` helper, `DEFAULT_CHUNK_SIZE` and `COMPLETION_CHANNEL_SIZE` constants. 5 new unit tests. Code passes rustfmt. |
 
 ---
 
