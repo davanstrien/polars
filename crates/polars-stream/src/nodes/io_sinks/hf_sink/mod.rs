@@ -30,7 +30,8 @@ use polars_io::cloud::hf::options::HfSinkOptions;
 use polars_io::cloud::hf::shard_writer::{FinishedShard, HfShardWriter};
 use polars_io::schema_to_arrow_checked;
 use polars_parquet::write::{
-    ColumnWriteOptions, CompressionOptions, StatisticsOptions, Version, WriteOptions,
+    ColumnWriteOptions, CompressionOptions, Encoding, FieldWriteOptions, StatisticsOptions,
+    Version, WriteOptions,
 };
 use polars_plan::dsl::SinkOptions;
 
@@ -182,16 +183,17 @@ pub fn shard_path(path_in_repo: &str, split: &str, index: usize) -> String {
 ///
 /// # Errors
 /// Returns an error if schema conversion fails or if column conversion fails.
-fn df_to_record_batch(df: DataFrame, schema: &SchemaRef) -> PolarsResult<RecordBatch> {
-    // 1. Rechunk so each column has a single chunk
-    let df = df.rechunk();
+fn df_to_record_batch(mut df: DataFrame, schema: &SchemaRef) -> PolarsResult<RecordBatch> {
+    // 1. Get height before rechunking, then rechunk in place
+    let height = df.height();
+    df.rechunk_mut();
 
     // 2. Convert Polars schema to Arrow schema
     let arrow_schema = schema_to_arrow_checked(schema, CompatLevel::newest(), "parquet")?;
 
     // 3. Convert each column to Arrow
     let arrays: Vec<_> = df
-        .get_columns()
+        .columns()
         .iter()
         .map(|col| {
             col.as_materialized_series()
@@ -199,9 +201,8 @@ fn df_to_record_batch(df: DataFrame, schema: &SchemaRef) -> PolarsResult<RecordB
         })
         .collect();
 
-    // 4. Create RecordBatch
-    RecordBatch::try_new(Arc::new(arrow_schema), arrays)
-        .map_err(|e| polars_err!(ComputeError: "failed to create RecordBatch: {}", e))
+    // 4. Create RecordBatch (height, schema, arrays)
+    RecordBatch::try_new(height, Arc::new(arrow_schema), arrays)
 }
 
 /// Create an HfShardWriter for the given schema and options.
@@ -227,10 +228,13 @@ fn create_shard_writer(schema: &SchemaRef, options: &HfSinkOptions) -> PolarsRes
         data_page_size: None, // Use default
     };
 
-    // 3. Create column options (default for each column)
+    // 3. Create column options (default encoding for each column)
     let column_options: Vec<ColumnWriteOptions> = arrow_schema
         .iter_values()
-        .map(|_| ColumnWriteOptions::default())
+        .map(|_| {
+            FieldWriteOptions::default_with_encoding(Encoding::Plain)
+                .into_default_column_write_options()
+        })
         .collect();
 
     // 4. Create shard writer with max_shard_size as initial capacity
@@ -283,7 +287,7 @@ fn should_rotate_shard(current_rows: usize, options: &HfSinkOptions) -> bool {
 #[allow(dead_code)]
 fn buffer_and_write_task(
     recv_port_rx: Receiver<(PhaseOutcome, SinkInputPort)>,
-    shard_tx: Sender<FinishedShard>,
+    mut shard_tx: Sender<FinishedShard>,
     options: Arc<HfSinkOptions>,
     schema: SchemaRef,
 ) -> JoinHandle<PolarsResult<()>> {
@@ -401,7 +405,7 @@ fn buffer_and_write_task(
 #[allow(dead_code)]
 fn upload_shard_task(
     shard_rx: Receiver<FinishedShard>,
-    completion_tx: Sender<ShardCompletion>,
+    mut completion_tx: Sender<ShardCompletion>,
     path_in_repo: String,
     split: String,
     lfs_client: LfsClient,

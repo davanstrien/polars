@@ -1891,6 +1891,7 @@ Track work sessions here:
 | 2026-01-15 | Fix upstream | Complete | Fixed upstream polars-core feature-gating bugs blocking HF sink build. Two issues: (1) `GroupsIndicator` used without feature gate, (2) `ChunkUnique::unique_id` used without feature gate. Applied minimal fixes: added `#[cfg(feature = "algorithm_group_by")]` gates and default trait impl. 9 files modified. Commit `5b774a6324`. `cargo check -p polars-io --features hf_sink` now passes. |
 | 2026-01-15 | Diagnose next | Complete | Identified 11 remaining errors in polars-stream HF sink code. Two categories: (1) Module visibility - 5 errors, need to make modules public in polars-io. (2) API compatibility - 6 errors, DataFrame::rechunk, RecordBatch::try_new signature, ColumnWriteOptions::default API changes. Updated Known Issues with clear next steps. |
 | 2026-01-15 | 4.2.6 | Complete | **Fixed module visibility errors.** Changed 5 `mod` → `pub mod` in `polars-io/src/cloud/hf/mod.rs` (auth, hashing_writer, mmap_buffer, shard_writer, commit). Changed 2 `mod` → `pub mod` in `polars-io/src/cloud/hf/lfs/mod.rs` (client, upload). `cargo check -p polars-io --features hf_sink` passes. Remaining: 7 API compatibility errors in polars-stream (df.rechunk, RecordBatch::try_new, ColumnWriteOptions::default). |
+| 2026-01-15 | 4.2.7 | Complete | **Fixed API compatibility errors in polars-stream.** 7 fixes: (1) `df.rechunk()` → `df.rechunk_mut()` with `mut` param, (2) Added `height` param to `RecordBatch::try_new(height, schema, arrays)`, (3) `ColumnWriteOptions::default()` → `FieldWriteOptions::default_with_encoding(Encoding::Plain).into_default_column_write_options()`, (4) `get_columns()` → `columns()`, (5-6) Added `mut` to `shard_tx` and `completion_tx` params. **`cargo check -p polars-stream --features hf_sink` now passes!** |
 
 ---
 
@@ -1936,22 +1937,23 @@ Track work sessions here:
 
 **Current Status**:
 - ✅ `cargo check -p polars-io --features hf_sink` passes
-- ⚠️ `cargo check -p polars-stream --features hf_sink` has 7 errors (API compatibility only)
+- ✅ `cargo check -p polars-stream --features hf_sink` passes
 
-### HF Sink Code Errors (2026-01-15)
+### HF Sink Code Errors (2026-01-15) - FIXED (2026-01-15)
 
-**Status**: ⚠️ Partially Fixed - 7 compilation errors remaining in `polars-stream/src/nodes/io_sinks/hf_sink/mod.rs`
+**Status**: ✅ **RESOLVED** - `cargo check -p polars-stream --features hf_sink` now passes.
 
 **Category 1: Module Visibility** - ✅ FIXED (2026-01-15)
 - Made 5 modules public in `crates/polars-io/src/cloud/hf/mod.rs`
 - Made 2 modules public in `crates/polars-io/src/cloud/hf/lfs/mod.rs`
 
-**Category 2: API Compatibility (7 errors)** - NEXT TO FIX
-```
-error[E0599]: no method named `rechunk` found for DataFrame
-error[E0061]: RecordBatch::try_new takes 3 arguments but 2 supplied
-error[E0599]: no function `default` for ColumnWriteOptions
-error[E0596]: cannot borrow `df` as mutable
-error[E0282]: type annotations needed (3 instances in async closures)
-```
-**Next Step**: Fix API compatibility errors (see Tasks B-E in plan file)
+**Category 2: API Compatibility** - ✅ FIXED (2026-01-15)
+- `df.rechunk()` → `df.rechunk_mut()` with `mut df` parameter
+- `RecordBatch::try_new(schema, arrays)` → `RecordBatch::try_new(height, schema, arrays)`
+- `ColumnWriteOptions::default()` → `FieldWriteOptions::default_with_encoding(Encoding::Plain).into_default_column_write_options()`
+- `get_columns()` → `columns()` on DataFrame
+- Added `mut` to `shard_tx` and `completion_tx` function parameters
+
+**Current Build Status**:
+- ✅ `cargo check -p polars-io --features hf_sink` passes
+- ✅ `cargo check -p polars-stream --features hf_sink` passes
