@@ -10,10 +10,10 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ```
 ✅ Phases 0-4 complete (Foundation, Core Writer, LFS Protocol, Streaming Integration)
-🔄 Phase 5: Commit Coordination - Task 5.1.3 complete, Overwrite mode implemented
+🔄 Phase 5: Commit Coordination - Task 5.1.4 complete, all write modes implemented
 ```
 
-**Latest Commit:** `feat(hf-sink): implement Overwrite mode (delete + add) (Task 5.1.3)`
+**Latest Commit:** `feat(hf-sink): implement Append mode (renumber shards) (Task 5.1.4)`
 
 **Build Status:**
 ```bash
@@ -21,7 +21,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
 ```
 
-**Branch:** `feature/hf-hub-sink` (54 commits ahead, local only)
+**Branch:** `feature/hf-hub-sink` (56 commits ahead, local only)
 
 ---
 
@@ -40,7 +40,7 @@ What's missing is mode handling (ErrorIfExists, Overwrite, Append).
 - [x] **5.1.1** Add `list_existing_files()` helper in api.rs
 - [x] **5.1.2** Implement ErrorIfExists mode check in finalize()
 - [x] **5.1.3** Implement Overwrite mode (delete + add) in finalize()
-- [ ] **5.1.4** Implement Append mode (renumber shards) in finalize()
+- [x] **5.1.4** Implement Append mode (renumber shards) in finalize()
 - [ ] **5.1.5** Integration tests for all modes
 
 ---
