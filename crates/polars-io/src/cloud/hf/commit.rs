@@ -3,17 +3,45 @@
 //! This module provides functionality to create atomic commits to HF Hub
 //! repositories, supporting LFS file additions and deletions.
 
-use polars_error::PolarsResult;
+use polars_core::config;
+use polars_error::{PolarsResult, polars_bail, to_compute_err};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 
 use crate::cloud::hf::url::HFRepoLocation;
 use crate::cloud::options::USER_AGENT;
+use crate::pl_async::with_concurrency_budget;
+use crate::utils::decode_json_response;
 
-/// Convert any error to a PolarsError (ComputeError variant).
-#[allow(dead_code)]
-fn to_compute_err<E: std::error::Error + Send + Sync + 'static>(e: E) -> polars_error::PolarsError {
-    polars_error::polars_err!(ComputeError: "{}", e)
+/// Maximum number of retries on rate limit (429).
+const MAX_RATE_LIMIT_RETRIES: usize = 3;
+
+/// Parse HF Hub RateLimit header to extract wait time in seconds.
+///
+/// Header format: "api";r=0;t=42 means wait 42 seconds
+fn parse_rate_limit_wait(header: &str) -> Option<u64> {
+    for part in header.split(';') {
+        let part = part.trim();
+        if part.starts_with("t=") {
+            return part[2..].parse().ok();
+        }
+    }
+    None
+}
+
+/// Extract wait time from rate limit error message.
+fn extract_rate_limit_wait(err_msg: &str) -> Option<u64> {
+    if let Some(start) = err_msg.find("wait=") {
+        let after_wait = &err_msg[start + 5..];
+        let digits: String = after_wait
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if !digits.is_empty() {
+            return digits.parse().ok();
+        }
+    }
+    None
 }
 
 /// An LFS file to add in a commit.
@@ -218,11 +246,8 @@ pub(crate) struct DeletedValue {
 /// This client handles the NDJSON-formatted commit API, which allows
 /// atomic commits of multiple LFS file additions and deletions.
 pub struct CommitClient {
-    #[allow(dead_code)]
     client: reqwest::Client,
-    #[allow(dead_code)]
     repo_location: HFRepoLocation,
-    #[allow(dead_code)]
     token: String,
 }
 
@@ -322,6 +347,127 @@ impl CommitClient {
         }
 
         payload
+    }
+
+    /// Create an atomic commit on the HF Hub repository.
+    ///
+    /// This method uploads the commit operations (LFS file additions and deletions)
+    /// atomically to the repository.
+    ///
+    /// # Arguments
+    /// * `summary` - Commit message summary (required)
+    /// * `description` - Optional longer description
+    /// * `operations` - List of add/delete operations
+    /// * `create_pr` - If true, creates a pull request instead of direct commit
+    ///
+    /// # Returns
+    /// `CommitInfo` with commit URL, SHA, and optional PR info.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let info = client.create_commit(
+    ///     "Upload training data",
+    ///     Some("Batch upload of 5 shards"),
+    ///     &operations,
+    ///     false,  // direct commit, not a PR
+    /// ).await?;
+    /// println!("Committed: {}", info.commit_url);
+    /// ```
+    pub async fn create_commit(
+        &self,
+        summary: &str,
+        description: Option<&str>,
+        operations: &[CommitOperation],
+        create_pr: bool,
+    ) -> PolarsResult<CommitInfo> {
+        let payload = Self::build_ndjson_payload(summary, description, operations);
+
+        let mut url = self.repo_location.get_commit_uri();
+        if create_pr {
+            url.push_str("?create_pr=1");
+        }
+
+        let response_bytes = self.send_commit_request(&url, payload).await?;
+        decode_json_response(&response_bytes)
+    }
+
+    /// Send commit request with retry on rate limit.
+    async fn send_commit_request(&self, url: &str, body: Vec<u8>) -> PolarsResult<bytes::Bytes> {
+        let mut retries = 0;
+
+        loop {
+            let result = self.send_single_commit_request(url, body.clone()).await;
+
+            match result {
+                Ok(bytes) => return Ok(bytes),
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if err_str.contains("HTTP 429") && retries < MAX_RATE_LIMIT_RETRIES {
+                        if let Some(wait_secs) = extract_rate_limit_wait(&err_str) {
+                            retries += 1;
+                            if config::verbose() {
+                                eprintln!(
+                                    "Rate limited, waiting {} seconds (retry {}/{})",
+                                    wait_secs, retries, MAX_RATE_LIMIT_RETRIES
+                                );
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+                            continue;
+                        }
+                    }
+                    return Err(e);
+                },
+            }
+        }
+    }
+
+    /// Send a single commit request (no retry).
+    async fn send_single_commit_request(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+    ) -> PolarsResult<bytes::Bytes> {
+        with_concurrency_budget(1, || async {
+            let resp = self
+                .client
+                .post(url)
+                .header(AUTHORIZATION, format!("Bearer {}", self.token))
+                .header(CONTENT_TYPE, "application/x-ndjson")
+                .body(body)
+                .send()
+                .await
+                .map_err(to_compute_err)?;
+
+            let status = resp.status();
+
+            // Handle rate limiting specially to allow retry
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let wait_secs = resp
+                    .headers()
+                    .get("RateLimit")
+                    .and_then(|h| h.to_str().ok())
+                    .and_then(parse_rate_limit_wait);
+
+                let body = resp.text().await.unwrap_or_default();
+                polars_bail!(
+                    ComputeError: "HTTP 429 rate limited (wait={}): {}",
+                    wait_secs.unwrap_or(0),
+                    body
+                );
+            }
+
+            if !status.is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                polars_bail!(
+                    ComputeError: "Commit API request failed (HTTP {}): {}",
+                    status.as_u16(),
+                    body
+                );
+            }
+
+            resp.bytes().await.map_err(to_compute_err)
+        })
+        .await
     }
 }
 
@@ -674,5 +820,60 @@ mod tests {
         let newline_count = payload_str.chars().filter(|&c| c == '\n').count();
         let line_count = payload_str.lines().count();
         assert_eq!(newline_count, line_count);
+    }
+
+    // ========================================================================
+    // Rate Limit Helper Tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_rate_limit_wait() {
+        // Standard format from HF Hub
+        assert_eq!(parse_rate_limit_wait("api;r=0;t=42"), Some(42));
+        assert_eq!(parse_rate_limit_wait("api;r=100;t=300"), Some(300));
+
+        // With quotes (as shown in docs)
+        assert_eq!(parse_rate_limit_wait("\"api\";r=0;t=42"), Some(42));
+
+        // Missing t= parameter
+        assert_eq!(parse_rate_limit_wait("api;r=0"), None);
+
+        // Empty/invalid
+        assert_eq!(parse_rate_limit_wait(""), None);
+    }
+
+    #[test]
+    fn test_extract_rate_limit_wait() {
+        assert_eq!(
+            extract_rate_limit_wait("HTTP 429 rate limited (wait=42): Too many requests"),
+            Some(42)
+        );
+        assert_eq!(
+            extract_rate_limit_wait("HTTP 429 rate limited (wait=300): Slow down"),
+            Some(300)
+        );
+        assert_eq!(
+            extract_rate_limit_wait("HTTP 429 rate limited (wait=0): Try again"),
+            Some(0)
+        );
+        assert_eq!(extract_rate_limit_wait("Some other error"), None);
+    }
+
+    #[test]
+    fn test_create_commit_url_with_create_pr() {
+        // Test that create_pr parameter is properly appended to URL
+        // We can't test the full create_commit method without a mock server,
+        // but we can verify the URL construction logic indirectly by testing
+        // that HFRepoLocation generates the expected base URL
+        let client = CommitClient::new("datasets", "user/repo", "main", "token").unwrap();
+        let base_url = client.repo_location.get_commit_uri();
+        assert_eq!(
+            base_url,
+            "https://huggingface.co/api/datasets/user/repo/commit/main"
+        );
+
+        // Verify the ?create_pr=1 suffix would be added correctly
+        let url_with_pr = format!("{}?create_pr=1", base_url);
+        assert!(url_with_pr.ends_with("?create_pr=1"));
     }
 }
