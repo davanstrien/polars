@@ -11,7 +11,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ```
 ✅ Phases 0-3 complete (Foundation, Core Writer, LFS Protocol)
 ✅ Phase 4 nearly complete (3/4 tasks - HfSinkNode compiles!)
-🔄 Task 4.4: Wire HfSinkNode into PhysNodeKind (2/4 subtasks done)
+🔄 Task 4.4: Wire HfSinkNode into PhysNodeKind (3/4 subtasks done)
 ```
 
 **Build Status:**
@@ -32,7 +32,7 @@ Wire `sink_parquet("hf://...")` to create `HfSinkNode`.
 **Subtasks:**
 - [x] 4.4.1: Add `PhysNodeKind::HfSink` variant
 - [x] 4.4.2: Add URL detection in `lower_ir.rs`
-- [ ] 4.4.3: Add graph conversion in `to_graph.rs`
+- [x] 4.4.3: Add graph conversion in `to_graph.rs`
 - [ ] 4.4.4: End-to-end integration test
 
 **Key Files:**
@@ -123,12 +123,44 @@ SinkTypeIR::File(options) => {
 },
 ```
 
-#### 4.4.3 [ ] Add graph conversion in lower_sink.rs
+#### 4.4.3 ✅ Add graph conversion in to_graph.rs
 ```rust
-PhysNodeKind::HfSink { input } => {
-    let hf_options = HfSinkOptions::from_file_sink_options(&options)?;
+// crates/polars-stream/src/physical_plan/to_graph.rs
+#[cfg(feature = "hf_sink")]
+HfSink { input, options } => {
+    use polars_io::cloud::hf::HfSinkOptions;
+    use polars_plan::dsl::{SinkOptions, SinkTarget};
+
+    let FileSinkOptions { target, unified_sink_args, .. } = options;
+    let input_schema = ctx.phys_sm[input.node].output_schema.clone();
+    let input_key = to_graph_rec(input.node, ctx)?;
+
+    let url = match target {
+        SinkTarget::Path(path) => path.as_str(),
+        SinkTarget::Dyn(_) => polars_bail!(ComputeError: "HF sink does not support dynamic targets"),
+    };
+
+    let hf_options = HfSinkOptions::from_url(url)?;
+    let sink_options = SinkOptions {
+        sync_on_close: unified_sink_args.sync_on_close,
+        maintain_order: unified_sink_args.maintain_order,
+        mkdir: unified_sink_args.mkdir,
+    };
+
     let node = HfSinkNode::new(hf_options, input_schema, sink_options)?;
     ctx.graph.add_node(SinkComputeNode::from(node), [(input_key, input.port)])
+}
+```
+
+Also added `HfSinkOptions::from_url()` in `crates/polars-io/src/cloud/hf/options.rs`:
+```rust
+pub fn from_url(url: &str) -> PolarsResult<Self> {
+    let parts = super::url::HFPathParts::try_from_uri(url)?;
+    HfSinkOptions::builder(&parts.repository)
+        .with_repo_type(parts.repo_type())
+        .with_revision(parts.revision)
+        .with_path_in_repo(parts.path)
+        .build()
 }
 ```
 
