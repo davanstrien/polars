@@ -9,6 +9,8 @@ use rayon::prelude::*;
 use crate::chunked_array::flags::StatisticsFlags;
 #[cfg(feature = "algorithm_group_by")]
 use crate::chunked_array::ops::unique::is_unique_helper;
+#[cfg(feature = "algorithm_group_by")]
+use crate::frame::group_by::GroupsIndicator;
 use crate::prelude::gather::check_bounds_ca;
 use crate::prelude::*;
 #[cfg(feature = "row_hash")]
@@ -1209,6 +1211,7 @@ impl DataFrame {
         self.take_unchecked_impl(idx, true)
     }
 
+    #[cfg(feature = "algorithm_group_by")]
     /// # Safety
     /// The indices must be in-bounds.
     pub unsafe fn gather_group_unchecked(&self, group: &GroupsIndicator) -> Self {

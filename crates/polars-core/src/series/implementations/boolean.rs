@@ -248,6 +248,7 @@ impl SeriesTrait for SeriesWrap<BooleanChunked> {
         ChunkUnique::arg_unique(&self.0)
     }
 
+    #[cfg(feature = "algorithm_group_by")]
     fn unique_id(&self) -> PolarsResult<(IdxSize, Vec<IdxSize>)> {
         ChunkUnique::unique_id(&self.0)
     }
