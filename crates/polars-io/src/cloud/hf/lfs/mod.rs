@@ -3,9 +3,9 @@
 //! Implements the Git LFS Batch API used by HuggingFace Hub for file uploads.
 //! Files uploaded via LFS are automatically migrated to Xet storage by HF Hub.
 
-mod client;
+pub mod client;
 mod types;
-mod upload;
+pub mod upload;
 
 pub use client::LfsClient;
 pub use types::{

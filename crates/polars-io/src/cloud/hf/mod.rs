@@ -13,19 +13,19 @@ pub(crate) use url::{HFPathParts, HFRepoLocation};
 
 // Write support (gated by hf_sink feature)
 #[cfg(feature = "hf_sink")]
-mod auth;
+pub mod auth;
 #[cfg(feature = "hf_sink")]
 pub mod error;
 #[cfg(feature = "hf_sink")]
-mod hashing_writer;
+pub mod hashing_writer;
 #[cfg(feature = "hf_sink")]
 pub mod lfs;
 #[cfg(feature = "hf_sink")]
-mod mmap_buffer;
+pub mod mmap_buffer;
 #[cfg(feature = "hf_sink")]
 pub mod options;
 #[cfg(feature = "hf_sink")]
-mod shard_writer;
+pub mod shard_writer;
 
 // Re-export auth function
 #[cfg(feature = "hf_sink")]
@@ -41,6 +41,6 @@ pub use mmap_buffer::{MmapBuffer, MmapReadHandle};
 pub use shard_writer::{FinishedShard, HfShardWriter};
 // Commit API client
 #[cfg(feature = "hf_sink")]
-mod commit;
+pub mod commit;
 #[cfg(feature = "hf_sink")]
 pub use commit::{CommitOperation, CommitOperationAdd, CommitOperationDelete};
