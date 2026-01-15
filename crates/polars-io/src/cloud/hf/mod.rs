@@ -2,6 +2,7 @@
 //!
 //! Provides read (glob expansion) and write (sink) support for HF Hub.
 
+mod api;
 mod glob;
 mod url;
 
@@ -47,3 +48,6 @@ pub use options::{HfSinkOptions, HfWriteMode, RepoType};
 pub mod commit;
 #[cfg(feature = "hf_sink")]
 pub use commit::{CommitOperation, CommitOperationAdd, CommitOperationDelete};
+// API utilities for mode handling (list existing files)
+#[cfg(feature = "hf_sink")]
+pub(crate) use api::{ExistingFile, list_existing_files};

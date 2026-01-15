@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use polars_error::{PolarsResult, to_compute_err};
 use polars_utils::pl_path::PlRefPath;
 
+use super::api::{GetPages, HFAPIResponse};
 use super::url::{HFPathParts, HFRepoLocation};
 use crate::cloud::{
     CloudConfig, CloudOptions, Matcher, USER_AGENT, extract_prefix_expansion,
@@ -13,83 +14,6 @@ use crate::cloud::{
 use crate::path_utils::HiveIdxTracker;
 use crate::pl_async::with_concurrency_budget;
 use crate::utils::decode_json_response;
-
-#[derive(Debug, serde::Deserialize)]
-struct HFAPIResponse {
-    #[serde(rename = "type")]
-    type_: String,
-    path: String,
-    size: u64,
-}
-
-impl HFAPIResponse {
-    fn is_file(&self) -> bool {
-        self.type_ == "file"
-    }
-}
-
-/// API response is paginated with a `link` header.
-/// * https://huggingface.co/docs/hub/en/api#get-apidatasets
-/// * https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api?apiVersion=2022-11-28#using-link-headers
-struct GetPages<'a> {
-    client: &'a reqwest::Client,
-    uri: Option<String>,
-}
-
-impl GetPages<'_> {
-    async fn next(&mut self) -> Option<PolarsResult<bytes::Bytes>> {
-        let uri = self.uri.take()?;
-
-        Some(
-            async {
-                let resp = with_concurrency_budget(1, || async {
-                    self.client.get(uri).send().await.map_err(to_compute_err)
-                })
-                .await?;
-
-                self.uri = resp
-                    .headers()
-                    .get("link")
-                    .and_then(|x| Self::find_link(x.as_bytes(), "next".as_bytes()))
-                    .transpose()?;
-
-                let resp_bytes = resp.bytes().await.map_err(to_compute_err)?;
-
-                Ok(resp_bytes)
-            }
-            .await,
-        )
-    }
-
-    fn find_link(mut link: &[u8], rel: &[u8]) -> Option<PolarsResult<String>> {
-        // "<https://...>; rel=\"next\", <https://...>; rel=\"last\""
-        while !link.is_empty() {
-            let i = memchr::memchr(b'<', link)?;
-            link = link.get(1 + i..)?;
-            let i = memchr::memchr(b'>', link)?;
-            let uri = &link[..i];
-            link = link.get(1 + i..)?;
-
-            while !link.starts_with("rel=\"".as_bytes()) {
-                link = link.get(1..)?
-            }
-
-            // rel="next"
-            link = link.get(5..)?;
-            let i = memchr::memchr(b'"', link)?;
-
-            if &link[..i] == rel {
-                return Some(
-                    std::str::from_utf8(uri)
-                        .map_err(to_compute_err)
-                        .map(ToString::to_string),
-                );
-            }
-        }
-
-        None
-    }
-}
 
 pub async fn expand_paths_hf(
     paths: &[PlRefPath],
@@ -195,27 +119,4 @@ pub async fn expand_paths_hf(
     Ok((hive_idx_tracker.idx, out_paths))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_get_pages_find_next_link() {
-        let link = r#"<https://api.github.com/repositories/263727855/issues?page=3>; rel="next", <https://api.github.com/repositories/263727855/issues?page=7>; rel="last""#.as_bytes();
-
-        assert_eq!(
-            GetPages::find_link(link, "next".as_bytes()).map(Result::unwrap),
-            Some("https://api.github.com/repositories/263727855/issues?page=3".into()),
-        );
-
-        assert_eq!(
-            GetPages::find_link(link, "last".as_bytes()).map(Result::unwrap),
-            Some("https://api.github.com/repositories/263727855/issues?page=7".into()),
-        );
-
-        assert_eq!(
-            GetPages::find_link(link, "non-existent".as_bytes()).map(Result::unwrap),
-            None,
-        );
-    }
-}
+// Tests for GetPages::find_link moved to api.rs
