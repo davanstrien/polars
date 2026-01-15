@@ -1102,7 +1102,7 @@ impl LfsClient {
 - Add module to `mod.rs` (feature-gated)
 - Write 5 unit tests for types
 
-**3.4.2: Define CommitInfo response type** [ ]
+**3.4.2: Define CommitInfo response type** ✅
 ```rust
 #[derive(Debug, Clone, Deserialize)]
 pub struct CommitInfo {
@@ -1836,6 +1836,7 @@ Track work sessions here:
 | 2026-01-14 | 3.2 | Complete | Implemented LFS Client for upload coordination. Created `lfs/client.rs` with `LfsClient` struct. Reuses `HFRepoLocation::get_lfs_batch_uri()`. Methods: `new()`, `request_upload()`, `request_uploads()` (batch), `verify_upload()`. Smart rate limit retry per HF Hub docs (parses `RateLimit` header for exact wait time). 5 unit tests. Code passes rustfmt. Build blocked by upstream polars-core issue. |
 | 2026-01-14 | 3.3 | Complete | Implemented Upload Executor. Created `lfs/upload.rs` with `UploadExecutor` struct. Basic upload: single PUT with retry (exponential backoff 500ms/1s/2s, max 3 retries). Multipart: sequential part uploads with ETag capture, returns `Vec<LfsPartCompletion>`. Added completion types to `types.rs`. Added `complete_multipart()` to `LfsClient`. Added `get_lfs_multipart_complete_uri()` to `url.rs`. Added `UploadProgress` trait stub. 5 unit tests. **Note**: LFS uploads work - HF Hub auto-migrates to Xet storage per their docs. Native Xet deferred. |
 | 2026-01-14 | 3.4.1 | Complete | Started Commit API Client (Sub-task 3.4.1). Created `commit.rs` with operation types: `CommitOperationAdd`, `CommitOperationDelete`, `CommitOperation` enum. Added `is_folder()` helper method, `From` impls, and `to_compute_err` helper. Added module to `mod.rs` (feature-gated). 5 unit tests. Updated Task 3.4 in plan with granular sub-task breakdown (3.4.1-3.4.8). |
+| 2026-01-15 | 3.4.2 | Complete | Added `CommitInfo` response type to `commit.rs`. Struct has 5 fields: `commit_url`, `oid`, `pr_url`, `pr_num`, `pr_revision` with appropriate serde renames for HF API camelCase fields. Added 3 unit tests for deserialization (basic, with PR, partial PR fields). Code passes rustfmt. |
 
 ---
 
