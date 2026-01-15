@@ -20,7 +20,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
 ```
 
-**Branch:** `feature/hf-hub-sink` (41 commits ahead)
+**Branch:** `feature/hf-hub-sink` (43 commits ahead)
 
 ---
 
@@ -38,7 +38,7 @@ Wire `sink_parquet("hf://...")` to create `HfSinkNode`.
 **Key Files:**
 - `crates/polars-stream/src/physical_plan/mod.rs` - PhysNodeKind
 - `crates/polars-stream/src/physical_plan/lower_ir.rs` - URL detection
-- `crates/polars-stream/src/physical_plan/lower_sink.rs` - Graph conversion
+- `crates/polars-stream/src/physical_plan/to_graph.rs` - Graph conversion
 
 ---
 
