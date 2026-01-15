@@ -22,6 +22,7 @@ use polars_core::frame::DataFrame;
 use polars_core::prelude::CompatLevel;
 use polars_core::schema::SchemaRef;
 use polars_error::{PolarsResult, polars_err};
+use polars_io::cloud::hf::get_hf_token;
 use polars_io::cloud::hf::lfs::client::LfsClient;
 use polars_io::cloud::hf::lfs::upload::UploadExecutor;
 use polars_io::cloud::hf::options::HfSinkOptions;
@@ -35,7 +36,7 @@ use polars_plan::dsl::SinkOptions;
 use super::phase::PhaseOutcome;
 use super::{SinkInputPort, SinkNode};
 use crate::async_executor::spawn;
-use crate::async_primitives::connector::{Receiver, Sender};
+use crate::async_primitives::connector::{Receiver, Sender, connector};
 use crate::execute::StreamingExecutionState;
 use crate::nodes::{JoinHandle, TaskPriority};
 use crate::utils::tokio_handle_ext::AbortOnDropHandle;
@@ -485,8 +486,15 @@ pub struct HfSinkNode {
     input_schema: SchemaRef,
     /// General sink options (maintain_order, mkdir, etc.)
     sink_options: SinkOptions,
-    /// Background IO/upload task handle
+    /// Background IO/upload task handle (legacy, unused)
+    #[allow(dead_code)]
     io_task: Option<AbortOnDropHandle<PolarsResult<()>>>,
+    /// Channel sender for finished shards (buffer_and_write_task → upload_shard_task)
+    shard_tx: Option<Sender<FinishedShard>>,
+    /// Channel receiver for shard completions (for finalize/commit)
+    completion_rx: Option<Receiver<ShardCompletion>>,
+    /// Handle to await upload task completion
+    upload_task: Option<JoinHandle<PolarsResult<()>>>,
 }
 
 impl HfSinkNode {
@@ -512,6 +520,9 @@ impl HfSinkNode {
             input_schema,
             sink_options,
             io_task: None,
+            shard_tx: None,
+            completion_rx: None,
+            upload_task: None,
         })
     }
 
@@ -545,10 +556,40 @@ impl SinkNode for HfSinkNode {
     }
 
     fn initialize(&mut self, _state: &StreamingExecutionState) -> PolarsResult<()> {
-        // TODO (Task 4.3): Set up channels and spawn coordinator task
-        // - Create channel for shard completions
-        // - Spawn commit coordinator task
-        // - Initialize LFS client
+        // 1. Resolve HF token (required for writes)
+        let token = get_hf_token(self.options.token.as_deref(), true)?
+            .expect("token required=true guarantees Some");
+
+        // 2. Get bucket (repo type) and revision from options
+        let bucket = self.options.repo_type.as_str();
+        let revision = self.options.effective_revision();
+
+        // 3. Create LFS client and upload executor
+        let lfs_client = LfsClient::new(bucket, &self.options.repo_id, &revision, token)?;
+        let upload_executor = UploadExecutor::new()?;
+
+        // 4. Create channels for shard pipeline:
+        //    buffer_and_write_task → shard_tx/shard_rx → upload_shard_task → completion_tx/rx
+        let (shard_tx, shard_rx) = connector::<FinishedShard>();
+        let (completion_tx, completion_rx) = connector::<ShardCompletion>();
+
+        // 5. Spawn upload task (background) - receives finished shards and uploads to HF Hub
+        let path_in_repo = self.options.path_in_repo.clone();
+        let split = self.options.split.clone();
+        let upload_task = upload_shard_task(
+            shard_rx,
+            completion_tx,
+            path_in_repo,
+            split,
+            lfs_client,
+            upload_executor,
+        );
+
+        // 6. Store channels and task handle for use in spawn_sink() and finalize()
+        self.shard_tx = Some(shard_tx);
+        self.completion_rx = Some(completion_rx);
+        self.upload_task = Some(upload_task);
+
         Ok(())
     }
 
@@ -558,35 +599,37 @@ impl SinkNode for HfSinkNode {
         _state: &StreamingExecutionState,
         join_handles: &mut Vec<JoinHandle<PolarsResult<()>>>,
     ) {
-        // TODO (Task 4.3): Spawn actual shard worker tasks
-        // For now, spawn a placeholder task that drains input to satisfy the interface
-        join_handles.push(spawn(TaskPriority::High, async move {
-            let mut recv_port_rx = recv_port_rx;
+        // Take the shard sender from initialize() - this connects to upload_shard_task
+        let shard_tx = self
+            .shard_tx
+            .take()
+            .expect("initialize() must be called before spawn_sink()");
 
-            // Drain all incoming morsels
-            while let Ok((outcome, sink_input)) = recv_port_rx.recv().await {
-                let mut rx = sink_input.serial();
+        // Spawn the buffer-and-write task that processes morsels and writes to shards
+        let task = buffer_and_write_task(
+            recv_port_rx,
+            shard_tx,
+            Arc::clone(&self.options),
+            self.input_schema.clone(),
+        );
 
-                // Consume all morsels from this phase
-                while let Ok(morsel) = rx.recv().await {
-                    let (_df, _seq, _, consume_token) = morsel.into_inner();
-                    // TODO: Process morsel through shard writer
-                    drop(consume_token);
-                }
-
-                outcome.stopped();
-            }
-
-            PolarsResult::Ok(())
-        }));
+        join_handles.push(task);
     }
 
     fn finalize(
         &mut self,
         _state: &StreamingExecutionState,
     ) -> Option<Pin<Box<dyn Future<Output = PolarsResult<()>> + Send>>> {
-        // TODO (Task 5.1): Execute atomic commit via CommitCoordinator
-        // For now, return None (no finalization needed)
+        // TODO (Task 4.2.5): Execute atomic commit
+        //
+        // Implementation steps:
+        // 1. Take upload_task and await its completion
+        // 2. Collect all ShardCompletions from completion_rx
+        // 3. Create CommitClient with options
+        // 4. Build commit operations from ShardCompletions
+        // 5. Execute atomic commit via commit_client.create_commit()
+        //
+        // For now, return None - the upload task will complete but no commit happens
         None
     }
 

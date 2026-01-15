@@ -10,8 +10,8 @@ use arrow::record_batch::RecordBatch;
 use polars_error::{PolarsResult, polars_err};
 use polars_parquet::read::ParquetError;
 use polars_parquet::write::{
-    ColumnWriteOptions, Compressor, DynIter, DynStreamingIterator, FileWriter, SchemaDescriptor,
-    WriteOptions, array_to_columns, to_parquet_schema,
+    ColumnWriteOptions, Compressor, DynIter, DynStreamingIterator, FallibleStreamingIterator,
+    FileWriter, SchemaDescriptor, WriteOptions, array_to_columns, to_parquet_schema,
 };
 
 use super::hashing_writer::{HashingWriter, sha256_to_hex};
