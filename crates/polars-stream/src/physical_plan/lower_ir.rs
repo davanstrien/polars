@@ -26,6 +26,8 @@ use polars_plan::prelude::GroupbyOptions;
 use polars_utils::arena::{Arena, Node};
 use polars_utils::itertools::Itertools;
 use polars_utils::pl_str::PlSmallStr;
+#[cfg(feature = "hf_sink")]
+use polars_utils::pl_path::CloudScheme;
 #[cfg(feature = "parquet")]
 use polars_utils::relaxed_cell::RelaxedCell;
 use polars_utils::row_counter::RowCounter;
@@ -271,6 +273,17 @@ pub fn lower_ir(
             SinkTypeIR::File(options) => {
                 let options = options.clone();
                 let input = lower_ir!(*input)?;
+
+                #[cfg(feature = "hf_sink")]
+                {
+                    if options.target.cloud_scheme() == Some(CloudScheme::Hf) {
+                        PhysNodeKind::HfSink { input, options }
+                    } else {
+                        PhysNodeKind::FileSink { input, options }
+                    }
+                }
+
+                #[cfg(not(feature = "hf_sink"))]
                 PhysNodeKind::FileSink { input, options }
             },
 
