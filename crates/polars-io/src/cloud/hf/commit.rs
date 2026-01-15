@@ -260,6 +260,69 @@ impl CommitClient {
             token: token.into(),
         })
     }
+
+    /// Build NDJSON payload for the HF Hub commit API.
+    ///
+    /// The commit API expects a `Content-Type: application/x-ndjson` body with
+    /// newline-delimited JSON objects:
+    /// - First line: Header with commit summary/description
+    /// - Following lines: LFS file additions or deletions
+    ///
+    /// # Arguments
+    /// * `summary` - Commit message summary (required)
+    /// * `description` - Optional longer description
+    /// * `operations` - List of add/delete operations
+    ///
+    /// # Returns
+    /// `Vec<u8>` containing the NDJSON payload, ready for HTTP body.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let payload = CommitClient::build_ndjson_payload(
+    ///     "Upload training data",
+    ///     Some("Batch upload of 5 shards"),
+    ///     &[
+    ///         CommitOperation::Add(CommitOperationAdd { ... }),
+    ///         CommitOperation::Delete(CommitOperationDelete { ... }),
+    ///     ],
+    /// );
+    /// ```
+    pub fn build_ndjson_payload(
+        summary: &str,
+        description: Option<&str>,
+        operations: &[CommitOperation],
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+
+        // Header line (always first)
+        let header = NdjsonHeader::new(summary, description.map(|s| s.to_string()));
+        let header_json = serde_json::to_vec(&header).expect("header serialization cannot fail");
+        payload.extend_from_slice(&header_json);
+        payload.push(b'\n');
+
+        // Operation lines
+        for op in operations {
+            let line_json = match op {
+                CommitOperation::Add(add) => {
+                    let lfs_file = NdjsonLfsFile::from_add(add);
+                    serde_json::to_vec(&lfs_file).expect("lfs file serialization cannot fail")
+                },
+                CommitOperation::Delete(del) => {
+                    if del.is_folder() {
+                        let folder = NdjsonDeletedFolder::new(&del.path_in_repo);
+                        serde_json::to_vec(&folder).expect("folder serialization cannot fail")
+                    } else {
+                        let file = NdjsonDeletedFile::new(&del.path_in_repo);
+                        serde_json::to_vec(&file).expect("file serialization cannot fail")
+                    }
+                },
+            };
+            payload.extend_from_slice(&line_json);
+            payload.push(b'\n');
+        }
+
+        payload
+    }
 }
 
 #[cfg(test)]
@@ -449,5 +512,167 @@ mod tests {
         // Test with a revision that needs URL encoding
         let client = CommitClient::new("datasets", "user/repo", "refs/convert/parquet", "token");
         assert!(client.is_ok());
+    }
+
+    // ========================================================================
+    // build_ndjson_payload Tests
+    // ========================================================================
+
+    #[test]
+    fn test_build_ndjson_payload_header_only() {
+        let payload = CommitClient::build_ndjson_payload("Simple commit", None, &[]);
+        let payload_str = String::from_utf8(payload).unwrap();
+
+        // Should have exactly one line (header)
+        let lines: Vec<&str> = payload_str.lines().collect();
+        assert_eq!(lines.len(), 1);
+
+        // Header should be valid JSON
+        let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(header["key"], "header");
+        assert_eq!(header["value"]["summary"], "Simple commit");
+    }
+
+    #[test]
+    fn test_build_ndjson_payload_with_description() {
+        let payload = CommitClient::build_ndjson_payload(
+            "Upload data",
+            Some("Batch upload of training shards"),
+            &[],
+        );
+        let payload_str = String::from_utf8(payload).unwrap();
+
+        let lines: Vec<&str> = payload_str.lines().collect();
+        assert_eq!(lines.len(), 1);
+
+        let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(header["value"]["summary"], "Upload data");
+        assert_eq!(
+            header["value"]["description"],
+            "Batch upload of training shards"
+        );
+    }
+
+    #[test]
+    fn test_build_ndjson_payload_with_adds() {
+        let operations = vec![
+            CommitOperation::Add(CommitOperationAdd {
+                path_in_repo: "data/train-00000.parquet".into(),
+                oid: "abc123".into(),
+                size: 1000,
+            }),
+            CommitOperation::Add(CommitOperationAdd {
+                path_in_repo: "data/train-00001.parquet".into(),
+                oid: "def456".into(),
+                size: 2000,
+            }),
+        ];
+
+        let payload = CommitClient::build_ndjson_payload("Upload shards", None, &operations);
+        let payload_str = String::from_utf8(payload).unwrap();
+
+        let lines: Vec<&str> = payload_str.lines().collect();
+        assert_eq!(lines.len(), 3); // header + 2 adds
+
+        // Verify header
+        let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(header["key"], "header");
+
+        // Verify first LFS file
+        let lfs1: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(lfs1["key"], "lfsFile");
+        assert_eq!(lfs1["value"]["path"], "data/train-00000.parquet");
+        assert_eq!(lfs1["value"]["algo"], "sha256");
+        assert_eq!(lfs1["value"]["oid"], "abc123");
+        assert_eq!(lfs1["value"]["size"], 1000);
+
+        // Verify second LFS file
+        let lfs2: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(lfs2["key"], "lfsFile");
+        assert_eq!(lfs2["value"]["path"], "data/train-00001.parquet");
+    }
+
+    #[test]
+    fn test_build_ndjson_payload_with_deletes() {
+        let operations = vec![
+            CommitOperation::Delete(CommitOperationDelete {
+                path_in_repo: "data/old_file.parquet".into(),
+            }),
+            CommitOperation::Delete(CommitOperationDelete {
+                path_in_repo: "data/old_folder/".into(), // trailing slash = folder
+            }),
+        ];
+
+        let payload = CommitClient::build_ndjson_payload("Cleanup", None, &operations);
+        let payload_str = String::from_utf8(payload).unwrap();
+
+        let lines: Vec<&str> = payload_str.lines().collect();
+        assert_eq!(lines.len(), 3); // header + 2 deletes
+
+        // Verify file deletion
+        let del_file: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(del_file["key"], "deletedFile");
+        assert_eq!(del_file["value"]["path"], "data/old_file.parquet");
+
+        // Verify folder deletion
+        let del_folder: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(del_folder["key"], "deletedFolder");
+        assert_eq!(del_folder["value"]["path"], "data/old_folder/");
+    }
+
+    #[test]
+    fn test_build_ndjson_payload_mixed_operations() {
+        let operations = vec![
+            CommitOperation::Delete(CommitOperationDelete {
+                path_in_repo: "data/old/".into(),
+            }),
+            CommitOperation::Add(CommitOperationAdd {
+                path_in_repo: "data/new.parquet".into(),
+                oid: "xyz789".into(),
+                size: 5000,
+            }),
+        ];
+
+        let payload = CommitClient::build_ndjson_payload(
+            "Replace data",
+            Some("Delete old folder and add new file"),
+            &operations,
+        );
+        let payload_str = String::from_utf8(payload).unwrap();
+
+        let lines: Vec<&str> = payload_str.lines().collect();
+        assert_eq!(lines.len(), 3);
+
+        // Verify order: header, delete, add (same order as input)
+        let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(header["key"], "header");
+
+        let delete: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(delete["key"], "deletedFolder");
+
+        let add: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(add["key"], "lfsFile");
+    }
+
+    #[test]
+    fn test_build_ndjson_payload_ends_with_newlines() {
+        let payload = CommitClient::build_ndjson_payload(
+            "Test",
+            None,
+            &[CommitOperation::Add(CommitOperationAdd {
+                path_in_repo: "test.parquet".into(),
+                oid: "abc".into(),
+                size: 100,
+            })],
+        );
+
+        // Each line should end with \n
+        let payload_str = String::from_utf8(payload).unwrap();
+        assert!(payload_str.ends_with('\n'));
+
+        // Count newlines matches line count
+        let newline_count = payload_str.chars().filter(|&c| c == '\n').count();
+        let line_count = payload_str.lines().count();
+        assert_eq!(newline_count, line_count);
     }
 }

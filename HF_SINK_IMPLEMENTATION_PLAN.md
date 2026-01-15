@@ -1137,10 +1137,11 @@ pub struct CommitClient {
 - Constructor: `new(bucket, repo_id, revision, token) -> PolarsResult<Self>`
 - 3 unit tests for constructor (basic, various repo types, special revision)
 
-**3.4.5: Implement build_ndjson_payload()** [ ]
+**3.4.5: Implement build_ndjson_payload()** ✅
 - Build Vec<u8> with header line + operation lines
 - Each line: JSON object + newline
 - Handle file vs folder deletion (trailing slash check)
+- 6 unit tests for payload generation
 
 **3.4.6: Implement create_commit()** [ ]
 - POST to commit URI with NDJSON payload
@@ -1152,16 +1153,16 @@ pub struct CommitClient {
 - For overwrite mode support (delete existing files before upload)
 - Can reuse logic from glob.rs Tree API implementation
 
-**3.4.8: Write remaining unit tests** [ ]
-- Test NDJSON payload generation with adds
-- Test NDJSON payload with deletes (file and folder)
-- Test CommitInfo deserialization (with and without PR fields)
-- Test CommitClient creation
+**3.4.8: Write remaining unit tests** ✅ (covered in 3.4.2-3.4.5)
+- Test NDJSON payload generation with adds ✅ (in 3.4.5)
+- Test NDJSON payload with deletes (file and folder) ✅ (in 3.4.5)
+- Test CommitInfo deserialization (with and without PR fields) ✅ (in 3.4.2)
+- Test CommitClient creation ✅ (in 3.4.4)
 
 **Acceptance Criteria**:
-- [ ] NDJSON payload format correct (header + lfsFile + deletedFile/deletedFolder)
-- [ ] Supports add operations (LFS files)
-- [ ] Supports delete operations (files and folders)
+- [x] NDJSON payload format correct (header + lfsFile + deletedFile/deletedFolder)
+- [x] Supports add operations (LFS files)
+- [x] Supports delete operations (files and folders)
 - [ ] create_pr flag works (query parameter)
 - [ ] Returns CommitInfo with commit URL, SHA, and optional PR info
 - [ ] Unit tests pass
@@ -1843,6 +1844,7 @@ Track work sessions here:
 | 2026-01-15 | 3.4.2 | Complete | Added `CommitInfo` response type to `commit.rs`. Struct has 5 fields: `commit_url`, `oid`, `pr_url`, `pr_num`, `pr_revision` with appropriate serde renames for HF API camelCase fields. Added 3 unit tests for deserialization (basic, with PR, partial PR fields). Code passes rustfmt. |
 | 2026-01-15 | 3.4.3 | Complete | Added NDJSON serialization types for commit API. Created `NdjsonHeader`/`HeaderValue`, `NdjsonLfsFile`/`LfsFileValue`, `NdjsonDeletedFile`, `NdjsonDeletedFolder`, `DeletedValue` structs. Added constructor methods: `new()` for header/deletes, `from_add()` for LFS files. 5 unit tests verifying exact JSON output matches HF API format. Code passes rustfmt. Tests blocked by upstream polars-core build issue. |
 | 2026-01-15 | 3.4.4 | Complete | Implemented `CommitClient` struct following `LfsClient` pattern. Added imports for reqwest headers, USER_AGENT, HFRepoLocation. Struct has `client`, `repo_location`, `token` fields. Constructor `new(bucket, repo_id, revision, token)` builds reqwest client with user_agent, http1_only, https_only. 3 unit tests for constructor. Code passes rustfmt. |
+| 2026-01-15 | 3.4.5 | Complete | Implemented `build_ndjson_payload()` static method on `CommitClient`. Takes summary, optional description, and slice of `CommitOperation`. Builds NDJSON payload: header line + operation lines (lfsFile for adds, deletedFile/deletedFolder for deletes based on trailing slash). 6 unit tests covering: header-only, with description, adds, deletes, mixed operations, newline format. Code passes rustfmt. |
 
 ---
 
