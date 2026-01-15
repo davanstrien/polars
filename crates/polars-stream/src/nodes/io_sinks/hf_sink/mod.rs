@@ -22,7 +22,7 @@ use polars_core::frame::DataFrame;
 use polars_core::prelude::CompatLevel;
 use polars_core::schema::SchemaRef;
 use polars_error::{PolarsResult, polars_bail, polars_err};
-use polars_io::cloud::hf::commit::{CommitClient, CommitOperation, CommitOperationAdd};
+use polars_io::cloud::hf::commit::{CommitClient, CommitOperation, CommitOperationAdd, CommitOperationDelete};
 use polars_io::cloud::hf::{check_existing_files, get_hf_token};
 use polars_io::cloud::hf::lfs::client::LfsClient;
 use polars_io::cloud::hf::lfs::upload::UploadExecutor;
@@ -681,6 +681,29 @@ impl SinkNode for HfSinkNode {
                 }
             }
 
+            // Step C.5.2: Mode check for Overwrite - collect existing files for deletion
+            let delete_ops: Vec<CommitOperation> = if options.mode == HfWriteMode::Overwrite {
+                let token = get_hf_token(options.token.as_deref(), false)?;
+
+                let existing = check_existing_files(
+                    options.repo_type.as_str(),
+                    &options.repo_id,
+                    &options.effective_revision(),
+                    &options.path_in_repo,
+                    token.as_deref(),
+                )
+                .await?;
+
+                existing
+                    .into_iter()
+                    .map(|f| CommitOperation::Delete(CommitOperationDelete {
+                        path_in_repo: f.path,
+                    }))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
             // Step D: Resolve token for commit (required for write access)
             let token = get_hf_token(options.token.as_deref(), true)?
                 .expect("token required=true guarantees Some");
@@ -694,7 +717,7 @@ impl SinkNode for HfSinkNode {
             )?;
 
             // Step F: Build commit operations from ShardCompletions
-            let operations: Vec<CommitOperation> = completions
+            let add_ops: Vec<CommitOperation> = completions
                 .iter()
                 .map(|c| {
                     CommitOperation::Add(CommitOperationAdd {
@@ -705,6 +728,13 @@ impl SinkNode for HfSinkNode {
                 })
                 .collect();
 
+            // Combine: deletes first, then adds (for atomic replace)
+            let num_deleted = delete_ops.len();
+            let operations: Vec<CommitOperation> = delete_ops
+                .into_iter()
+                .chain(add_ops)
+                .collect();
+
             // Step G: Build commit message
             let total_rows: usize = completions.iter().map(|c| c.num_rows).sum();
             let total_bytes: u64 = completions.iter().map(|c| c.size).sum();
@@ -712,12 +742,22 @@ impl SinkNode for HfSinkNode {
                 .commit_message
                 .clone()
                 .unwrap_or_else(|| "Upload via Polars".to_string());
-            let description = format!(
-                "Uploaded {} shard(s) with {} rows ({:.2} MB)",
-                operations.len(),
-                total_rows,
-                total_bytes as f64 / (1024.0 * 1024.0)
-            );
+            let description = if num_deleted > 0 {
+                format!(
+                    "Replaced {} existing file(s) with {} shard(s) ({} rows, {:.2} MB)",
+                    num_deleted,
+                    completions.len(),
+                    total_rows,
+                    total_bytes as f64 / (1024.0 * 1024.0)
+                )
+            } else {
+                format!(
+                    "Uploaded {} shard(s) with {} rows ({:.2} MB)",
+                    completions.len(),
+                    total_rows,
+                    total_bytes as f64 / (1024.0 * 1024.0)
+                )
+            };
 
             // Step H: Execute atomic commit
             let commit_info = commit_client
