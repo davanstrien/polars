@@ -172,6 +172,25 @@ pub fn shard_path(path_in_repo: &str, split: &str, index: usize) -> String {
     format!("{}/{}-{:05}.parquet", path, split, index)
 }
 
+/// Extract the shard index from a path like "data/train-00042.parquet".
+///
+/// Returns None if the path doesn't match the expected format for the given split.
+///
+/// # Examples
+/// ```ignore
+/// assert_eq!(parse_shard_index("data/train-00000.parquet", "train"), Some(0));
+/// assert_eq!(parse_shard_index("data/train-00042.parquet", "train"), Some(42));
+/// assert_eq!(parse_shard_index("data/test-00001.parquet", "train"), None); // wrong split
+/// assert_eq!(parse_shard_index("other.parquet", "train"), None);
+/// ```
+fn parse_shard_index(path: &str, split: &str) -> Option<usize> {
+    let filename = path.rsplit('/').next()?;
+    let expected_prefix = format!("{}-", split);
+    let rest = filename.strip_prefix(&expected_prefix)?;
+    let index_str = rest.strip_suffix(".parquet")?;
+    index_str.parse().ok()
+}
+
 /// Convert a Polars DataFrame to an Arrow RecordBatch.
 ///
 /// This rechunks the DataFrame to ensure each column has a single chunk,
@@ -704,6 +723,45 @@ impl SinkNode for HfSinkNode {
                 Vec::new()
             };
 
+            // Step C.5.3: Mode check for Append - renumber shards to avoid conflicts
+            if options.mode == HfWriteMode::Append {
+                let token = get_hf_token(options.token.as_deref(), false)?;
+
+                let existing = check_existing_files(
+                    options.repo_type.as_str(),
+                    &options.repo_id,
+                    &options.effective_revision(),
+                    &options.path_in_repo,
+                    token.as_deref(),
+                )
+                .await?;
+
+                // Find max existing shard index from files matching our split pattern
+                let max_existing_idx = existing
+                    .iter()
+                    .filter_map(|f| parse_shard_index(&f.path, &options.split))
+                    .max();
+
+                // If there are existing shards, renumber new shards to start after the max
+                if let Some(max_idx) = max_existing_idx {
+                    let start_idx = max_idx + 1;
+                    for (i, c) in completions.iter_mut().enumerate() {
+                        let new_idx = start_idx + i;
+                        c.index = new_idx;
+                        c.path_in_repo = shard_path(&options.path_in_repo, &options.split, new_idx);
+                    }
+
+                    if config::verbose() {
+                        eprintln!(
+                            "HF sink: Append mode - renumbering {} shards starting from index {}",
+                            completions.len(),
+                            start_idx
+                        );
+                    }
+                }
+                // If no existing shards match the pattern, keep original numbering (starting at 0)
+            }
+
             // Step D: Resolve token for commit (required for write access)
             let token = get_hf_token(options.token.as_deref(), true)?
                 .expect("token required=true guarantees Some");
@@ -743,6 +801,7 @@ impl SinkNode for HfSinkNode {
                 .clone()
                 .unwrap_or_else(|| "Upload via Polars".to_string());
             let description = if num_deleted > 0 {
+                // Overwrite mode: replaced existing files
                 format!(
                     "Replaced {} existing file(s) with {} shard(s) ({} rows, {:.2} MB)",
                     num_deleted,
@@ -750,7 +809,18 @@ impl SinkNode for HfSinkNode {
                     total_rows,
                     total_bytes as f64 / (1024.0 * 1024.0)
                 )
+            } else if options.mode == HfWriteMode::Append && !completions.is_empty() {
+                // Append mode: show starting index
+                let first_idx = completions.first().map(|c| c.index).unwrap_or(0);
+                format!(
+                    "Appended {} shard(s) starting at index {} ({} rows, {:.2} MB)",
+                    completions.len(),
+                    first_idx,
+                    total_rows,
+                    total_bytes as f64 / (1024.0 * 1024.0)
+                )
             } else {
+                // Default: fresh upload
                 format!(
                     "Uploaded {} shard(s) with {} rows ({:.2} MB)",
                     completions.len(),
@@ -866,6 +936,36 @@ mod tests {
             shard_path("data", "train", 99999),
             "data/train-99999.parquet"
         );
+    }
+
+    #[test]
+    fn test_parse_shard_index() {
+        // Basic cases
+        assert_eq!(parse_shard_index("data/train-00000.parquet", "train"), Some(0));
+        assert_eq!(parse_shard_index("data/train-00042.parquet", "train"), Some(42));
+        assert_eq!(parse_shard_index("data/train-99999.parquet", "train"), Some(99999));
+
+        // Wrong split name - should return None
+        assert_eq!(parse_shard_index("data/test-00001.parquet", "train"), None);
+        assert_eq!(parse_shard_index("data/train-00001.parquet", "validation"), None);
+
+        // Invalid formats - should return None
+        assert_eq!(parse_shard_index("other.parquet", "train"), None);
+        assert_eq!(parse_shard_index("data/train.parquet", "train"), None);
+        assert_eq!(parse_shard_index("data/train-abc.parquet", "train"), None);
+
+        // Nested paths
+        assert_eq!(
+            parse_shard_index("output/processed/validation-00123.parquet", "validation"),
+            Some(123)
+        );
+
+        // Edge cases
+        assert_eq!(parse_shard_index("train-00000.parquet", "train"), Some(0)); // No directory
+        assert_eq!(parse_shard_index("", "train"), None); // Empty path
+
+        // Large index (6 digits, beyond 5-digit format)
+        assert_eq!(parse_shard_index("data/train-100000.parquet", "train"), Some(100000));
     }
 
     #[test]
