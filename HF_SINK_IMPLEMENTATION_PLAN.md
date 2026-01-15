@@ -1078,54 +1078,90 @@ impl LfsClient {
 
 ### Task 3.4: Commit API Client
 **File**: `crates/polars-io/src/cloud/hf/commit.rs`
-**Status**: [ ] Not Started
+**Status**: [ ] In Progress
 **Dependencies**: 1.4
 **Estimate**: 4 hours
 
+**API Reference**:
+- Endpoint: `POST /api/{repo_type}s/{repo_id}/commit/{revision}`
+- Content-Type: `application/x-ndjson` (newline-delimited JSON)
+- Payload format:
+  - Header: `{"key":"header","value":{"summary":"...","description":"..."}}`
+  - LFS file: `{"key":"lfsFile","value":{"path":"...","algo":"sha256","oid":"...","size":...}}`
+  - Delete file: `{"key":"deletedFile","value":{"path":"..."}}`
+  - Delete folder: `{"key":"deletedFolder","value":{"path":".../"}}` (trailing slash)
+
+#### Sub-tasks (granular)
+
+**3.4.1: Create commit.rs with operation types** ✅
+- Create file with imports and `to_compute_err` helper
+- Define `CommitOperationAdd` struct (path_in_repo, oid, size)
+- Define `CommitOperationDelete` struct (path_in_repo, with `is_folder()` method)
+- Define `CommitOperation` enum (Add, Delete variants)
+- Add `From` impls for convenience
+- Add module to `mod.rs` (feature-gated)
+- Write 5 unit tests for types
+
+**3.4.2: Define CommitInfo response type** [ ]
 ```rust
-pub struct CommitClient {
-    client: reqwest::Client,
-    endpoint: String,
-    token: String,
-}
-
-pub struct CommitOperationAdd {
-    pub path_in_repo: String,
+#[derive(Debug, Clone, Deserialize)]
+pub struct CommitInfo {
+    #[serde(rename = "commitUrl")]
+    pub commit_url: String,
     pub oid: String,
-    pub size: u64,
-}
-
-pub struct CommitOperationDelete {
-    pub path_in_repo: String,
-}
-
-impl CommitClient {
-    pub async fn create_commit(
-        &self,
-        repo_type: &RepoType,
-        repo_id: &str,
-        revision: Option<&str>,
-        operations: Vec<CommitOperation>,
-        message: &str,
-        create_pr: bool,
-    ) -> PolarsResult<CommitInfo>;
-
-    pub async fn list_repo_files(
-        &self,
-        repo_type: &RepoType,
-        repo_id: &str,
-        path_prefix: &str,
-        revision: Option<&str>,
-    ) -> PolarsResult<Vec<RepoFile>>;
+    #[serde(rename = "prUrl")]
+    pub pr_url: Option<String>,
+    #[serde(rename = "prNum")]
+    pub pr_num: Option<u64>,
+    #[serde(rename = "prRevision")]
+    pub pr_revision: Option<String>,
 }
 ```
 
+**3.4.3: Define NDJSON serialization types** [ ]
+- `NdjsonHeader`, `HeaderValue` for commit header
+- `NdjsonLfsFile`, `LfsFileValue` for LFS file adds
+- `NdjsonDeletedFile`, `NdjsonDeletedFolder`, `DeletedValue` for deletes
+
+**3.4.4: Implement CommitClient struct** [ ]
+```rust
+pub struct CommitClient {
+    client: reqwest::Client,
+    repo_location: HFRepoLocation,
+    token: String,
+}
+```
+- Use same patterns as LfsClient (reqwest builder, USER_AGENT, https_only)
+
+**3.4.5: Implement build_ndjson_payload()** [ ]
+- Build Vec<u8> with header line + operation lines
+- Each line: JSON object + newline
+- Handle file vs folder deletion (trailing slash check)
+
+**3.4.6: Implement create_commit()** [ ]
+- POST to commit URI with NDJSON payload
+- Handle rate limiting (HTTP 429)
+- Return CommitInfo on success
+- Support `create_pr=true` query parameter
+
+**3.4.7: Stub list_repo_files()** [ ]
+- For overwrite mode support (delete existing files before upload)
+- Can reuse logic from glob.rs Tree API implementation
+
+**3.4.8: Write remaining unit tests** [ ]
+- Test NDJSON payload generation with adds
+- Test NDJSON payload with deletes (file and folder)
+- Test CommitInfo deserialization (with and without PR fields)
+- Test CommitClient creation
+
 **Acceptance Criteria**:
-- [ ] NDJSON payload format correct
-- [ ] Supports add, delete operations
-- [ ] create_pr flag works
-- [ ] Returns commit info (URL, sha)
-- [ ] Integration test with real commit (to test repo)
+- [ ] NDJSON payload format correct (header + lfsFile + deletedFile/deletedFolder)
+- [ ] Supports add operations (LFS files)
+- [ ] Supports delete operations (files and folders)
+- [ ] create_pr flag works (query parameter)
+- [ ] Returns CommitInfo with commit URL, SHA, and optional PR info
+- [ ] Unit tests pass
+- [ ] Integration test with real commit (deferred to Task 8.3)
 
 **Commit checkpoint**: `git commit -m "feat(hf-sink): implement commit API client"`
 
@@ -1799,6 +1835,7 @@ Track work sessions here:
 | 2026-01-14 | 3.1 | Complete | Implemented LFS protocol types. Created `lfs/mod.rs` and `lfs/types.rs`. Request types: `LfsBatchRequest`, `LfsOperation`, `LfsObjectRequest`. Response types: `LfsBatchResponse`, `LfsObject`, `LfsActions`, `LfsAction`, `LfsPartInfo`. Error type: `LfsObjectError`. Helper enum: `LfsTransfer` (AlreadyExists, Basic, Multipart). Conversion method: `into_transfer()`. 11 unit tests. Code passes rustfmt. Build blocked by upstream issue. |
 | 2026-01-14 | 3.2 | Complete | Implemented LFS Client for upload coordination. Created `lfs/client.rs` with `LfsClient` struct. Reuses `HFRepoLocation::get_lfs_batch_uri()`. Methods: `new()`, `request_upload()`, `request_uploads()` (batch), `verify_upload()`. Smart rate limit retry per HF Hub docs (parses `RateLimit` header for exact wait time). 5 unit tests. Code passes rustfmt. Build blocked by upstream polars-core issue. |
 | 2026-01-14 | 3.3 | Complete | Implemented Upload Executor. Created `lfs/upload.rs` with `UploadExecutor` struct. Basic upload: single PUT with retry (exponential backoff 500ms/1s/2s, max 3 retries). Multipart: sequential part uploads with ETag capture, returns `Vec<LfsPartCompletion>`. Added completion types to `types.rs`. Added `complete_multipart()` to `LfsClient`. Added `get_lfs_multipart_complete_uri()` to `url.rs`. Added `UploadProgress` trait stub. 5 unit tests. **Note**: LFS uploads work - HF Hub auto-migrates to Xet storage per their docs. Native Xet deferred. |
+| 2026-01-14 | 3.4.1 | Complete | Started Commit API Client (Sub-task 3.4.1). Created `commit.rs` with operation types: `CommitOperationAdd`, `CommitOperationDelete`, `CommitOperation` enum. Added `is_folder()` helper method, `From` impls, and `to_compute_err` helper. Added module to `mod.rs` (feature-gated). 5 unit tests. Updated Task 3.4 in plan with granular sub-task breakdown (3.4.1-3.4.8). |
 
 ---
 

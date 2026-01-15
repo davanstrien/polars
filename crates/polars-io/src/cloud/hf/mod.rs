@@ -39,3 +39,8 @@ pub use mmap_buffer::{MmapBuffer, MmapReadHandle};
 // Re-export shard writer
 #[cfg(feature = "hf_sink")]
 pub use shard_writer::{FinishedShard, HfShardWriter};
+// Commit API client
+#[cfg(feature = "hf_sink")]
+mod commit;
+#[cfg(feature = "hf_sink")]
+pub use commit::{CommitOperation, CommitOperationAdd, CommitOperationDelete};
