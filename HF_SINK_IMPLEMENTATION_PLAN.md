@@ -9,9 +9,8 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ## Current Status (2026-01-15)
 
 ```
-✅ Phases 0-3 complete (Foundation, Core Writer, LFS Protocol)
-✅ Phase 4 nearly complete (3/4 tasks - HfSinkNode compiles!)
-🔄 Task 4.4: Wire HfSinkNode into PhysNodeKind (3/4 subtasks done)
+✅ Phases 0-4 complete (Foundation, Core Writer, LFS Protocol, Streaming Integration)
+🔄 Ready for Phase 5: Commit Coordination
 ```
 
 **Build Status:**
@@ -26,19 +25,18 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ## What's Next
 
-### Task 4.4: IOSinkNode Integration
-Wire `sink_parquet("hf://...")` to create `HfSinkNode`.
-
-**Subtasks:**
-- [x] 4.4.1: Add `PhysNodeKind::HfSink` variant
-- [x] 4.4.2: Add URL detection in `lower_ir.rs`
-- [x] 4.4.3: Add graph conversion in `to_graph.rs`
-- [ ] 4.4.4: End-to-end integration test
+### Task 5.1: CommitCoordinator
+Implement commit coordination to atomically commit all uploaded shards.
 
 **Key Files:**
-- `crates/polars-stream/src/physical_plan/mod.rs` - PhysNodeKind
-- `crates/polars-stream/src/physical_plan/lower_ir.rs` - URL detection
-- `crates/polars-stream/src/physical_plan/to_graph.rs` - Graph conversion
+- `crates/polars-stream/src/nodes/io_sinks/hf_sink/coordinator.rs` - CommitCoordinator
+- `crates/polars-io/src/cloud/hf/commit.rs` - Commit API client
+
+**Subtasks:**
+- [ ] Implement `CommitCoordinator::register_completion()`
+- [ ] Implement `CommitCoordinator::execute_commit()`
+- [ ] Handle overwrite/append modes
+- [ ] Integration tests
 
 ---
 
@@ -90,8 +88,8 @@ See [HF_SINK_ARCHIVE.md](./HF_SINK_ARCHIVE.md) for details.
 - Shard Writer Task with buffer_and_write_task() and upload_shard_task()
 - finalize() for atomic commit
 
-### Task 4.4: IOSinkNode Integration [ ]
-**Status:** In progress (2/4 subtasks)
+### Task 4.4: IOSinkNode Integration ✅
+**Status:** Complete (4/4 subtasks)
 
 #### 4.4.1 ✅ Add PhysNodeKind::HfSink variant
 ```rust
@@ -164,9 +162,26 @@ pub fn from_url(url: &str) -> PolarsResult<Self> {
 }
 ```
 
-#### 4.4.4 [ ] End-to-end integration test
-- Verify `sink_parquet("hf://...")` creates HfSinkNode
-- Test URL parsing, options passing
+#### 4.4.4 ✅ End-to-end integration test
+**File:** `crates/polars-stream/src/physical_plan/lower_ir.rs` (test module at end)
+
+```rust
+#[cfg(all(test, feature = "hf_sink", feature = "parquet"))]
+mod hf_sink_integration_tests {
+    // Tests verify the IR → PhysNodeKind::HfSink pipeline
+    fn test_hf_url_creates_hf_sink_node();      // hf:// → HfSink
+    fn test_non_hf_url_creates_file_sink_node(); // local → FileSink
+    fn test_hf_url_with_revision();             // @revision syntax
+    fn test_hf_url_spaces_repo_type();          // hf://spaces/
+    fn test_hf_url_options_parsing();           // HfSinkOptions::from_url()
+    fn test_invalid_hf_url_errors();            // Error handling
+}
+```
+
+**Run tests:**
+```bash
+cargo test -p polars-stream --features hf_sink,parquet hf_sink_integration_tests
+```
 
 ---
 
@@ -298,8 +313,8 @@ def test_streaming_upload(hf_test_repo):
 - [x] **Phase 1:** Foundation (4/4)
 - [x] **Phase 2:** Core Writer (3/3)
 - [x] **Phase 3:** LFS Protocol (4/4)
-- [ ] **Phase 4:** Streaming Integration (3/4) ← **Current**
-- [ ] **Phase 5:** Commit Coordination (0/2)
+- [x] **Phase 4:** Streaming Integration (4/4)
+- [ ] **Phase 5:** Commit Coordination (0/2) ← **Current**
 - [ ] **Phase 6:** Advanced Features (0/3)
 - [ ] **Phase 7:** Python Bindings (0/3)
 - [ ] **Phase 8:** Testing (0/4)
