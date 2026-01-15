@@ -1394,3 +1394,204 @@ pub fn lower_ir(
     let node_key = phys_sm.insert(PhysNode::new(output_schema, node_kind));
     Ok(PhysStream::first(node_key))
 }
+
+/// Integration tests for HfSink URL detection and node creation.
+///
+/// These tests verify that `hf://` URLs are correctly detected and routed to
+/// `PhysNodeKind::HfSink` during physical plan lowering.
+#[cfg(all(test, feature = "hf_sink", feature = "parquet"))]
+mod hf_sink_integration_tests {
+    use std::sync::Arc;
+
+    use polars_core::datatypes::InitHashMaps;
+    use polars_core::frame::DataFrame;
+    use polars_core::prelude::{Column, DataType, Field, IntoColumn, NamedFrom, Schema};
+    use polars_core::series::Series;
+    use polars_io::prelude::ParquetWriteOptions;
+    use polars_plan::dsl::{FileSinkOptions, SinkTypeIR, UnifiedSinkArgs};
+    use polars_plan::plans::IR;
+    use polars_plan::prelude::{FileWriteFormat, SinkTarget};
+    use polars_utils::arena::Arena;
+    use polars_utils::pl_path::PlRefPath;
+
+    use super::*;
+
+    /// Helper to create a minimal schema for testing.
+    fn test_schema() -> Arc<Schema> {
+        Arc::new(Schema::from_iter([Field::new("id".into(), DataType::Int64)]))
+    }
+
+    /// Helper to create a DataFrame scan IR node.
+    fn create_df_scan_ir(schema: Arc<Schema>, ir_arena: &mut Arena<IR>) -> Node {
+        let series: Series = Series::new("id".into(), &[1i64]);
+        let col: Column = series.into_column();
+        let df = DataFrame::new_infer_height(vec![col]).unwrap();
+        ir_arena.add(IR::DataFrameScan {
+            df: Arc::new(df),
+            schema,
+            output_schema: None,
+        })
+    }
+
+    /// Helper to create a file sink IR node with the given URL.
+    fn create_file_sink_ir(url: &str, input: Node, ir_arena: &mut Arena<IR>) -> Node {
+        let target = SinkTarget::Path(PlRefPath::from(url));
+        let options = FileSinkOptions {
+            target,
+            file_format: FileWriteFormat::Parquet(Arc::new(ParquetWriteOptions::default())),
+            unified_sink_args: UnifiedSinkArgs::default(),
+        };
+        ir_arena.add(IR::Sink {
+            input,
+            payload: SinkTypeIR::File(options),
+        })
+    }
+
+    /// Helper to run lower_ir and return the PhysNodeKind.
+    fn lower_and_get_kind(
+        sink_node: Node,
+        ir_arena: &mut Arena<IR>,
+    ) -> PolarsResult<PhysNodeKind> {
+        let mut expr_arena = Arena::new();
+        let mut phys_sm = SlotMap::with_key();
+        let mut schema_cache = PlHashMap::new();
+        let mut expr_cache = ExprCache::with_capacity(0);
+        let mut cache_nodes = PlHashMap::new();
+        let ctx = StreamingLowerIRContext {
+            prepare_visualization: false,
+        };
+
+        let stream = lower_ir(
+            sink_node,
+            ir_arena,
+            &mut expr_arena,
+            &mut phys_sm,
+            &mut schema_cache,
+            &mut expr_cache,
+            &mut cache_nodes,
+            ctx,
+        )?;
+
+        // The stream's node should be the sink
+        let node_key = stream.node;
+        Ok(phys_sm[node_key].kind.clone())
+    }
+
+    #[test]
+    fn test_hf_url_creates_hf_sink_node() {
+        let schema = test_schema();
+        let mut ir_arena = Arena::new();
+
+        let input = create_df_scan_ir(schema, &mut ir_arena);
+        let sink = create_file_sink_ir(
+            "hf://datasets/user/test-repo/data/train.parquet",
+            input,
+            &mut ir_arena,
+        );
+
+        let kind = lower_and_get_kind(sink, &mut ir_arena).unwrap();
+        assert!(
+            matches!(kind, PhysNodeKind::HfSink { .. }),
+            "Expected HfSink for hf:// URL, got {:?}",
+            std::mem::discriminant(&kind)
+        );
+    }
+
+    #[test]
+    fn test_non_hf_url_creates_file_sink_node() {
+        let schema = test_schema();
+        let mut ir_arena = Arena::new();
+
+        // Test local file path
+        let input = create_df_scan_ir(schema.clone(), &mut ir_arena);
+        let sink = create_file_sink_ir("/tmp/output.parquet", input, &mut ir_arena);
+
+        let kind = lower_and_get_kind(sink, &mut ir_arena).unwrap();
+        assert!(
+            matches!(kind, PhysNodeKind::FileSink { .. }),
+            "Expected FileSink for local path, got {:?}",
+            std::mem::discriminant(&kind)
+        );
+
+        // Test file:// URL
+        let mut ir_arena2 = Arena::new();
+        let input2 = create_df_scan_ir(schema, &mut ir_arena2);
+        let sink2 = create_file_sink_ir("file:///tmp/output.parquet", input2, &mut ir_arena2);
+
+        let kind2 = lower_and_get_kind(sink2, &mut ir_arena2).unwrap();
+        assert!(
+            matches!(kind2, PhysNodeKind::FileSink { .. }),
+            "Expected FileSink for file:// URL, got {:?}",
+            std::mem::discriminant(&kind2)
+        );
+    }
+
+    #[test]
+    fn test_hf_url_with_revision() {
+        let schema = test_schema();
+        let mut ir_arena = Arena::new();
+
+        // URL with @revision syntax
+        let input = create_df_scan_ir(schema, &mut ir_arena);
+        let sink = create_file_sink_ir(
+            "hf://datasets/user/repo@refs/convert/parquet/data/train.parquet",
+            input,
+            &mut ir_arena,
+        );
+
+        let kind = lower_and_get_kind(sink, &mut ir_arena).unwrap();
+        assert!(
+            matches!(kind, PhysNodeKind::HfSink { .. }),
+            "Expected HfSink for hf:// URL with revision, got {:?}",
+            std::mem::discriminant(&kind)
+        );
+    }
+
+    #[test]
+    fn test_hf_url_spaces_repo_type() {
+        let schema = test_schema();
+        let mut ir_arena = Arena::new();
+
+        // hf://spaces/... URL
+        let input = create_df_scan_ir(schema, &mut ir_arena);
+        let sink = create_file_sink_ir(
+            "hf://spaces/user/my-app/data/output.parquet",
+            input,
+            &mut ir_arena,
+        );
+
+        let kind = lower_and_get_kind(sink, &mut ir_arena).unwrap();
+        assert!(
+            matches!(kind, PhysNodeKind::HfSink { .. }),
+            "Expected HfSink for hf://spaces/ URL, got {:?}",
+            std::mem::discriminant(&kind)
+        );
+    }
+
+    #[test]
+    fn test_hf_url_options_parsing() {
+        // Test that HfSinkOptions::from_url() correctly parses URLs
+        use polars_io::cloud::hf::HfSinkOptions;
+
+        let url = "hf://datasets/username/my-dataset@dev/data/train";
+        let options = HfSinkOptions::from_url(url).unwrap();
+
+        assert_eq!(options.repo_id, "username/my-dataset");
+        assert_eq!(options.revision, Some("dev".to_string()));
+        assert_eq!(options.path_in_repo, "data/train");
+    }
+
+    #[test]
+    fn test_invalid_hf_url_errors() {
+        // Test that invalid HF URLs produce errors (during graph conversion, not lowering)
+        use polars_io::cloud::hf::HfSinkOptions;
+
+        // Missing repo path
+        let result = HfSinkOptions::from_url("hf://datasets/");
+        assert!(result.is_err(), "Expected error for missing repo");
+
+        // Invalid bucket type
+        let result = HfSinkOptions::from_url("hf://invalid/user/repo/file.parquet");
+        assert!(result.is_err(), "Expected error for invalid bucket");
+    }
+}
