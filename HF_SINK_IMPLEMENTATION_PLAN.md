@@ -28,10 +28,10 @@ This document outlines the implementation plan for native HF Hub write support i
 
 **Next Step:** Task 4.4.2 - Add URL detection in lower_ir.rs (second of 4 subtasks in Task 4.4)
 
-**Local Commits (39 total):**
+**Local Commits (41 total):**
 - Branch: `feature/hf-hub-sink`
-- Status: 39 commits ahead of origin (not yet pushed)
-- Latest: `fix(hf-sink): resolve API compatibility errors in polars-stream (Task 4.2.7)`
+- Status: 41 commits ahead of origin (not yet pushed)
+- Latest: `feat(hf-sink): add PhysNodeKind::HfSink variant (Task 4.4.1)`
 
 ---
 
