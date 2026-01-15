@@ -1888,6 +1888,7 @@ Track work sessions here:
 | 2026-01-15 | 4.2.3 | Complete | Implemented `upload_shard_task()` for async shard uploads to HF Hub. Added imports for `LfsClient`, `UploadExecutor`, `polars_core::config`. Function receives `FinishedShard` from buffer task via channel, requests upload URLs via `lfs_client.request_upload()`, uploads via `upload_executor.upload()`, handles multipart completion via `lfs_client.complete_multipart()`, sends `ShardCompletion` to coordinator. Uses `TaskPriority::Low` for I/O-bound work. Verbose logging for debugging. 3 new unit tests for types and compilation. Code passes rustfmt. |
 | 2026-01-15 | 4.2.4 | Complete | Wired up `spawn_sink()` and `initialize()` methods in HfSinkNode. Added 3 new fields to struct: `shard_tx`, `completion_rx`, `upload_task`. `initialize()` resolves HF token via `get_hf_token()`, creates `LfsClient` and `UploadExecutor`, creates channels via `connector::<T>()`, spawns `upload_shard_task()`. `spawn_sink()` takes `shard_tx` and spawns `buffer_and_write_task()`. Fixed FallibleStreamingIterator import in shard_writer.rs. Code passes rustfmt. Full build blocked by upstream GroupsIndicator issue. |
 | 2026-01-15 | 4.2.5 | Complete | Implemented `finalize()` for atomic commit. Method awaits `upload_task` completion, collects all `ShardCompletion` from `completion_rx`, creates `CommitClient`, builds `CommitOperationAdd` for each shard, executes atomic commit via `create_commit()`. Handles empty dataset case (no shards). Logs verbose output on success with commit URL and optional PR URL. Added import for `CommitClient`, `CommitOperation`, `CommitOperationAdd`. Code passes rustfmt. **Task 4.2 (Shard Writer Task) complete!** |
+| 2026-01-15 | Fix upstream | Complete | Fixed upstream polars-core feature-gating bugs blocking HF sink build. Two issues: (1) `GroupsIndicator` used without feature gate, (2) `ChunkUnique::unique_id` used without feature gate. Applied minimal fixes: added `#[cfg(feature = "algorithm_group_by")]` gates and default trait impl. 9 files modified. Commit `5b774a6324`. `cargo check -p polars-io --features hf_sink` now passes. |
 
 ---
 
@@ -1920,25 +1921,17 @@ Track work sessions here:
 
 ## Known Issues
 
-### Upstream Build Issue (2026-01-14)
+### Upstream Build Issue (2026-01-14) - FIXED (2026-01-15)
 
-**Status**: Blocking `--features hf_sink` testing, but NOT blocking development.
+**Status**: ✅ **RESOLVED** - `cargo check -p polars-io --features hf_sink` now passes.
 
-The `cloud` feature (which `hf_sink` depends on) fails to build on upstream polars main:
+**Original Problem**: Feature-gating bugs in polars-core prevented building with `hf_sink` feature.
 
-```
-error[E0425]: cannot find type `GroupsIndicator` in this scope
---> crates/polars-core/src/frame/mod.rs:1214:57
-```
+**Fixes Applied** (commit `5b774a6324`):
+- Added `#[cfg(feature = "algorithm_group_by")]` to `gather_group_unchecked` and `unique_id` methods
+- Added default implementation to `SeriesTrait::unique_id()` for when feature is disabled
+- 9 files modified in `polars-core`
 
-**Root cause**: The `cloud` → `serde` → `polars-core/serde-lazy` feature chain enables code in `polars-core/src/frame/mod.rs` that references `GroupsIndicator`, but that type is not imported/defined when only `serde-lazy` is enabled.
-
-**Impact on HF sink work**:
-- ✅ `polars-core` builds fine
-- ✅ `polars-io` (without cloud features) builds fine
-- ❌ `polars-io --features cloud` fails
-- ❌ `polars-io --features hf_sink` fails (depends on cloud)
-
-**Workaround**: Continue developing HF sink code. Unit tests for individual components (HashingWriter, etc.) can run without the full `hf_sink` feature. Full integration testing requires upstream fix.
-
-**Next steps**: Monitor upstream or report issue to pola-rs/polars.
+**Current Status**:
+- ✅ `cargo check -p polars-io --features hf_sink` passes
+- ⚠️ HF sink test code has some API compatibility issues (separate from this fix)
