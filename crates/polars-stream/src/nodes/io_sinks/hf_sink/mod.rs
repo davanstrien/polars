@@ -17,10 +17,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
+use polars_core::config;
 use polars_core::frame::DataFrame;
 use polars_core::prelude::CompatLevel;
 use polars_core::schema::SchemaRef;
 use polars_error::{PolarsResult, polars_err};
+use polars_io::cloud::hf::lfs::client::LfsClient;
+use polars_io::cloud::hf::lfs::upload::UploadExecutor;
 use polars_io::cloud::hf::options::HfSinkOptions;
 use polars_io::cloud::hf::shard_writer::{FinishedShard, HfShardWriter};
 use polars_io::schema_to_arrow_checked;
@@ -366,6 +369,95 @@ fn buffer_and_write_task(
                 // Send final shard for upload
                 let _ = shard_tx.send(finished).await;
             }
+        }
+
+        PolarsResult::Ok(())
+    })
+}
+
+/// Spawn a task that receives finished shards and uploads them to HF Hub.
+///
+/// This task:
+/// 1. Receives `FinishedShard` from buffer_and_write_task via channel
+/// 2. Requests upload URLs from LFS API
+/// 3. Uploads data to presigned S3 URLs
+/// 4. Sends `ShardCompletion` to coordinator for atomic commit
+///
+/// # Arguments
+/// * `shard_rx` - Receiver for finished shards (from buffer_and_write_task)
+/// * `completion_tx` - Sender for upload completions (to coordinator)
+/// * `path_in_repo` - Base path in repository (e.g., "data")
+/// * `split` - Split name (e.g., "train")
+/// * `lfs_client` - LFS client for requesting upload URLs
+/// * `upload_executor` - Executor for uploading data
+///
+/// # Errors
+/// Returns an error if:
+/// - LFS API request fails
+/// - Upload fails after retries
+/// - Completion channel is closed
+#[allow(dead_code)]
+fn upload_shard_task(
+    shard_rx: Receiver<FinishedShard>,
+    completion_tx: Sender<ShardCompletion>,
+    path_in_repo: String,
+    split: String,
+    lfs_client: LfsClient,
+    upload_executor: UploadExecutor,
+) -> JoinHandle<PolarsResult<()>> {
+    spawn(TaskPriority::Low, async move {
+        let mut shard_rx = shard_rx;
+        let mut shard_index = 0usize;
+
+        while let Ok(finished_shard) = shard_rx.recv().await {
+            // Log upload start if verbose
+            if config::verbose() {
+                eprintln!(
+                    "HF sink: uploading shard {} ({} bytes, {} rows)",
+                    shard_index, finished_shard.size, finished_shard.num_rows
+                );
+            }
+
+            // 1. Generate path for this shard
+            let path = shard_path(&path_in_repo, &split, shard_index);
+
+            // 2. Request upload URL from LFS
+            let transfer = lfs_client
+                .request_upload(&finished_shard.sha256, finished_shard.size)
+                .await?;
+
+            // 3. Upload data (handles AlreadyExists, Basic, Multipart)
+            let maybe_completions = upload_executor
+                .upload(finished_shard.buffer, transfer, &finished_shard.sha256)
+                .await?;
+
+            // 4. Complete multipart if needed
+            if let Some(completions) = maybe_completions {
+                lfs_client
+                    .complete_multipart(&finished_shard.sha256, completions)
+                    .await?;
+            }
+
+            // 5. Create and send completion
+            let completion = ShardCompletion {
+                index: shard_index,
+                path_in_repo: path,
+                sha256: finished_shard.sha256,
+                size: finished_shard.size,
+                num_rows: finished_shard.num_rows,
+            };
+
+            completion_tx
+                .send(completion)
+                .await
+                .map_err(|_| polars_err!(ComputeError: "completion channel closed unexpectedly"))?;
+
+            // Log upload complete if verbose
+            if config::verbose() {
+                eprintln!("HF sink: shard {} uploaded successfully", shard_index);
+            }
+
+            shard_index += 1;
         }
 
         PolarsResult::Ok(())
@@ -728,5 +820,66 @@ mod tests {
         assert_eq!(DEFAULT_CHUNK_SIZE, 256 * 1024); // 256K rows
         assert_eq!(DEFAULT_SHARD_ROWS, 500_000); // 500K rows
         assert_eq!(COMPLETION_CHANNEL_SIZE, 16); // 16 shards buffer
+    }
+
+    // ========================================================================
+    // Tests for Task 4.2.3: upload_shard_task
+    // ========================================================================
+
+    #[test]
+    fn test_upload_task_types_available() {
+        // Verify that the LFS client and upload executor types are importable
+        // and that upload_shard_task signature compiles correctly.
+        // This is a compile-time check - the function exists and types align.
+        fn _assert_types_compile(
+            shard_rx: Receiver<FinishedShard>,
+            completion_tx: Sender<ShardCompletion>,
+            path_in_repo: String,
+            split: String,
+            lfs_client: LfsClient,
+            upload_executor: UploadExecutor,
+        ) -> JoinHandle<PolarsResult<()>> {
+            upload_shard_task(
+                shard_rx,
+                completion_tx,
+                path_in_repo,
+                split,
+                lfs_client,
+                upload_executor,
+            )
+        }
+        // If this compiles, the test passes
+    }
+
+    #[test]
+    fn test_shard_path_for_upload() {
+        // Test that shard_path generates correct paths for upload task
+        // This is the same function used by both buffer_and_write_task and upload_shard_task
+        let path = shard_path("data", "train", 0);
+        assert_eq!(path, "data/train-00000.parquet");
+
+        let path = shard_path("output/processed", "validation", 15);
+        assert_eq!(path, "output/processed/validation-00015.parquet");
+    }
+
+    #[test]
+    fn test_shard_completion_fields_for_upload() {
+        // Verify ShardCompletion has all fields needed for commit operations
+        let completion = ShardCompletion {
+            index: 5,
+            path_in_repo: "data/train-00005.parquet".to_string(),
+            sha256: "abc123def456".repeat(5) + "abcd", // 64 chars
+            size: 500_000_000,                         // 500MB
+            num_rows: 1_000_000,
+        };
+
+        // These are the fields needed by CommitOperationAdd
+        assert_eq!(completion.path_in_repo, "data/train-00005.parquet");
+        assert_eq!(completion.sha256.len(), 64); // SHA256 hex length
+        assert_eq!(completion.size, 500_000_000);
+
+        // Also verify index and rows are tracked for metrics
+        assert_eq!(completion.index, 5);
+        assert_eq!(completion.num_rows, 1_000_000);
     }
 }
