@@ -1808,14 +1808,14 @@ Phase 9 (Documentation)
   - [x] 3.3 Upload Executor (2026-01-14)
   - [x] 3.4 Commit API Client (2026-01-15)
 
-- [ ] **Phase 4: Streaming Integration** (1/4 tasks)
+- [ ] **Phase 4: Streaming Integration** (2/4 tasks)
   - [x] 4.1 HfSinkNode Skeleton (2026-01-15) - Minimal skeleton
-  - [ ] 4.2 Shard Writer Task (re-scoped, combines original 4.2+4.3) - In Progress
+  - [x] 4.2 Shard Writer Task (re-scoped, combines original 4.2+4.3) - Complete (2026-01-15)
     - [x] 4.2.1 Define types and state (ShardCompletion, WriterState, shard_path) (2026-01-15)
     - [x] 4.2.2 Implement buffer_and_write_task() (2026-01-15)
     - [x] 4.2.3 Implement upload_shard_task() (2026-01-15)
     - [x] 4.2.4 Wire up spawn_sink() (2026-01-15)
-    - [ ] 4.2.5 Implement finalize() for atomic commit
+    - [x] 4.2.5 Implement finalize() for atomic commit (2026-01-15)
   - [ ] 4.3 (Merged into 4.2)
   - [ ] 4.4 IOSinkNode Integration
 
@@ -1887,6 +1887,7 @@ Track work sessions here:
 | 2026-01-15 | 4.2.2 | Complete | Implemented `buffer_and_write_task()` for streaming DataFrame→Parquet→HF shards. Added imports for Arrow/Parquet types. Created 3 helper functions: `df_to_record_batch()` (DataFrame→Arrow), `create_shard_writer()` (schema→HfShardWriter), `should_rotate_shard()` (row-based shard rotation). Main function buffers morsels until chunk_size (256K rows), writes to HfShardWriter, rotates shards at max_shard_rows (500K default), sends FinishedShard to upload channel with fail-fast error handling. Added `DEFAULT_SHARD_ROWS` constant. 4 new unit tests for should_rotate_shard and constants. Code passes rustfmt. |
 | 2026-01-15 | 4.2.3 | Complete | Implemented `upload_shard_task()` for async shard uploads to HF Hub. Added imports for `LfsClient`, `UploadExecutor`, `polars_core::config`. Function receives `FinishedShard` from buffer task via channel, requests upload URLs via `lfs_client.request_upload()`, uploads via `upload_executor.upload()`, handles multipart completion via `lfs_client.complete_multipart()`, sends `ShardCompletion` to coordinator. Uses `TaskPriority::Low` for I/O-bound work. Verbose logging for debugging. 3 new unit tests for types and compilation. Code passes rustfmt. |
 | 2026-01-15 | 4.2.4 | Complete | Wired up `spawn_sink()` and `initialize()` methods in HfSinkNode. Added 3 new fields to struct: `shard_tx`, `completion_rx`, `upload_task`. `initialize()` resolves HF token via `get_hf_token()`, creates `LfsClient` and `UploadExecutor`, creates channels via `connector::<T>()`, spawns `upload_shard_task()`. `spawn_sink()` takes `shard_tx` and spawns `buffer_and_write_task()`. Fixed FallibleStreamingIterator import in shard_writer.rs. Code passes rustfmt. Full build blocked by upstream GroupsIndicator issue. |
+| 2026-01-15 | 4.2.5 | Complete | Implemented `finalize()` for atomic commit. Method awaits `upload_task` completion, collects all `ShardCompletion` from `completion_rx`, creates `CommitClient`, builds `CommitOperationAdd` for each shard, executes atomic commit via `create_commit()`. Handles empty dataset case (no shards). Logs verbose output on success with commit URL and optional PR URL. Added import for `CommitClient`, `CommitOperation`, `CommitOperationAdd`. Code passes rustfmt. **Task 4.2 (Shard Writer Task) complete!** |
 
 ---
 

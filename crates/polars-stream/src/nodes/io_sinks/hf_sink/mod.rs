@@ -22,6 +22,7 @@ use polars_core::frame::DataFrame;
 use polars_core::prelude::CompatLevel;
 use polars_core::schema::SchemaRef;
 use polars_error::{PolarsResult, polars_err};
+use polars_io::cloud::hf::commit::{CommitClient, CommitOperation, CommitOperationAdd};
 use polars_io::cloud::hf::get_hf_token;
 use polars_io::cloud::hf::lfs::client::LfsClient;
 use polars_io::cloud::hf::lfs::upload::UploadExecutor;
@@ -620,17 +621,92 @@ impl SinkNode for HfSinkNode {
         &mut self,
         _state: &StreamingExecutionState,
     ) -> Option<Pin<Box<dyn Future<Output = PolarsResult<()>> + Send>>> {
-        // TODO (Task 4.2.5): Execute atomic commit
-        //
-        // Implementation steps:
-        // 1. Take upload_task and await its completion
-        // 2. Collect all ShardCompletions from completion_rx
-        // 3. Create CommitClient with options
-        // 4. Build commit operations from ShardCompletions
-        // 5. Execute atomic commit via commit_client.create_commit()
-        //
-        // For now, return None - the upload task will complete but no commit happens
-        None
+        // 1. Take upload task handle - must be awaited before collecting completions
+        let upload_task = self.upload_task.take()?;
+
+        // 2. Take completion receiver - used to collect all shard completions
+        let completion_rx = self.completion_rx.take()?;
+
+        // 3. Clone options for use in async block (Arc clone is cheap)
+        let options = Arc::clone(&self.options);
+
+        Some(Box::pin(async move {
+            // Step A: Wait for upload task to complete
+            // This ensures all shards are uploaded before we commit
+            upload_task.await?;
+
+            // Step B: Collect all ShardCompletions from the channel
+            let mut completions = Vec::new();
+            let mut completion_rx = completion_rx;
+            while let Ok(completion) = completion_rx.recv().await {
+                completions.push(completion);
+            }
+
+            // Step C: Early return if no shards were written
+            if completions.is_empty() {
+                if config::verbose() {
+                    eprintln!("HF sink: no shards to commit (empty dataset)");
+                }
+                return Ok(());
+            }
+
+            // Step D: Resolve token for commit (required for write access)
+            let token = get_hf_token(options.token.as_deref(), true)?
+                .expect("token required=true guarantees Some");
+
+            // Step E: Create CommitClient
+            let commit_client = CommitClient::new(
+                options.repo_type.as_str(),
+                &options.repo_id,
+                &options.effective_revision(),
+                token,
+            )?;
+
+            // Step F: Build commit operations from ShardCompletions
+            let operations: Vec<CommitOperation> = completions
+                .iter()
+                .map(|c| {
+                    CommitOperation::Add(CommitOperationAdd {
+                        path_in_repo: c.path_in_repo.clone(),
+                        oid: c.sha256.clone(),
+                        size: c.size,
+                    })
+                })
+                .collect();
+
+            // Step G: Build commit message
+            let total_rows: usize = completions.iter().map(|c| c.num_rows).sum();
+            let total_bytes: u64 = completions.iter().map(|c| c.size).sum();
+            let summary = options
+                .commit_message
+                .clone()
+                .unwrap_or_else(|| "Upload via Polars".to_string());
+            let description = format!(
+                "Uploaded {} shard(s) with {} rows ({:.2} MB)",
+                operations.len(),
+                total_rows,
+                total_bytes as f64 / (1024.0 * 1024.0)
+            );
+
+            // Step H: Execute atomic commit
+            let commit_info = commit_client
+                .create_commit(&summary, Some(&description), &operations, options.create_pr)
+                .await?;
+
+            // Step I: Log success
+            if config::verbose() {
+                eprintln!(
+                    "HF sink: committed {} shards to {}",
+                    operations.len(),
+                    commit_info.commit_url
+                );
+                if let Some(pr_url) = &commit_info.pr_url {
+                    eprintln!("HF sink: created PR at {}", pr_url);
+                }
+            }
+
+            Ok(())
+        }))
     }
 
     fn get_metrics(&self) -> PolarsResult<Option<super::metrics::WriteMetrics>> {
