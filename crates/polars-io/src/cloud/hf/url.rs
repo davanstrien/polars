@@ -15,7 +15,7 @@ pub(crate) const HF_PATH_ENCODE_CHARSET: &percent_encoding::AsciiSet =
     &URL_ENCODE_CHARSET.remove(b'/');
 
 #[derive(Debug, PartialEq)]
-pub(crate) struct HFPathParts {
+pub struct HFPathParts {
     pub bucket: String,
     pub repository: String,
     pub revision: String,
@@ -23,7 +23,7 @@ pub(crate) struct HFPathParts {
     pub path: String,
 }
 
-pub(crate) struct HFRepoLocation {
+pub struct HFRepoLocation {
     /// Repository bucket type: "datasets", "spaces", or "models"
     bucket: String,
     /// Repository ID: "user/repo" or "org/repo"

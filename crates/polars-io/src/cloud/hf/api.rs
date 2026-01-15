@@ -122,7 +122,7 @@ pub struct ExistingFile {
 ///
 /// # Returns
 /// A vector of `ExistingFile` entries for all files under the path.
-pub(crate) async fn list_existing_files(
+pub async fn list_existing_files(
     client: &reqwest::Client,
     repo_location: &HFRepoLocation,
     path_prefix: &str,
@@ -149,6 +149,49 @@ pub(crate) async fn list_existing_files(
     }
 
     Ok(files)
+}
+
+/// High-level helper to check existing files without requiring external HTTP client.
+///
+/// Creates its own HTTP client with appropriate auth headers and calls
+/// `list_existing_files`. This is the preferred entry point from polars-stream
+/// which doesn't have direct reqwest access.
+///
+/// # Arguments
+/// * `repo_type` - Repository bucket type ("datasets", "models", "spaces")
+/// * `repo_id` - Repository ID ("user/repo" or "org/repo")
+/// * `revision` - Git revision ("main", "refs/convert/parquet", etc.)
+/// * `path_prefix` - Path prefix to check (e.g., "data/train")
+/// * `token` - Optional HF API token for private repos
+pub async fn check_existing_files(
+    repo_type: &str,
+    repo_id: &str,
+    revision: &str,
+    path_prefix: &str,
+    token: Option<&str>,
+) -> PolarsResult<Vec<ExistingFile>> {
+    use crate::cloud::options::USER_AGENT;
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(token) = token {
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token))
+                .map_err(to_compute_err)?,
+        );
+    }
+
+    let client = reqwest::ClientBuilder::new()
+        .user_agent(USER_AGENT)
+        .http1_only()
+        .https_only(true)
+        .default_headers(headers)
+        .build()
+        .map_err(to_compute_err)?;
+
+    let repo_location = HFRepoLocation::new(repo_type, repo_id, revision);
+
+    list_existing_files(&client, &repo_location, path_prefix).await
 }
 
 #[cfg(test)]

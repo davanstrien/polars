@@ -21,12 +21,12 @@ use polars_core::config;
 use polars_core::frame::DataFrame;
 use polars_core::prelude::CompatLevel;
 use polars_core::schema::SchemaRef;
-use polars_error::{PolarsResult, polars_err};
+use polars_error::{PolarsResult, polars_bail, polars_err};
 use polars_io::cloud::hf::commit::{CommitClient, CommitOperation, CommitOperationAdd};
-use polars_io::cloud::hf::get_hf_token;
+use polars_io::cloud::hf::{check_existing_files, get_hf_token};
 use polars_io::cloud::hf::lfs::client::LfsClient;
 use polars_io::cloud::hf::lfs::upload::UploadExecutor;
-use polars_io::cloud::hf::options::HfSinkOptions;
+use polars_io::cloud::hf::options::{HfSinkOptions, HfWriteMode};
 use polars_io::cloud::hf::shard_writer::{FinishedShard, HfShardWriter};
 use polars_io::schema_to_arrow_checked;
 use polars_parquet::write::{
@@ -652,6 +652,33 @@ impl SinkNode for HfSinkNode {
                     eprintln!("HF sink: no shards to commit (empty dataset)");
                 }
                 return Ok(());
+            }
+
+            // Step C.5: Mode check for ErrorIfExists
+            // Check if files already exist at target path and fail early if mode forbids it
+            if options.mode == HfWriteMode::ErrorIfExists {
+                // Get token for API call (read access may work without token for public repos,
+                // but we'll need it anyway for the commit, so resolve it now)
+                let token = get_hf_token(options.token.as_deref(), false)?;
+
+                let existing = check_existing_files(
+                    options.repo_type.as_str(),
+                    &options.repo_id,
+                    &options.effective_revision(),
+                    &options.path_in_repo,
+                    token.as_deref(),
+                )
+                .await?;
+
+                if !existing.is_empty() {
+                    polars_bail!(
+                        ComputeError:
+                        "HF sink: {} file(s) already exist at path '{}' (mode=ErrorIfExists). \
+                        Use HfWriteMode::Overwrite to replace or HfWriteMode::Append to add new shards.",
+                        existing.len(),
+                        options.path_in_repo
+                    );
+                }
             }
 
             // Step D: Resolve token for commit (required for write access)

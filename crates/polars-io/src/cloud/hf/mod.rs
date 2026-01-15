@@ -9,8 +9,7 @@ mod url;
 // Re-export for use by path_utils
 pub use glob::expand_paths_hf;
 // Re-exported for future write support (Task 1.3+)
-#[allow(unused_imports)]
-pub(crate) use url::{HFPathParts, HFRepoLocation};
+pub use url::{HFPathParts, HFRepoLocation};
 
 // Write support (gated by hf_sink feature)
 #[cfg(feature = "hf_sink")]
@@ -50,4 +49,4 @@ pub mod commit;
 pub use commit::{CommitOperation, CommitOperationAdd, CommitOperationDelete};
 // API utilities for mode handling (list existing files)
 #[cfg(feature = "hf_sink")]
-pub(crate) use api::{ExistingFile, list_existing_files};
+pub use api::{ExistingFile, check_existing_files, list_existing_files};
