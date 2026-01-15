@@ -1125,7 +1125,7 @@ pub struct CommitInfo {
 - Constructor methods: `NdjsonHeader::new()`, `NdjsonLfsFile::from_add()`, `NdjsonDeletedFile::new()`, `NdjsonDeletedFolder::new()`
 - 5 unit tests for serialization (test exact JSON output matches HF API format)
 
-**3.4.4: Implement CommitClient struct** [ ]
+**3.4.4: Implement CommitClient struct** ✅
 ```rust
 pub struct CommitClient {
     client: reqwest::Client,
@@ -1134,6 +1134,8 @@ pub struct CommitClient {
 }
 ```
 - Use same patterns as LfsClient (reqwest builder, USER_AGENT, https_only)
+- Constructor: `new(bucket, repo_id, revision, token) -> PolarsResult<Self>`
+- 3 unit tests for constructor (basic, various repo types, special revision)
 
 **3.4.5: Implement build_ndjson_payload()** [ ]
 - Build Vec<u8> with header line + operation lines
@@ -1840,6 +1842,7 @@ Track work sessions here:
 | 2026-01-14 | 3.4.1 | Complete | Started Commit API Client (Sub-task 3.4.1). Created `commit.rs` with operation types: `CommitOperationAdd`, `CommitOperationDelete`, `CommitOperation` enum. Added `is_folder()` helper method, `From` impls, and `to_compute_err` helper. Added module to `mod.rs` (feature-gated). 5 unit tests. Updated Task 3.4 in plan with granular sub-task breakdown (3.4.1-3.4.8). |
 | 2026-01-15 | 3.4.2 | Complete | Added `CommitInfo` response type to `commit.rs`. Struct has 5 fields: `commit_url`, `oid`, `pr_url`, `pr_num`, `pr_revision` with appropriate serde renames for HF API camelCase fields. Added 3 unit tests for deserialization (basic, with PR, partial PR fields). Code passes rustfmt. |
 | 2026-01-15 | 3.4.3 | Complete | Added NDJSON serialization types for commit API. Created `NdjsonHeader`/`HeaderValue`, `NdjsonLfsFile`/`LfsFileValue`, `NdjsonDeletedFile`, `NdjsonDeletedFolder`, `DeletedValue` structs. Added constructor methods: `new()` for header/deletes, `from_add()` for LFS files. 5 unit tests verifying exact JSON output matches HF API format. Code passes rustfmt. Tests blocked by upstream polars-core build issue. |
+| 2026-01-15 | 3.4.4 | Complete | Implemented `CommitClient` struct following `LfsClient` pattern. Added imports for reqwest headers, USER_AGENT, HFRepoLocation. Struct has `client`, `repo_location`, `token` fields. Constructor `new(bucket, repo_id, revision, token)` builds reqwest client with user_agent, http1_only, https_only. 3 unit tests for constructor. Code passes rustfmt. |
 
 ---
 

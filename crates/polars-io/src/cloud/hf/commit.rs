@@ -4,7 +4,11 @@
 //! repositories, supporting LFS file additions and deletions.
 
 use polars_error::PolarsResult;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
+
+use crate::cloud::hf::url::HFRepoLocation;
+use crate::cloud::options::USER_AGENT;
 
 /// Convert any error to a PolarsError (ComputeError variant).
 #[allow(dead_code)]
@@ -205,6 +209,59 @@ pub(crate) struct DeletedValue {
     path: String,
 }
 
+// ============================================================================
+// Commit Client
+// ============================================================================
+
+/// Client for creating atomic commits on HF Hub repositories.
+///
+/// This client handles the NDJSON-formatted commit API, which allows
+/// atomic commits of multiple LFS file additions and deletions.
+pub struct CommitClient {
+    #[allow(dead_code)]
+    client: reqwest::Client,
+    #[allow(dead_code)]
+    repo_location: HFRepoLocation,
+    #[allow(dead_code)]
+    token: String,
+}
+
+impl CommitClient {
+    /// Create a new CommitClient for the specified repository.
+    ///
+    /// # Arguments
+    /// * `bucket` - Repository type ("datasets", "models", or "spaces")
+    /// * `repo_id` - Repository ID in format "user/repo" or "org/repo"
+    /// * `revision` - Branch or commit to target (e.g., "main")
+    /// * `token` - HF Hub authentication token
+    ///
+    /// # Example
+    /// ```ignore
+    /// let client = CommitClient::new("datasets", "user/my-dataset", "main", "hf_xxx")?;
+    /// ```
+    pub fn new(
+        bucket: &str,
+        repo_id: &str,
+        revision: &str,
+        token: impl Into<String>,
+    ) -> PolarsResult<Self> {
+        let client = reqwest::ClientBuilder::new()
+            .user_agent(USER_AGENT)
+            .http1_only()
+            .https_only(true)
+            .build()
+            .map_err(to_compute_err)?;
+
+        let repo_location = HFRepoLocation::new(bucket, repo_id, revision);
+
+        Ok(Self {
+            client,
+            repo_location,
+            token: token.into(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,5 +424,30 @@ mod tests {
             json,
             r#"{"key":"deletedFolder","value":{"path":"data/previous_version/"}}"#
         );
+    }
+
+    // ========================================================================
+    // CommitClient Tests
+    // ========================================================================
+
+    #[test]
+    fn test_commit_client_creation() {
+        let client = CommitClient::new("datasets", "user/repo", "main", "test_token");
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_commit_client_various_repo_types() {
+        // Test with different bucket types
+        assert!(CommitClient::new("datasets", "user/repo", "main", "token").is_ok());
+        assert!(CommitClient::new("models", "org/model", "main", "token").is_ok());
+        assert!(CommitClient::new("spaces", "user/space", "dev", "token").is_ok());
+    }
+
+    #[test]
+    fn test_commit_client_with_special_revision() {
+        // Test with a revision that needs URL encoding
+        let client = CommitClient::new("datasets", "user/repo", "refs/convert/parquet", "token");
+        assert!(client.is_ok());
     }
 }
