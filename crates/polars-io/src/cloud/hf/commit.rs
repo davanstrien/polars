@@ -4,7 +4,7 @@
 //! repositories, supporting LFS file additions and deletions.
 
 use polars_error::PolarsResult;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Convert any error to a PolarsError (ComputeError variant).
 #[allow(dead_code)]
@@ -91,6 +91,118 @@ pub struct CommitInfo {
     /// PR revision/branch name if `create_pr=true` was used (e.g., "refs/pr/42")
     #[serde(rename = "prRevision")]
     pub pr_revision: Option<String>,
+}
+
+// ============================================================================
+// NDJSON Serialization Types
+// ============================================================================
+
+/// NDJSON header line for commit.
+///
+/// Format: `{"key":"header","value":{"summary":"...","description":"..."}}`
+#[derive(Debug, Serialize)]
+pub(crate) struct NdjsonHeader {
+    key: &'static str,
+    value: HeaderValue,
+}
+
+/// Value object for the header NDJSON line.
+#[derive(Debug, Serialize)]
+pub(crate) struct HeaderValue {
+    summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+impl NdjsonHeader {
+    /// Create a new header line with summary and optional description.
+    pub fn new(summary: impl Into<String>, description: Option<String>) -> Self {
+        Self {
+            key: "header",
+            value: HeaderValue {
+                summary: summary.into(),
+                description,
+            },
+        }
+    }
+}
+
+/// NDJSON line for LFS file addition.
+///
+/// Format: `{"key":"lfsFile","value":{"path":"...","algo":"sha256","oid":"...","size":...}}`
+#[derive(Debug, Serialize)]
+pub(crate) struct NdjsonLfsFile {
+    key: &'static str,
+    value: LfsFileValue,
+}
+
+/// Value object for the lfsFile NDJSON line.
+#[derive(Debug, Serialize)]
+pub(crate) struct LfsFileValue {
+    path: String,
+    algo: &'static str,
+    oid: String,
+    size: u64,
+}
+
+impl NdjsonLfsFile {
+    /// Create an NDJSON line from a CommitOperationAdd.
+    pub fn from_add(add: &CommitOperationAdd) -> Self {
+        Self {
+            key: "lfsFile",
+            value: LfsFileValue {
+                path: add.path_in_repo.clone(),
+                algo: "sha256",
+                oid: add.oid.clone(),
+                size: add.size,
+            },
+        }
+    }
+}
+
+/// NDJSON line for file deletion.
+///
+/// Format: `{"key":"deletedFile","value":{"path":"..."}}`
+#[derive(Debug, Serialize)]
+pub(crate) struct NdjsonDeletedFile {
+    key: &'static str,
+    value: DeletedValue,
+}
+
+impl NdjsonDeletedFile {
+    /// Create a new deleted file line.
+    pub fn new(path: impl Into<String>) -> Self {
+        Self {
+            key: "deletedFile",
+            value: DeletedValue { path: path.into() },
+        }
+    }
+}
+
+/// NDJSON line for folder deletion.
+///
+/// Format: `{"key":"deletedFolder","value":{"path":".../"}}` (trailing slash required)
+#[derive(Debug, Serialize)]
+pub(crate) struct NdjsonDeletedFolder {
+    key: &'static str,
+    value: DeletedValue,
+}
+
+impl NdjsonDeletedFolder {
+    /// Create a new deleted folder line.
+    /// Note: The path should include a trailing slash.
+    pub fn new(path: impl Into<String>) -> Self {
+        Self {
+            key: "deletedFolder",
+            value: DeletedValue { path: path.into() },
+        }
+    }
+}
+
+/// Shared value object for deleted file/folder NDJSON lines.
+#[derive(Debug, Serialize)]
+pub(crate) struct DeletedValue {
+    path: String,
 }
 
 #[cfg(test)]
@@ -193,5 +305,67 @@ mod tests {
         assert_eq!(info.pr_num, Some(5));
         assert!(info.pr_url.is_none());
         assert!(info.pr_revision.is_none());
+    }
+
+    // ========================================================================
+    // NDJSON Serialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_ndjson_header_serialize() {
+        let header =
+            NdjsonHeader::new("Upload via Polars", Some("Batch upload of 2 shards".into()));
+        let json = serde_json::to_string(&header).unwrap();
+        assert_eq!(
+            json,
+            r#"{"key":"header","value":{"summary":"Upload via Polars","description":"Batch upload of 2 shards"}}"#
+        );
+    }
+
+    #[test]
+    fn test_ndjson_header_no_description() {
+        let header = NdjsonHeader::new("Simple commit", None);
+        let json = serde_json::to_string(&header).unwrap();
+        // description should be omitted, not null
+        assert_eq!(
+            json,
+            r#"{"key":"header","value":{"summary":"Simple commit"}}"#
+        );
+        assert!(!json.contains("description"));
+    }
+
+    #[test]
+    fn test_ndjson_lfs_file_serialize() {
+        let add = CommitOperationAdd {
+            path_in_repo: "data/train-00000.parquet".into(),
+            oid: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
+            size: 5242880,
+        };
+        let lfs_file = NdjsonLfsFile::from_add(&add);
+        let json = serde_json::to_string(&lfs_file).unwrap();
+        assert_eq!(
+            json,
+            r#"{"key":"lfsFile","value":{"path":"data/train-00000.parquet","algo":"sha256","oid":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":5242880}}"#
+        );
+    }
+
+    #[test]
+    fn test_ndjson_deleted_file_serialize() {
+        let deleted = NdjsonDeletedFile::new("data/old_train.parquet");
+        let json = serde_json::to_string(&deleted).unwrap();
+        assert_eq!(
+            json,
+            r#"{"key":"deletedFile","value":{"path":"data/old_train.parquet"}}"#
+        );
+    }
+
+    #[test]
+    fn test_ndjson_deleted_folder_serialize() {
+        let deleted = NdjsonDeletedFolder::new("data/previous_version/");
+        let json = serde_json::to_string(&deleted).unwrap();
+        assert_eq!(
+            json,
+            r#"{"key":"deletedFolder","value":{"path":"data/previous_version/"}}"#
+        );
     }
 }

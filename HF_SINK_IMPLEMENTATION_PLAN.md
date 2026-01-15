@@ -1118,10 +1118,12 @@ pub struct CommitInfo {
 }
 ```
 
-**3.4.3: Define NDJSON serialization types** [ ]
+**3.4.3: Define NDJSON serialization types** ✅
 - `NdjsonHeader`, `HeaderValue` for commit header
 - `NdjsonLfsFile`, `LfsFileValue` for LFS file adds
 - `NdjsonDeletedFile`, `NdjsonDeletedFolder`, `DeletedValue` for deletes
+- Constructor methods: `NdjsonHeader::new()`, `NdjsonLfsFile::from_add()`, `NdjsonDeletedFile::new()`, `NdjsonDeletedFolder::new()`
+- 5 unit tests for serialization (test exact JSON output matches HF API format)
 
 **3.4.4: Implement CommitClient struct** [ ]
 ```rust
@@ -1837,6 +1839,7 @@ Track work sessions here:
 | 2026-01-14 | 3.3 | Complete | Implemented Upload Executor. Created `lfs/upload.rs` with `UploadExecutor` struct. Basic upload: single PUT with retry (exponential backoff 500ms/1s/2s, max 3 retries). Multipart: sequential part uploads with ETag capture, returns `Vec<LfsPartCompletion>`. Added completion types to `types.rs`. Added `complete_multipart()` to `LfsClient`. Added `get_lfs_multipart_complete_uri()` to `url.rs`. Added `UploadProgress` trait stub. 5 unit tests. **Note**: LFS uploads work - HF Hub auto-migrates to Xet storage per their docs. Native Xet deferred. |
 | 2026-01-14 | 3.4.1 | Complete | Started Commit API Client (Sub-task 3.4.1). Created `commit.rs` with operation types: `CommitOperationAdd`, `CommitOperationDelete`, `CommitOperation` enum. Added `is_folder()` helper method, `From` impls, and `to_compute_err` helper. Added module to `mod.rs` (feature-gated). 5 unit tests. Updated Task 3.4 in plan with granular sub-task breakdown (3.4.1-3.4.8). |
 | 2026-01-15 | 3.4.2 | Complete | Added `CommitInfo` response type to `commit.rs`. Struct has 5 fields: `commit_url`, `oid`, `pr_url`, `pr_num`, `pr_revision` with appropriate serde renames for HF API camelCase fields. Added 3 unit tests for deserialization (basic, with PR, partial PR fields). Code passes rustfmt. |
+| 2026-01-15 | 3.4.3 | Complete | Added NDJSON serialization types for commit API. Created `NdjsonHeader`/`HeaderValue`, `NdjsonLfsFile`/`LfsFileValue`, `NdjsonDeletedFile`, `NdjsonDeletedFolder`, `DeletedValue` structs. Added constructor methods: `new()` for header/deletes, `from_add()` for LFS files. 5 unit tests verifying exact JSON output matches HF API format. Code passes rustfmt. Tests blocked by upstream polars-core build issue. |
 
 ---
 
@@ -1848,6 +1851,7 @@ Track work sessions here:
 - [Commit API](https://huggingface.co/docs/hub/api)
 
 ### Reference Implementations
+- **Local reference repos**: `/Users/davanstrien/Documents/code/polars/reference_repos` (cloned copies for offline access)
 - `huggingface_hub` Python library: `/Users/davanstrien/Documents/code/huggingface_hub`
 - `pyspark_huggingface`: https://github.com/huggingface/pyspark_huggingface
 - `datasets` library: `/Users/davanstrien/Documents/code/datasets`
