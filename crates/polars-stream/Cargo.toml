@@ -67,6 +67,7 @@ dynamic_group_by = [
   "arrow/timezones",
 ]
 strings = []
+hf_sink = ["polars-io/hf_sink", "cloud"]
 ipc = ["polars-mem-engine/ipc", "polars-plan/ipc", "polars-io/ipc"]
 parquet = ["polars-mem-engine/parquet", "polars-plan/parquet", "cloud"]
 csv = ["polars-mem-engine/csv", "polars-plan/csv", "polars-io/csv"]

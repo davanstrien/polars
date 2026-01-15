@@ -26,6 +26,8 @@ use phase::PhaseOutcome;
 
 #[cfg(feature = "csv")]
 pub mod csv;
+#[cfg(feature = "hf_sink")]
+pub mod hf_sink;
 #[cfg(feature = "ipc")]
 pub mod ipc;
 #[cfg(feature = "json")]
