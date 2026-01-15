@@ -201,6 +201,24 @@ impl HfSinkOptions {
     pub fn effective_revision(&self) -> &str {
         self.revision.as_deref().unwrap_or("main")
     }
+
+    /// Parse an hf:// URL and create HfSinkOptions.
+    ///
+    /// URL format: `hf://datasets/user/repo@revision/path/to/data`
+    ///
+    /// Token resolution is deferred to initialization time via `auth::get_hf_token()`.
+    ///
+    /// # Errors
+    /// Returns an error if the URL is invalid or not in HF format.
+    pub fn from_url(url: &str) -> PolarsResult<Self> {
+        let parts = super::url::HFPathParts::try_from_uri(url)?;
+
+        HfSinkOptions::builder(&parts.repository)
+            .with_repo_type(parts.repo_type())
+            .with_revision(parts.revision)
+            .with_path_in_repo(parts.path)
+            .build()
+    }
 }
 
 /// Builder for [`HfSinkOptions`].

@@ -344,11 +344,42 @@ fn to_graph_rec<'a>(
 
         #[cfg(feature = "hf_sink")]
         HfSink { input, options } => {
-            // TODO(Task 4.4.3): Implement HfSinkNode graph conversion
-            // For now, return an error since hf:// URLs are not yet routed here
-            polars_bail!(
-                ComputeError: "HF Hub sink not yet implemented - this code path should not be reached"
-            );
+            use crate::nodes::io_sinks::hf_sink::HfSinkNode;
+            use polars_io::cloud::hf::HfSinkOptions;
+            use polars_plan::dsl::{SinkOptions, SinkTarget};
+
+            let FileSinkOptions {
+                target,
+                unified_sink_args,
+                ..
+            } = options;
+
+            // Get input schema and key
+            let input_schema = ctx.phys_sm[input.node].output_schema.clone();
+            let input_key = to_graph_rec(input.node, ctx)?;
+
+            // Parse HF URL from target
+            let url = match target {
+                SinkTarget::Path(path) => path.as_str(),
+                SinkTarget::Dyn(_) => polars_bail!(
+                    ComputeError: "HF sink does not support dynamic targets"
+                ),
+            };
+
+            // Build HfSinkOptions from URL
+            let hf_options = HfSinkOptions::from_url(url)?;
+
+            // Extract SinkOptions from UnifiedSinkArgs
+            let sink_options = SinkOptions {
+                sync_on_close: unified_sink_args.sync_on_close,
+                maintain_order: unified_sink_args.maintain_order,
+                mkdir: unified_sink_args.mkdir,
+            };
+
+            // Create and add the HfSinkNode
+            let node = HfSinkNode::new(hf_options, input_schema, sink_options)?;
+            ctx.graph
+                .add_node(SinkComputeNode::from(node), [(input_key, input.port)])
         },
 
         PartitionedSink2 {

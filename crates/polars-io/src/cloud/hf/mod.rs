@@ -39,6 +39,9 @@ pub use mmap_buffer::{MmapBuffer, MmapReadHandle};
 // Re-export shard writer
 #[cfg(feature = "hf_sink")]
 pub use shard_writer::{FinishedShard, HfShardWriter};
+// Re-export sink options
+#[cfg(feature = "hf_sink")]
+pub use options::{HfSinkOptions, HfWriteMode, RepoType};
 // Commit API client
 #[cfg(feature = "hf_sink")]
 pub mod commit;
