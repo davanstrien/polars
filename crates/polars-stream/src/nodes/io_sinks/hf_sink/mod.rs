@@ -12,19 +12,27 @@
 //! ```
 
 use std::collections::VecDeque;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use arrow::record_batch::RecordBatch;
+use polars_core::frame::DataFrame;
+use polars_core::prelude::CompatLevel;
 use polars_core::schema::SchemaRef;
-use polars_error::PolarsResult;
+use polars_error::{PolarsResult, polars_err};
 use polars_io::cloud::hf::options::HfSinkOptions;
-use polars_io::cloud::hf::shard_writer::FinishedShard;
+use polars_io::cloud::hf::shard_writer::{FinishedShard, HfShardWriter};
+use polars_io::schema_to_arrow_checked;
+use polars_parquet::write::{
+    ColumnWriteOptions, CompressionOptions, StatisticsOptions, Version, WriteOptions,
+};
 use polars_plan::dsl::SinkOptions;
 
 use super::phase::PhaseOutcome;
 use super::{SinkInputPort, SinkNode};
 use crate::async_executor::spawn;
-use crate::async_primitives::connector::Receiver;
+use crate::async_primitives::connector::{Receiver, Sender};
 use crate::execute::StreamingExecutionState;
 use crate::nodes::{JoinHandle, TaskPriority};
 use crate::utils::tokio_handle_ext::AbortOnDropHandle;
@@ -46,6 +54,13 @@ const DEFAULT_CHUNK_SIZE: usize = 256 * 1024;
 /// blocking the upload task.
 #[allow(dead_code)]
 const COMPLETION_CHANNEL_SIZE: usize = 16;
+
+/// Default maximum rows per shard (500K rows).
+///
+/// This is a reasonable default for datasets - approximately 500MB assuming
+/// ~1KB per row on average. Can be overridden via `max_shard_rows` option.
+#[allow(dead_code)]
+const DEFAULT_SHARD_ROWS: usize = 500_000;
 
 // ============================================================================
 // Types for Shard Writer Task
@@ -149,6 +164,212 @@ impl WriterState {
 pub fn shard_path(path_in_repo: &str, split: &str, index: usize) -> String {
     let path = path_in_repo.trim_end_matches('/');
     format!("{}/{}-{:05}.parquet", path, split, index)
+}
+
+/// Convert a Polars DataFrame to an Arrow RecordBatch.
+///
+/// This rechunks the DataFrame to ensure each column has a single chunk,
+/// then converts each column to Arrow format and creates a RecordBatch.
+///
+/// # Arguments
+/// * `df` - The DataFrame to convert
+/// * `schema` - The Polars schema (used to generate Arrow schema)
+///
+/// # Errors
+/// Returns an error if schema conversion fails or if column conversion fails.
+fn df_to_record_batch(df: DataFrame, schema: &SchemaRef) -> PolarsResult<RecordBatch> {
+    // 1. Rechunk so each column has a single chunk
+    let df = df.rechunk();
+
+    // 2. Convert Polars schema to Arrow schema
+    let arrow_schema = schema_to_arrow_checked(schema, CompatLevel::newest(), "parquet")?;
+
+    // 3. Convert each column to Arrow
+    let arrays: Vec<_> = df
+        .get_columns()
+        .iter()
+        .map(|col| {
+            col.as_materialized_series()
+                .to_arrow(0, CompatLevel::newest())
+        })
+        .collect();
+
+    // 4. Create RecordBatch
+    RecordBatch::try_new(Arc::new(arrow_schema), arrays)
+        .map_err(|e| polars_err!(ComputeError: "failed to create RecordBatch: {}", e))
+}
+
+/// Create an HfShardWriter for the given schema and options.
+///
+/// Converts the Polars schema to Arrow, creates write options for Parquet,
+/// and initializes a new shard writer with the configured buffer capacity.
+///
+/// # Arguments
+/// * `schema` - The Polars schema for the data
+/// * `options` - HF sink options (contains max_shard_size, etc.)
+///
+/// # Errors
+/// Returns an error if schema conversion fails or buffer creation fails.
+fn create_shard_writer(schema: &SchemaRef, options: &HfSinkOptions) -> PolarsResult<HfShardWriter> {
+    // 1. Convert Polars schema to Arrow schema
+    let arrow_schema = schema_to_arrow_checked(schema, CompatLevel::newest(), "parquet")?;
+
+    // 2. Create write options (using reasonable defaults for HF Hub)
+    let write_options = WriteOptions {
+        statistics: StatisticsOptions::full(),
+        compression: CompressionOptions::Snappy,
+        version: Version::V2,
+        data_page_size: None, // Use default
+    };
+
+    // 3. Create column options (default for each column)
+    let column_options: Vec<ColumnWriteOptions> = arrow_schema
+        .iter_values()
+        .map(|_| ColumnWriteOptions::default())
+        .collect();
+
+    // 4. Create shard writer with max_shard_size as initial capacity
+    HfShardWriter::new(
+        arrow_schema,
+        options.max_shard_size,
+        write_options,
+        column_options,
+    )
+}
+
+/// Determine if the current shard should be rotated based on row count.
+///
+/// Uses `max_shard_rows` from options if set, otherwise falls back to
+/// the default of 500K rows.
+///
+/// # Arguments
+/// * `current_rows` - Number of rows in the current shard
+/// * `options` - HF sink options
+fn should_rotate_shard(current_rows: usize, options: &HfSinkOptions) -> bool {
+    let max_rows = options.max_shard_rows.unwrap_or(DEFAULT_SHARD_ROWS);
+    current_rows >= max_rows
+}
+
+// ============================================================================
+// Shard Writer Task
+// ============================================================================
+
+/// Spawn a task that buffers morsels and writes them to HfShardWriter.
+///
+/// This task:
+/// 1. Receives morsels from the streaming engine
+/// 2. Buffers rows until chunk_size is reached
+/// 3. Converts buffered rows to Arrow RecordBatch
+/// 4. Writes to HfShardWriter
+/// 5. Rotates shards when row limit is reached
+/// 6. Sends finished shards to upload task via channel
+///
+/// # Arguments
+/// * `recv_port_rx` - Receiver for incoming morsel phases
+/// * `shard_tx` - Sender for completed shards (to upload task)
+/// * `options` - HF sink options
+/// * `schema` - Input data schema
+///
+/// # Errors
+/// Returns an error if:
+/// - Schema conversion fails
+/// - Writing to shard fails
+/// - Upload channel is closed (fail-fast behavior)
+#[allow(dead_code)]
+fn buffer_and_write_task(
+    recv_port_rx: Receiver<(PhaseOutcome, SinkInputPort)>,
+    shard_tx: Sender<FinishedShard>,
+    options: Arc<HfSinkOptions>,
+    schema: SchemaRef,
+) -> JoinHandle<PolarsResult<()>> {
+    spawn(TaskPriority::High, async move {
+        let chunk_size = DEFAULT_CHUNK_SIZE;
+        let mut buffer = DataFrame::empty_with_schema(schema.as_ref());
+        let mut current_writer: Option<HfShardWriter> = None;
+        let mut shard_rows: usize = 0;
+        let mut state = WriterState::new();
+
+        let mut recv_port_rx = recv_port_rx;
+
+        while let Ok((outcome, rx)) = recv_port_rx.recv().await {
+            let mut rx = rx.serial();
+
+            while let Ok(morsel) = rx.recv().await {
+                let (df, _, _, consume_token) = morsel.into_inner();
+
+                // 1. Buffer the incoming DataFrame
+                buffer.vstack_mut_owned(df)?;
+
+                // 2. Process when buffer >= chunk_size
+                while buffer.height() >= chunk_size {
+                    let (batch_df, remainder) = buffer.split_at(chunk_size as i64);
+                    buffer = remainder;
+
+                    // 3. Ensure we have a shard writer
+                    if current_writer.is_none() {
+                        current_writer = Some(create_shard_writer(&schema, &options)?);
+                    }
+                    let writer = current_writer.as_mut().unwrap();
+
+                    // 4. Convert and write
+                    let batch = df_to_record_batch(batch_df, &schema)?;
+                    writer.write_batch(batch)?;
+                    shard_rows += chunk_size;
+
+                    // 5. Check if shard is full
+                    if should_rotate_shard(shard_rows, &options) {
+                        let finished = current_writer.take().unwrap().finish()?;
+                        let shard_idx = state.next_shard_index();
+                        let path = shard_path(&options.path_in_repo, &options.split, shard_idx);
+
+                        // Record completion for tracking
+                        state.record_completion(ShardCompletion::from_finished(
+                            shard_idx, path, &finished,
+                        ));
+
+                        // Send for upload (fail-fast if channel closed)
+                        shard_tx.send(finished).await.map_err(
+                            |_| polars_err!(ComputeError: "upload channel closed unexpectedly"),
+                        )?;
+
+                        shard_rows = 0;
+                    }
+                }
+
+                // Drop consume token after processing (for backpressure)
+                drop(consume_token);
+            }
+
+            outcome.stopped();
+        }
+
+        // Flush any remaining data in buffer or current shard
+        if buffer.height() > 0 {
+            // Write remaining buffer to current (or new) shard
+            if current_writer.is_none() {
+                current_writer = Some(create_shard_writer(&schema, &options)?);
+            }
+            let writer = current_writer.as_mut().unwrap();
+            let batch = df_to_record_batch(buffer, &schema)?;
+            writer.write_batch(batch)?;
+        }
+
+        // Finish the last shard if it has data
+        if let Some(writer) = current_writer.take() {
+            if writer.rows_written() > 0 {
+                let finished = writer.finish()?;
+                let shard_idx = state.next_shard_index();
+                let path = shard_path(&options.path_in_repo, &options.split, shard_idx);
+
+                state.record_completion(ShardCompletion::from_finished(shard_idx, path, &finished));
+
+                // Send final shard for upload
+                let _ = shard_tx.send(finished).await;
+            }
+        }
+
+        PolarsResult::Ok(())
+    })
 }
 
 // ============================================================================
@@ -282,9 +503,6 @@ impl SinkNode for HfSinkNode {
         Ok(None)
     }
 }
-
-// Required for the finalize return type
-use std::future::Future;
 
 #[cfg(test)]
 mod tests {
@@ -445,5 +663,70 @@ mod tests {
         assert_eq!(cloned.sha256.len(), 64);
         assert_eq!(cloned.size, 12345);
         assert_eq!(cloned.num_rows, 500);
+    }
+
+    // ========================================================================
+    // Tests for Task 4.2.2: buffer_and_write_task helpers
+    // ========================================================================
+
+    #[test]
+    fn test_should_rotate_shard_with_explicit_max() {
+        // Options with explicit max_shard_rows
+        let options = HfSinkOptions {
+            repo_id: "user/repo".to_string(),
+            path_in_repo: "data".to_string(),
+            max_shard_rows: Some(1000),
+            ..Default::default()
+        };
+
+        // Below limit - should not rotate
+        assert!(!should_rotate_shard(999, &options));
+
+        // At limit - should rotate
+        assert!(should_rotate_shard(1000, &options));
+
+        // Above limit - should rotate
+        assert!(should_rotate_shard(1001, &options));
+    }
+
+    #[test]
+    fn test_should_rotate_shard_uses_default() {
+        // Options without max_shard_rows (uses DEFAULT_SHARD_ROWS = 500_000)
+        let options = HfSinkOptions {
+            repo_id: "user/repo".to_string(),
+            path_in_repo: "data".to_string(),
+            max_shard_rows: None,
+            ..Default::default()
+        };
+
+        // Below default limit
+        assert!(!should_rotate_shard(499_999, &options));
+
+        // At default limit
+        assert!(should_rotate_shard(500_000, &options));
+
+        // Above default limit
+        assert!(should_rotate_shard(500_001, &options));
+    }
+
+    #[test]
+    fn test_should_rotate_shard_zero_rows() {
+        let options = HfSinkOptions {
+            repo_id: "user/repo".to_string(),
+            path_in_repo: "data".to_string(),
+            max_shard_rows: Some(1000),
+            ..Default::default()
+        };
+
+        // Zero rows should never trigger rotation
+        assert!(!should_rotate_shard(0, &options));
+    }
+
+    #[test]
+    fn test_default_constants() {
+        // Verify our constants have reasonable values
+        assert_eq!(DEFAULT_CHUNK_SIZE, 256 * 1024); // 256K rows
+        assert_eq!(DEFAULT_SHARD_ROWS, 500_000); // 500K rows
+        assert_eq!(COMPLETION_CHANNEL_SIZE, 16); // 16 shards buffer
     }
 }

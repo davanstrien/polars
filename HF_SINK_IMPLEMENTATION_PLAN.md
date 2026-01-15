@@ -1812,7 +1812,7 @@ Phase 9 (Documentation)
   - [x] 4.1 HfSinkNode Skeleton (2026-01-15) - Minimal skeleton
   - [ ] 4.2 Shard Writer Task (re-scoped, combines original 4.2+4.3) - In Progress
     - [x] 4.2.1 Define types and state (ShardCompletion, WriterState, shard_path) (2026-01-15)
-    - [ ] 4.2.2 Implement buffer_and_write_task()
+    - [x] 4.2.2 Implement buffer_and_write_task() (2026-01-15)
     - [ ] 4.2.3 Implement upload_shard_task()
     - [ ] 4.2.4 Wire up spawn_sink()
     - [ ] 4.2.5 Implement finalize() for atomic commit
@@ -1884,6 +1884,7 @@ Track work sessions here:
 | 2026-01-15 | 3.4.6 | Complete | Implemented async `create_commit()` method on `CommitClient`. Added imports: `polars_core::config`, `polars_bail`, `to_compute_err`, `with_concurrency_budget`, `decode_json_response`. Added rate limit helpers: `parse_rate_limit_wait()`, `extract_rate_limit_wait()`. Three async methods: `create_commit()` (public), `send_commit_request()` (retry loop), `send_single_commit_request()` (HTTP POST with `Content-Type: application/x-ndjson`). Supports `create_pr=true` query parameter. 3 unit tests for rate limit parsing. **Task 3.4 (Commit API Client) functionally complete! Phase 3 (LFS Protocol) complete!** |
 | 2026-01-15 | 4.1 | Complete | Implemented HfSinkNode skeleton for polars-stream integration. Created `crates/polars-stream/src/nodes/io_sinks/hf_sink/mod.rs` following ParquetSinkNode patterns. Struct has 4 fields: `options: Arc<HfSinkOptions>`, `input_schema: SchemaRef`, `sink_options: SinkOptions`, `io_task`. Implemented SinkNode trait: `name()` → "hf-sink", `is_sink_input_parallel()` → false (serial for shard batching), `do_maintain_order()` → from sink_options, `spawn_sink()` → placeholder draining task. Added `hf_sink` feature to `polars-stream/Cargo.toml`. 2 unit tests for construction/validation. Code passes rustfmt. Full build blocked by upstream GroupsIndicator issue. **Phase 4 started!** |
 | 2026-01-15 | 4.2.1 | Complete | Implemented types and state for shard writer task. Re-scoped Tasks 4.2+4.3 into a combined "Shard Writer Task" (single-writer with background uploads, fail-fast error handling). Added to `hf_sink/mod.rs`: `ShardCompletion` struct (index, path, sha256, size, rows), `WriterState` struct (tracking completed shards, counters), `shard_path()` helper, `DEFAULT_CHUNK_SIZE` and `COMPLETION_CHANNEL_SIZE` constants. 5 new unit tests. Code passes rustfmt. |
+| 2026-01-15 | 4.2.2 | Complete | Implemented `buffer_and_write_task()` for streaming DataFrame→Parquet→HF shards. Added imports for Arrow/Parquet types. Created 3 helper functions: `df_to_record_batch()` (DataFrame→Arrow), `create_shard_writer()` (schema→HfShardWriter), `should_rotate_shard()` (row-based shard rotation). Main function buffers morsels until chunk_size (256K rows), writes to HfShardWriter, rotates shards at max_shard_rows (500K default), sends FinishedShard to upload channel with fail-fast error handling. Added `DEFAULT_SHARD_ROWS` constant. 4 new unit tests for should_rotate_shard and constants. Code passes rustfmt. |
 
 ---
 
