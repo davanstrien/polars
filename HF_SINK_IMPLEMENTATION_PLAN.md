@@ -11,10 +11,11 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ```
 ✅ Phases 0-4 complete (Foundation, Core Writer, LFS Protocol, Streaming Integration)
 ✅ Task 5.1 complete: Mode Handling (ErrorIfExists, Overwrite, Append) with tests
-🔄 Phase 5: Commit Coordination - Task 5.2 next (Dataset Card Updates)
+🔄 Phase 5: Commit Coordination - Task 5.2 in progress (Dataset Card Updates)
+  ✅ Task 5.2.1: Add update_card option to HfSinkOptions
 ```
 
-**Latest Commit:** `f88d2e709d feat(hf-sink): add mode handling tests and refactor helpers (Task 5.1.5)`
+**Latest Commit:** `0295ea6d08 docs: update plan status after Task 5.2.1 completion`
 
 **Build Status:**
 ```bash
@@ -225,11 +226,20 @@ impl CommitCoordinator {
 - [ ] ErrorIfExists: fails if files exist
 
 ### Task 5.2: Dataset Card Updates [ ]
-**File:** `hf_sink/dataset_card.rs`
+**File:** `cloud/hf/dataset_card.rs`
 
 - Update README.md YAML metadata
 - Add split info (rows, bytes)
 - Preserve existing content
+
+**Subtasks:**
+- [x] **5.2.1** Add `update_card` option to HfSinkOptions (default: true)
+- [ ] **5.2.2** Add regular file support to commit.rs (NdjsonFile, base64)
+- [ ] **5.2.3** Create dataset_card.rs module (YAML parsing, SplitInfo)
+- [ ] **5.2.4** Add fetch_readme() to api.rs
+- [ ] **5.2.5** Update mod.rs exports
+- [ ] **5.2.6** Integrate into HfSinkNode::finalize()
+- [ ] **5.2.7** Integration tests
 
 ---
 
