@@ -15,9 +15,11 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
   ✅ Task 5.2.1: Add update_card option to HfSinkOptions
   ✅ Task 5.2.2: Add regular file support to commit.rs (NdjsonFile, base64)
   ✅ Task 5.2.3.1: Add serde_yaml dependency to polars-io
+  ✅ Task 5.2.3.2: Create dataset_card.rs with SplitInfo struct
+  ✅ Task 5.2.3.3: Add YAML frontmatter extraction (parse README)
 ```
 
-**Latest Commit:** `6ded71bb4e docs: update plan status after Task 5.2.3.1 completion`
+**Latest Commit:** `feat(hf-sink): add YAML frontmatter extraction for dataset cards (Task 5.2.3.3)`
 
 **Build Status:**
 ```bash
@@ -245,8 +247,18 @@ impl CommitCoordinator {
   - Added 6 new tests for regular file support
 - [ ] **5.2.3** Create dataset_card.rs module (YAML parsing, SplitInfo)
   - [x] **5.2.3.1** Add `serde_yaml` dependency to polars-io (version 0.9, optional, in hf_sink feature)
-  - [ ] **5.2.3.2** Create dataset_card.rs with SplitInfo struct
-  - [ ] **5.2.3.3** Add YAML frontmatter extraction (parse README)
+  - [x] **5.2.3.2** Create dataset_card.rs with SplitInfo struct
+    - Added `SplitInfo` struct with `name`, `num_bytes`, `num_examples` fields
+    - Derives: `Debug, Clone, PartialEq, Eq, Serialize, Deserialize`
+    - Added `SplitInfo::new()` constructor
+    - Exported from `mod.rs` under `hf_sink` feature
+    - Added unit tests for basic functionality and serde round-trips
+  - [x] **5.2.3.3** Add YAML frontmatter extraction (parse README)
+    - Added `DatasetInfo` struct with `config_name`, `splits`, `download_size`, `dataset_size`
+    - Added `ExtractedFrontmatter` struct for extracted YAML and body
+    - Added `extract_frontmatter()` function to parse `---` delimited YAML
+    - Exported new types from `mod.rs`
+    - Added 10 unit tests for frontmatter extraction and DatasetInfo
   - [ ] **5.2.3.4** Add dataset_info update logic
   - [ ] **5.2.3.5** Add generate_updated_readme() function
   - [ ] **5.2.3.6** Add unit tests

@@ -47,6 +47,11 @@ pub use options::{HfSinkOptions, HfWriteMode, RepoType};
 pub mod commit;
 #[cfg(feature = "hf_sink")]
 pub use commit::{CommitOperation, CommitOperationAdd, CommitOperationDelete};
+// Dataset card (README.md) metadata support
+#[cfg(feature = "hf_sink")]
+pub mod dataset_card;
+#[cfg(feature = "hf_sink")]
+pub use dataset_card::{DatasetInfo, ExtractedFrontmatter, SplitInfo, extract_frontmatter};
 // API utilities for mode handling (list existing files)
 #[cfg(feature = "hf_sink")]
 pub use api::{ExistingFile, check_existing_files, list_existing_files};

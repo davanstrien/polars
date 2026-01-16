@@ -1,0 +1,343 @@
+//! Dataset card (README.md) metadata support for HF Hub.
+//!
+//! Provides types for updating dataset card YAML frontmatter with split information.
+//!
+//! # README.md Format
+//!
+//! HF Hub dataset cards use YAML frontmatter delimited by `---`:
+//!
+//! ```text
+//! ---
+//! license: mit
+//! dataset_info:
+//!   splits:
+//!   - name: train
+//!     num_bytes: 1024000
+//!     num_examples: 50000
+//! ---
+//!
+//! # My Dataset
+//!
+//! Description here...
+//! ```
+
+use serde::{Deserialize, Serialize};
+
+/// Information about a dataset split (e.g., "train", "test").
+///
+/// Used to update the `dataset_info.splits` section in HF dataset cards.
+///
+/// # Example
+/// ```ignore
+/// let split = SplitInfo::new("train", 1024 * 1024 * 100, 50000);
+/// assert_eq!(split.name, "train");
+/// assert_eq!(split.num_bytes, 104857600);
+/// assert_eq!(split.num_examples, 50000);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct SplitInfo {
+    /// Split name (e.g., "train", "test", "validation")
+    pub name: String,
+    /// Total size in bytes
+    pub num_bytes: u64,
+    /// Total number of examples/rows
+    pub num_examples: u64,
+}
+
+impl SplitInfo {
+    /// Create a new SplitInfo.
+    ///
+    /// # Arguments
+    /// * `name` - The split name (e.g., "train", "test")
+    /// * `num_bytes` - Total size of the split in bytes
+    /// * `num_examples` - Total number of rows/examples in the split
+    pub fn new(name: impl Into<String>, num_bytes: u64, num_examples: u64) -> Self {
+        Self {
+            name: name.into(),
+            num_bytes,
+            num_examples,
+        }
+    }
+}
+
+/// Dataset info section from HF dataset card YAML.
+///
+/// This represents the `dataset_info` field in the YAML frontmatter.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct DatasetInfo {
+    /// Configuration name (e.g., "default")
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub config_name: Option<String>,
+    /// List of splits with their metadata
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
+    pub splits: Vec<SplitInfo>,
+    /// Total download size in bytes
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub download_size: Option<u64>,
+    /// Total dataset size in bytes (sum of all splits)
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub dataset_size: Option<u64>,
+}
+
+impl DatasetInfo {
+    /// Create a new DatasetInfo with the given splits.
+    pub fn new(splits: Vec<SplitInfo>) -> Self {
+        let dataset_size = if splits.is_empty() {
+            None
+        } else {
+            Some(splits.iter().map(|s| s.num_bytes).sum())
+        };
+        Self {
+            config_name: None,
+            splits,
+            download_size: None,
+            dataset_size,
+        }
+    }
+
+    /// Create a new DatasetInfo with a config name.
+    pub fn with_config(mut self, config_name: impl Into<String>) -> Self {
+        self.config_name = Some(config_name.into());
+        self
+    }
+}
+
+/// Result of extracting YAML frontmatter from a README.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtractedFrontmatter<'a> {
+    /// The YAML content (without the `---` delimiters)
+    pub yaml: &'a str,
+    /// The markdown body (after the closing `---`)
+    pub body: &'a str,
+}
+
+/// Extract YAML frontmatter from a README string.
+///
+/// Returns `None` if no valid frontmatter is found.
+/// Frontmatter must start with `---` on the first line and end with `---`.
+///
+/// # Example
+/// ```ignore
+/// let readme = "---\nlicense: mit\n---\n\n# My Dataset";
+/// let extracted = extract_frontmatter(readme).unwrap();
+/// assert_eq!(extracted.yaml, "license: mit\n");
+/// assert_eq!(extracted.body, "\n# My Dataset");
+/// ```
+pub fn extract_frontmatter(readme: &str) -> Option<ExtractedFrontmatter<'_>> {
+    // Must start with `---` (optionally with trailing whitespace)
+    let readme = readme.trim_start();
+    if !readme.starts_with("---") {
+        return None;
+    }
+
+    // Find the start of YAML content (after first `---` and newline)
+    let after_opening = &readme[3..];
+    let yaml_start = after_opening.find('\n').map(|i| i + 1)?;
+    let yaml_content = &after_opening[yaml_start..];
+
+    // Find the closing `---`
+    let closing_pos = yaml_content.find("\n---")?;
+    let yaml = &yaml_content[..closing_pos + 1]; // Include the newline before ---
+
+    // Body starts after the closing `---` and its newline
+    let body_start = closing_pos + 4; // "\n---".len()
+    let body = if body_start < yaml_content.len() {
+        let rest = &yaml_content[body_start..];
+        // Skip the newline after closing ---
+        if rest.starts_with('\n') {
+            &rest[1..]
+        } else {
+            rest
+        }
+    } else {
+        ""
+    };
+
+    Some(ExtractedFrontmatter { yaml, body })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_info_new() {
+        let split = SplitInfo::new("train", 1024, 100);
+        assert_eq!(split.name, "train");
+        assert_eq!(split.num_bytes, 1024);
+        assert_eq!(split.num_examples, 100);
+    }
+
+    #[test]
+    fn test_split_info_clone() {
+        let split = SplitInfo::new("test", 2048, 200);
+        let cloned = split.clone();
+        assert_eq!(split, cloned);
+    }
+
+    #[test]
+    fn test_split_info_debug() {
+        let split = SplitInfo::new("validation", 512, 50);
+        let debug_str = format!("{:?}", split);
+        assert!(debug_str.contains("validation"));
+        assert!(debug_str.contains("512"));
+        assert!(debug_str.contains("50"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_split_info_serde_yaml() {
+        let split = SplitInfo::new("train", 104857600, 50000);
+        let yaml = serde_yaml::to_string(&split).unwrap();
+        assert!(yaml.contains("name: train"));
+        assert!(yaml.contains("num_bytes: 104857600"));
+        assert!(yaml.contains("num_examples: 50000"));
+
+        let deserialized: SplitInfo = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(split, deserialized);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_split_info_serde_json() {
+        let split = SplitInfo::new("test", 2048, 100);
+        let json = serde_json::to_string(&split).unwrap();
+        let deserialized: SplitInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(split, deserialized);
+    }
+
+    // DatasetInfo tests
+    #[test]
+    fn test_dataset_info_new() {
+        let splits = vec![
+            SplitInfo::new("train", 1000, 100),
+            SplitInfo::new("test", 500, 50),
+        ];
+        let info = DatasetInfo::new(splits);
+        assert_eq!(info.splits.len(), 2);
+        assert_eq!(info.dataset_size, Some(1500)); // 1000 + 500
+        assert_eq!(info.config_name, None);
+    }
+
+    #[test]
+    fn test_dataset_info_empty() {
+        let info = DatasetInfo::new(vec![]);
+        assert!(info.splits.is_empty());
+        assert_eq!(info.dataset_size, None);
+    }
+
+    #[test]
+    fn test_dataset_info_with_config() {
+        let info = DatasetInfo::new(vec![SplitInfo::new("train", 1000, 100)])
+            .with_config("default");
+        assert_eq!(info.config_name, Some("default".to_string()));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_dataset_info_serde_yaml() {
+        let info = DatasetInfo::new(vec![
+            SplitInfo::new("train", 1000, 100),
+        ]).with_config("default");
+
+        let yaml = serde_yaml::to_string(&info).unwrap();
+        assert!(yaml.contains("config_name: default"));
+        assert!(yaml.contains("splits:"));
+        assert!(yaml.contains("name: train"));
+
+        let deserialized: DatasetInfo = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(info, deserialized);
+    }
+
+    // Frontmatter extraction tests
+    #[test]
+    fn test_extract_frontmatter_basic() {
+        let readme = "---\nlicense: mit\n---\n\n# My Dataset";
+        let extracted = extract_frontmatter(readme).unwrap();
+        assert_eq!(extracted.yaml, "license: mit\n");
+        assert_eq!(extracted.body, "\n# My Dataset");
+    }
+
+    #[test]
+    fn test_extract_frontmatter_multiline_yaml() {
+        let readme = "---\nlicense: mit\ntask_categories:\n  - text-classification\n---\n\n# Dataset";
+        let extracted = extract_frontmatter(readme).unwrap();
+        assert!(extracted.yaml.contains("license: mit"));
+        assert!(extracted.yaml.contains("task_categories:"));
+        assert_eq!(extracted.body, "\n# Dataset");
+    }
+
+    #[test]
+    fn test_extract_frontmatter_no_frontmatter() {
+        let readme = "# My Dataset\n\nNo frontmatter here.";
+        assert!(extract_frontmatter(readme).is_none());
+    }
+
+    #[test]
+    fn test_extract_frontmatter_unclosed() {
+        let readme = "---\nlicense: mit\n# No closing delimiter";
+        assert!(extract_frontmatter(readme).is_none());
+    }
+
+    #[test]
+    fn test_extract_frontmatter_empty_yaml() {
+        let readme = "---\n---\n\n# My Dataset";
+        // Empty YAML between delimiters - still valid
+        let extracted = extract_frontmatter(readme);
+        // This should return None because there's no content before the closing ---
+        assert!(extracted.is_none());
+    }
+
+    #[test]
+    fn test_extract_frontmatter_with_leading_whitespace() {
+        let readme = "  \n---\nlicense: mit\n---\n\nBody";
+        let extracted = extract_frontmatter(readme).unwrap();
+        assert_eq!(extracted.yaml, "license: mit\n");
+    }
+
+    #[test]
+    fn test_extract_frontmatter_empty_body() {
+        let readme = "---\nlicense: mit\n---";
+        let extracted = extract_frontmatter(readme).unwrap();
+        assert_eq!(extracted.yaml, "license: mit\n");
+        assert_eq!(extracted.body, "");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_extract_and_parse_dataset_info() {
+        let readme = r#"---
+license: mit
+dataset_info:
+  config_name: default
+  splits:
+    - name: train
+      num_bytes: 1024
+      num_examples: 100
+    - name: test
+      num_bytes: 512
+      num_examples: 50
+---
+
+# My Dataset
+"#;
+        let extracted = extract_frontmatter(readme).unwrap();
+
+        // Parse the full YAML to get dataset_info
+        #[derive(Deserialize)]
+        struct CardYaml {
+            dataset_info: Option<DatasetInfo>,
+        }
+
+        let card: CardYaml = serde_yaml::from_str(extracted.yaml).unwrap();
+        let info = card.dataset_info.unwrap();
+
+        assert_eq!(info.config_name, Some("default".to_string()));
+        assert_eq!(info.splits.len(), 2);
+        assert_eq!(info.splits[0].name, "train");
+        assert_eq!(info.splits[0].num_bytes, 1024);
+        assert_eq!(info.splits[1].name, "test");
+    }
+}
