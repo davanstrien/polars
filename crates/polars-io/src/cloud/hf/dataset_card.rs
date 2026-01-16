@@ -102,6 +102,45 @@ impl DatasetInfo {
         self.config_name = Some(config_name.into());
         self
     }
+
+    /// Recalculate dataset_size from current splits.
+    fn recalculate_dataset_size(&mut self) {
+        self.dataset_size = if self.splits.is_empty() {
+            None
+        } else {
+            Some(self.splits.iter().map(|s| s.num_bytes).sum())
+        };
+    }
+
+    /// Update or add a split by name.
+    ///
+    /// If a split with the same name exists, it is replaced.
+    /// Otherwise, the new split is appended.
+    /// Automatically recalculates `dataset_size`.
+    pub fn update_split(&mut self, split: SplitInfo) {
+        if let Some(existing) = self.splits.iter_mut().find(|s| s.name == split.name) {
+            *existing = split;
+        } else {
+            self.splits.push(split);
+        }
+        self.recalculate_dataset_size();
+    }
+
+    /// Update or add multiple splits by name.
+    ///
+    /// For each split, if a split with the same name exists, it is replaced.
+    /// Otherwise, the new split is appended.
+    /// Automatically recalculates `dataset_size` once after all updates.
+    pub fn update_splits(&mut self, splits: impl IntoIterator<Item = SplitInfo>) {
+        for split in splits {
+            if let Some(existing) = self.splits.iter_mut().find(|s| s.name == split.name) {
+                *existing = split;
+            } else {
+                self.splits.push(split);
+            }
+        }
+        self.recalculate_dataset_size();
+    }
 }
 
 /// Result of extracting YAML frontmatter from a README.
@@ -339,5 +378,89 @@ dataset_info:
         assert_eq!(info.splits[0].name, "train");
         assert_eq!(info.splits[0].num_bytes, 1024);
         assert_eq!(info.splits[1].name, "test");
+    }
+
+    // Update logic tests
+    #[test]
+    fn test_update_split_new() {
+        let mut info = DatasetInfo::new(vec![SplitInfo::new("train", 1000, 100)]);
+        info.update_split(SplitInfo::new("test", 500, 50));
+
+        assert_eq!(info.splits.len(), 2);
+        assert_eq!(info.splits[0].name, "train");
+        assert_eq!(info.splits[1].name, "test");
+        assert_eq!(info.splits[1].num_bytes, 500);
+    }
+
+    #[test]
+    fn test_update_split_replace() {
+        let mut info = DatasetInfo::new(vec![
+            SplitInfo::new("train", 1000, 100),
+            SplitInfo::new("test", 500, 50),
+        ]);
+        info.update_split(SplitInfo::new("train", 2000, 200));
+
+        assert_eq!(info.splits.len(), 2);
+        assert_eq!(info.splits[0].name, "train");
+        assert_eq!(info.splits[0].num_bytes, 2000);
+        assert_eq!(info.splits[0].num_examples, 200);
+        // test split unchanged
+        assert_eq!(info.splits[1].num_bytes, 500);
+    }
+
+    #[test]
+    fn test_update_split_recalculates_size() {
+        let mut info = DatasetInfo::new(vec![SplitInfo::new("train", 1000, 100)]);
+        assert_eq!(info.dataset_size, Some(1000));
+
+        info.update_split(SplitInfo::new("test", 500, 50));
+        assert_eq!(info.dataset_size, Some(1500));
+
+        info.update_split(SplitInfo::new("train", 2000, 200));
+        assert_eq!(info.dataset_size, Some(2500)); // 2000 + 500
+    }
+
+    #[test]
+    fn test_update_splits_multiple() {
+        let mut info = DatasetInfo::new(vec![]);
+        info.update_splits(vec![
+            SplitInfo::new("train", 1000, 100),
+            SplitInfo::new("test", 500, 50),
+            SplitInfo::new("validation", 250, 25),
+        ]);
+
+        assert_eq!(info.splits.len(), 3);
+        assert_eq!(info.dataset_size, Some(1750));
+    }
+
+    #[test]
+    fn test_update_splits_mixed() {
+        let mut info = DatasetInfo::new(vec![
+            SplitInfo::new("train", 1000, 100),
+            SplitInfo::new("test", 500, 50),
+        ]);
+        // Update train (existing) and add validation (new)
+        info.update_splits(vec![
+            SplitInfo::new("train", 3000, 300),
+            SplitInfo::new("validation", 250, 25),
+        ]);
+
+        assert_eq!(info.splits.len(), 3);
+        assert_eq!(info.splits[0].name, "train");
+        assert_eq!(info.splits[0].num_bytes, 3000);
+        assert_eq!(info.splits[1].name, "test");
+        assert_eq!(info.splits[1].num_bytes, 500); // unchanged
+        assert_eq!(info.splits[2].name, "validation");
+        assert_eq!(info.dataset_size, Some(3750)); // 3000 + 500 + 250
+    }
+
+    #[test]
+    fn test_update_split_preserves_config() {
+        let mut info = DatasetInfo::new(vec![SplitInfo::new("train", 1000, 100)])
+            .with_config("default");
+        info.update_split(SplitInfo::new("test", 500, 50));
+
+        assert_eq!(info.config_name, Some("default".to_string()));
+        assert_eq!(info.splits.len(), 2);
     }
 }

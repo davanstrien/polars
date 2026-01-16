@@ -17,9 +17,10 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
   ✅ Task 5.2.3.1: Add serde_yaml dependency to polars-io
   ✅ Task 5.2.3.2: Create dataset_card.rs with SplitInfo struct
   ✅ Task 5.2.3.3: Add YAML frontmatter extraction (parse README)
+  ✅ Task 5.2.3.4: Add dataset_info update logic (update_split, update_splits)
 ```
 
-**Latest Commit:** `feat(hf-sink): add YAML frontmatter extraction for dataset cards (Task 5.2.3.3)`
+**Latest Commit:** `feat(hf-sink): add dataset_info update logic (Task 5.2.3.4)`
 
 **Build Status:**
 ```bash
@@ -28,7 +29,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink  # 21 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (64 commits ahead, local only)
+**Branch:** `feature/hf-hub-sink` (65 commits ahead, local only)
 
 ---
 
@@ -259,7 +260,12 @@ impl CommitCoordinator {
     - Added `extract_frontmatter()` function to parse `---` delimited YAML
     - Exported new types from `mod.rs`
     - Added 10 unit tests for frontmatter extraction and DatasetInfo
-  - [ ] **5.2.3.4** Add dataset_info update logic
+  - [x] **5.2.3.4** Add dataset_info update logic
+    - Added `DatasetInfo::recalculate_dataset_size()` private helper
+    - Added `DatasetInfo::update_split()` - update or add single split by name
+    - Added `DatasetInfo::update_splits()` - bulk update multiple splits
+    - Auto-recalculates `dataset_size` after updates
+    - Added 6 unit tests for update scenarios
   - [ ] **5.2.3.5** Add generate_updated_readme() function
   - [ ] **5.2.3.6** Add unit tests
 - [ ] **5.2.4** Add fetch_readme() to api.rs
