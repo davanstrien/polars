@@ -17,7 +17,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
   ✅ Task 5.2.3.1: Add serde_yaml dependency to polars-io
 ```
 
-**Latest Commit:** `183c58881a feat(hf-sink): add serde_yaml dependency for dataset card support (Task 5.2.3.1)`
+**Latest Commit:** `6ded71bb4e docs: update plan status after Task 5.2.3.1 completion`
 
 **Build Status:**
 ```bash
@@ -26,7 +26,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink  # 21 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (61 commits ahead, local only)
+**Branch:** `feature/hf-hub-sink` (64 commits ahead, local only)
 
 ---
 
