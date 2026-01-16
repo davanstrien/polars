@@ -13,9 +13,10 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Task 5.1 complete: Mode Handling (ErrorIfExists, Overwrite, Append) with tests
 🔄 Phase 5: Commit Coordination - Task 5.2 in progress (Dataset Card Updates)
   ✅ Task 5.2.1: Add update_card option to HfSinkOptions
+  ✅ Task 5.2.2: Add regular file support to commit.rs (NdjsonFile, base64)
 ```
 
-**Latest Commit:** `0295ea6d08 docs: update plan status after Task 5.2.1 completion`
+**Latest Commit:** `f16bce3d25 feat(hf-sink): add regular file support to commit.rs (Task 5.2.2)`
 
 **Build Status:**
 ```bash
@@ -24,7 +25,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink  # 21 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (57 commits ahead, local only)
+**Branch:** `feature/hf-hub-sink` (61 commits ahead, local only)
 
 ---
 
@@ -234,7 +235,13 @@ impl CommitCoordinator {
 
 **Subtasks:**
 - [x] **5.2.1** Add `update_card` option to HfSinkOptions (default: true)
-- [ ] **5.2.2** Add regular file support to commit.rs (NdjsonFile, base64)
+- [x] **5.2.2** Add regular file support to commit.rs (NdjsonFile, base64)
+  - Added `base64` dependency to polars-io
+  - Refactored `CommitOperationAdd` from struct to enum with `Lfs` and `Regular` variants
+  - Added `NdjsonRegularFile` serialization type for base64-encoded files
+  - Updated `build_ndjson_payload()` to handle both LFS and regular files
+  - Added helper methods: `CommitOperationAdd::lfs()`, `CommitOperationAdd::regular()`, `path_in_repo()`
+  - Added 6 new tests for regular file support
 - [ ] **5.2.3** Create dataset_card.rs module (YAML parsing, SplitInfo)
 - [ ] **5.2.4** Add fetch_readme() to api.rs
 - [ ] **5.2.5** Update mod.rs exports
