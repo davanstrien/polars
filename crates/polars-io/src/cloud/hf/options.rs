@@ -123,6 +123,8 @@ pub struct HfSinkOptions {
     pub checkpoint_path: Option<PathBuf>,
     /// Number of concurrent uploads (default: 4)
     pub upload_concurrency: usize,
+    /// Whether to update README.md with split metadata (default: true)
+    pub update_card: bool,
 }
 
 impl Default for HfSinkOptions {
@@ -142,6 +144,7 @@ impl Default for HfSinkOptions {
             create_pr: false,
             checkpoint_path: None,
             upload_concurrency: DEFAULT_UPLOAD_CONCURRENCY,
+            update_card: true,
         }
     }
 }
@@ -316,6 +319,15 @@ impl HfSinkOptionsBuilder {
         self
     }
 
+    /// Set whether to update README.md with split metadata.
+    ///
+    /// When enabled (default), the sink will update the repository's README.md
+    /// with `dataset_info.splits` metadata including row counts and byte sizes.
+    pub fn with_update_card(mut self, update: bool) -> Self {
+        self.options.update_card = update;
+        self
+    }
+
     /// Build the options, validating the configuration.
     ///
     /// # Errors
@@ -366,6 +378,7 @@ mod tests {
         assert_eq!(opts.max_shard_size, 500 * 1024 * 1024);
         assert_eq!(opts.upload_concurrency, 4);
         assert!(!opts.create_pr);
+        assert!(opts.update_card); // Default is true
     }
 
     #[test]
@@ -397,6 +410,7 @@ mod tests {
             .with_create_pr(true)
             .with_checkpoint_path(PathBuf::from("/tmp/checkpoint.json"))
             .with_upload_concurrency(8)
+            .with_update_card(false)
             .build()
             .unwrap();
 
@@ -420,6 +434,28 @@ mod tests {
             Some(PathBuf::from("/tmp/checkpoint.json"))
         );
         assert_eq!(opts.upload_concurrency, 8);
+        assert!(!opts.update_card); // Explicitly disabled
+    }
+
+    #[test]
+    fn test_update_card_default_enabled() {
+        let opts = HfSinkOptions::builder("user/repo")
+            .with_path_in_repo("data")
+            .build()
+            .unwrap();
+
+        assert!(opts.update_card); // Enabled by default
+    }
+
+    #[test]
+    fn test_update_card_can_be_disabled() {
+        let opts = HfSinkOptions::builder("user/repo")
+            .with_path_in_repo("data")
+            .with_update_card(false)
+            .build()
+            .unwrap();
+
+        assert!(!opts.update_card);
     }
 
     #[test]
