@@ -30,18 +30,21 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink  # 21 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (67 commits ahead, local only)
+**Branch:** `feature/hf-hub-sink` (135 commits ahead, local only)
 
 ---
 
 ## What's Next
 
-### Task 5.2: Dataset Card Updates
-**File:** `hf_sink/dataset_card.rs`
+### Task 5.2.4: Add fetch_readme() to api.rs
+**File:** `crates/polars-io/src/cloud/hf/api.rs`
 
-- Update README.md YAML metadata
-- Add split info (rows, bytes)
-- Preserve existing content
+Fetch existing README.md from HF Hub repository to allow updating it with new split metadata.
+
+**Subtasks:**
+- Add `fetch_readme()` async function
+- Handle 404 (no README exists)
+- Return Option<String> for README content
 
 ### Task 5.1: Mode Handling for CommitCoordinator ✅ COMPLETE
 The coordinator logic already exists in `HfSinkNode::finalize()` (lines 624-714).
