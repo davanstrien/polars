@@ -834,11 +834,11 @@ impl SinkNode for HfSinkNode {
             let add_ops: Vec<CommitOperation> = completions
                 .iter()
                 .map(|c| {
-                    CommitOperation::Add(CommitOperationAdd {
-                        path_in_repo: c.path_in_repo.clone(),
-                        oid: c.sha256.clone(),
-                        size: c.size,
-                    })
+                    CommitOperation::Add(CommitOperationAdd::lfs(
+                        &c.path_in_repo,
+                        &c.sha256,
+                        c.size,
+                    ))
                 })
                 .collect();
 

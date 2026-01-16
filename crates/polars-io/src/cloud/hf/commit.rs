@@ -44,19 +44,73 @@ fn extract_rate_limit_wait(err_msg: &str) -> Option<u64> {
     None
 }
 
-/// An LFS file to add in a commit.
+/// A file to add in a commit.
 ///
-/// The file must have been uploaded via LFS batch API before committing.
-/// The SHA256 hash (`oid`) must match the hash computed during upload.
+/// Supports two types of file additions:
+/// - **LFS files**: Large files uploaded via LFS batch API, committed by SHA256 reference.
+/// - **Regular files**: Small files (like README.md) with content embedded as base64.
 #[derive(Debug, Clone)]
-pub struct CommitOperationAdd {
-    /// Path in the repository (e.g., "data/train-00000.parquet").
-    /// Should not start with a leading slash.
-    pub path_in_repo: String,
-    /// SHA256 hash of the file in hexadecimal format.
-    pub oid: String,
-    /// File size in bytes.
-    pub size: u64,
+pub enum CommitOperationAdd {
+    /// LFS file: uploaded via LFS batch API, committed by SHA256 reference.
+    ///
+    /// The file must have been uploaded via LFS batch API before committing.
+    /// The SHA256 hash (`oid`) must match the hash computed during upload.
+    Lfs {
+        /// Path in the repository (e.g., "data/train-00000.parquet").
+        /// Should not start with a leading slash.
+        path_in_repo: String,
+        /// SHA256 hash of the file in hexadecimal format.
+        oid: String,
+        /// File size in bytes.
+        size: u64,
+    },
+    /// Regular file: content embedded as base64 in commit.
+    ///
+    /// Use for small files like README.md, config files, etc.
+    /// Content is base64-encoded when serialized to NDJSON.
+    Regular {
+        /// Path in the repository (e.g., "README.md").
+        /// Should not start with a leading slash.
+        path_in_repo: String,
+        /// Raw file content (will be base64-encoded).
+        content: Vec<u8>,
+    },
+}
+
+impl CommitOperationAdd {
+    /// Create an LFS file addition operation.
+    ///
+    /// # Arguments
+    /// * `path_in_repo` - Path in the repository (e.g., "data/train-00000.parquet")
+    /// * `oid` - SHA256 hash of the file in hexadecimal format
+    /// * `size` - File size in bytes
+    pub fn lfs(path_in_repo: impl Into<String>, oid: impl Into<String>, size: u64) -> Self {
+        Self::Lfs {
+            path_in_repo: path_in_repo.into(),
+            oid: oid.into(),
+            size,
+        }
+    }
+
+    /// Create a regular file addition operation.
+    ///
+    /// # Arguments
+    /// * `path_in_repo` - Path in the repository (e.g., "README.md")
+    /// * `content` - Raw file content (will be base64-encoded)
+    pub fn regular(path_in_repo: impl Into<String>, content: Vec<u8>) -> Self {
+        Self::Regular {
+            path_in_repo: path_in_repo.into(),
+            content,
+        }
+    }
+
+    /// Get the path in the repository for this operation.
+    pub fn path_in_repo(&self) -> &str {
+        match self {
+            Self::Lfs { path_in_repo, .. } => path_in_repo,
+            Self::Regular { path_in_repo, .. } => path_in_repo,
+        }
+    }
 }
 
 /// A file or folder to delete in a commit.
@@ -178,15 +232,59 @@ pub(crate) struct LfsFileValue {
 }
 
 impl NdjsonLfsFile {
-    /// Create an NDJSON line from a CommitOperationAdd.
-    pub fn from_add(add: &CommitOperationAdd) -> Self {
+    /// Create a new LFS file NDJSON line.
+    ///
+    /// # Arguments
+    /// * `path` - Path in the repository
+    /// * `oid` - SHA256 hash of the file
+    /// * `size` - File size in bytes
+    pub fn new(path: impl Into<String>, oid: impl Into<String>, size: u64) -> Self {
         Self {
             key: "lfsFile",
             value: LfsFileValue {
-                path: add.path_in_repo.clone(),
+                path: path.into(),
                 algo: "sha256",
-                oid: add.oid.clone(),
-                size: add.size,
+                oid: oid.into(),
+                size,
+            },
+        }
+    }
+}
+
+/// NDJSON line for regular file addition (base64-encoded).
+///
+/// Format: `{"key":"file","value":{"path":"...","content":"base64...","encoding":"base64"}}`
+///
+/// Use this for small files like README.md where content is embedded directly
+/// in the commit rather than uploaded via LFS.
+#[derive(Debug, Serialize)]
+pub(crate) struct NdjsonRegularFile {
+    key: &'static str,
+    value: RegularFileValue,
+}
+
+/// Value object for the regular file NDJSON line.
+#[derive(Debug, Serialize)]
+pub(crate) struct RegularFileValue {
+    path: String,
+    content: String,
+    encoding: &'static str,
+}
+
+impl NdjsonRegularFile {
+    /// Create a new regular file NDJSON line with base64-encoded content.
+    ///
+    /// # Arguments
+    /// * `path` - Path in the repository (e.g., "README.md")
+    /// * `content` - Raw file content (will be base64-encoded)
+    pub fn new(path: impl Into<String>, content: &[u8]) -> Self {
+        use base64::{Engine as _, engine::general_purpose};
+        Self {
+            key: "file",
+            value: RegularFileValue {
+                path: path.into(),
+                content: general_purpose::STANDARD.encode(content),
+                encoding: "base64",
             },
         }
     }
@@ -328,9 +426,23 @@ impl CommitClient {
         // Operation lines
         for op in operations {
             let line_json = match op {
-                CommitOperation::Add(add) => {
-                    let lfs_file = NdjsonLfsFile::from_add(add);
-                    serde_json::to_vec(&lfs_file).expect("lfs file serialization cannot fail")
+                CommitOperation::Add(add) => match add {
+                    CommitOperationAdd::Lfs {
+                        path_in_repo,
+                        oid,
+                        size,
+                    } => {
+                        let lfs_file = NdjsonLfsFile::new(path_in_repo, oid, *size);
+                        serde_json::to_vec(&lfs_file).expect("lfs file serialization cannot fail")
+                    },
+                    CommitOperationAdd::Regular {
+                        path_in_repo,
+                        content,
+                    } => {
+                        let regular_file = NdjsonRegularFile::new(path_in_repo, content);
+                        serde_json::to_vec(&regular_file)
+                            .expect("regular file serialization cannot fail")
+                    },
                 },
                 CommitOperation::Delete(del) => {
                     if del.is_folder() {
@@ -602,12 +714,11 @@ mod tests {
 
     #[test]
     fn test_ndjson_lfs_file_serialize() {
-        let add = CommitOperationAdd {
-            path_in_repo: "data/train-00000.parquet".into(),
-            oid: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
-            size: 5242880,
-        };
-        let lfs_file = NdjsonLfsFile::from_add(&add);
+        let lfs_file = NdjsonLfsFile::new(
+            "data/train-00000.parquet",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            5242880,
+        );
         let json = serde_json::to_string(&lfs_file).unwrap();
         assert_eq!(
             json,
@@ -700,18 +811,18 @@ mod tests {
     }
 
     #[test]
-    fn test_build_ndjson_payload_with_adds() {
+    fn test_build_ndjson_payload_with_lfs_adds() {
         let operations = vec![
-            CommitOperation::Add(CommitOperationAdd {
-                path_in_repo: "data/train-00000.parquet".into(),
-                oid: "abc123".into(),
-                size: 1000,
-            }),
-            CommitOperation::Add(CommitOperationAdd {
-                path_in_repo: "data/train-00001.parquet".into(),
-                oid: "def456".into(),
-                size: 2000,
-            }),
+            CommitOperation::Add(CommitOperationAdd::lfs(
+                "data/train-00000.parquet",
+                "abc123",
+                1000,
+            )),
+            CommitOperation::Add(CommitOperationAdd::lfs(
+                "data/train-00001.parquet",
+                "def456",
+                2000,
+            )),
         ];
 
         let payload = CommitClient::build_ndjson_payload("Upload shards", None, &operations);
@@ -772,11 +883,7 @@ mod tests {
             CommitOperation::Delete(CommitOperationDelete {
                 path_in_repo: "data/old/".into(),
             }),
-            CommitOperation::Add(CommitOperationAdd {
-                path_in_repo: "data/new.parquet".into(),
-                oid: "xyz789".into(),
-                size: 5000,
-            }),
+            CommitOperation::Add(CommitOperationAdd::lfs("data/new.parquet", "xyz789", 5000)),
         ];
 
         let payload = CommitClient::build_ndjson_payload(
@@ -805,11 +912,11 @@ mod tests {
         let payload = CommitClient::build_ndjson_payload(
             "Test",
             None,
-            &[CommitOperation::Add(CommitOperationAdd {
-                path_in_repo: "test.parquet".into(),
-                oid: "abc".into(),
-                size: 100,
-            })],
+            &[CommitOperation::Add(CommitOperationAdd::lfs(
+                "test.parquet",
+                "abc",
+                100,
+            ))],
         );
 
         // Each line should end with \n
@@ -820,6 +927,162 @@ mod tests {
         let newline_count = payload_str.chars().filter(|&c| c == '\n').count();
         let line_count = payload_str.lines().count();
         assert_eq!(newline_count, line_count);
+    }
+
+    // ========================================================================
+    // Regular File Support Tests
+    // ========================================================================
+
+    #[test]
+    fn test_ndjson_regular_file_serialize() {
+        let regular_file = NdjsonRegularFile::new("README.md", b"# Dataset\n\nThis is a test.");
+
+        let json = serde_json::to_string(&regular_file).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["key"], "file");
+        assert_eq!(parsed["value"]["path"], "README.md");
+        assert_eq!(parsed["value"]["encoding"], "base64");
+        // Content should be base64-encoded
+        assert!(parsed["value"]["content"].as_str().is_some());
+    }
+
+    #[test]
+    fn test_regular_file_base64_encoding() {
+        use base64::{Engine as _, engine::general_purpose};
+
+        let content = b"Hello, World!";
+        let regular_file = NdjsonRegularFile::new("test.txt", content);
+
+        let json = serde_json::to_string(&regular_file).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let encoded_content = parsed["value"]["content"].as_str().unwrap();
+
+        // Decode and verify it matches original content
+        let decoded = general_purpose::STANDARD.decode(encoded_content).unwrap();
+        assert_eq!(decoded, content);
+    }
+
+    #[test]
+    fn test_build_ndjson_payload_with_regular_file() {
+        let operations = vec![CommitOperation::Add(CommitOperationAdd::regular(
+            "README.md",
+            b"# My Dataset".to_vec(),
+        ))];
+
+        let payload = CommitClient::build_ndjson_payload("Update README", None, &operations);
+        let payload_str = String::from_utf8(payload).unwrap();
+
+        let lines: Vec<&str> = payload_str.lines().collect();
+        assert_eq!(lines.len(), 2); // header + 1 regular file
+
+        // Verify header
+        let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(header["key"], "header");
+        assert_eq!(header["value"]["summary"], "Update README");
+
+        // Verify regular file (not LFS)
+        let file: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(file["key"], "file");
+        assert_eq!(file["value"]["path"], "README.md");
+        assert_eq!(file["value"]["encoding"], "base64");
+        // Should have content, not oid
+        assert!(file["value"]["content"].as_str().is_some());
+        assert!(file["value"]["oid"].is_null());
+    }
+
+    #[test]
+    fn test_build_ndjson_payload_mixed_lfs_and_regular() {
+        let operations = vec![
+            // LFS file (parquet data)
+            CommitOperation::Add(CommitOperationAdd::lfs(
+                "data/train-00000.parquet",
+                "abc123def456",
+                1000000,
+            )),
+            // Regular file (README)
+            CommitOperation::Add(CommitOperationAdd::regular(
+                "README.md",
+                b"# Dataset\n\nUploaded via Polars.".to_vec(),
+            )),
+            // Another LFS file
+            CommitOperation::Add(CommitOperationAdd::lfs(
+                "data/train-00001.parquet",
+                "xyz789000111",
+                2000000,
+            )),
+        ];
+
+        let payload = CommitClient::build_ndjson_payload(
+            "Upload dataset",
+            Some("2 parquet shards + README"),
+            &operations,
+        );
+        let payload_str = String::from_utf8(payload).unwrap();
+
+        let lines: Vec<&str> = payload_str.lines().collect();
+        assert_eq!(lines.len(), 4); // header + 3 files
+
+        // Verify order: header, lfs, regular, lfs (same as input)
+        let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(header["key"], "header");
+
+        let lfs1: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(lfs1["key"], "lfsFile");
+        assert_eq!(lfs1["value"]["path"], "data/train-00000.parquet");
+
+        let regular: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(regular["key"], "file");
+        assert_eq!(regular["value"]["path"], "README.md");
+        assert_eq!(regular["value"]["encoding"], "base64");
+
+        let lfs2: serde_json::Value = serde_json::from_str(lines[3]).unwrap();
+        assert_eq!(lfs2["key"], "lfsFile");
+        assert_eq!(lfs2["value"]["path"], "data/train-00001.parquet");
+    }
+
+    #[test]
+    fn test_commit_operation_add_helpers() {
+        // Test lfs() constructor
+        let lfs = CommitOperationAdd::lfs("data/test.parquet", "sha256hash", 1000);
+        assert_eq!(lfs.path_in_repo(), "data/test.parquet");
+        match lfs {
+            CommitOperationAdd::Lfs { oid, size, .. } => {
+                assert_eq!(oid, "sha256hash");
+                assert_eq!(size, 1000);
+            },
+            _ => panic!("Expected Lfs variant"),
+        }
+
+        // Test regular() constructor
+        let regular = CommitOperationAdd::regular("README.md", vec![1, 2, 3]);
+        assert_eq!(regular.path_in_repo(), "README.md");
+        match regular {
+            CommitOperationAdd::Regular { content, .. } => {
+                assert_eq!(content, vec![1, 2, 3]);
+            },
+            _ => panic!("Expected Regular variant"),
+        }
+    }
+
+    #[test]
+    fn test_regular_file_empty_content() {
+        // Ensure empty files work correctly
+        let regular = CommitOperationAdd::regular("empty.txt", vec![]);
+
+        let operations = vec![CommitOperation::Add(regular)];
+        let payload = CommitClient::build_ndjson_payload("Add empty file", None, &operations);
+        let payload_str = String::from_utf8(payload).unwrap();
+
+        let lines: Vec<&str> = payload_str.lines().collect();
+        assert_eq!(lines.len(), 2);
+
+        let file: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(file["key"], "file");
+        assert_eq!(file["value"]["path"], "empty.txt");
+        // Empty content base64 encodes to empty string
+        assert_eq!(file["value"]["content"], "");
     }
 
     // ========================================================================
