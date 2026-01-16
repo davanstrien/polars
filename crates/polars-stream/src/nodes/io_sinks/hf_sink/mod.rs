@@ -279,6 +279,69 @@ fn should_rotate_shard(current_rows: usize, options: &HfSinkOptions) -> bool {
 }
 
 // ============================================================================
+// Mode Handling Helpers (Task 5.1.5)
+// ============================================================================
+
+use polars_io::cloud::hf::ExistingFile;
+
+/// Create delete operations from a list of existing files.
+///
+/// Used by Overwrite mode to delete existing files before adding new ones.
+/// The delete operations should be committed first (before adds) for atomic replace.
+///
+/// # Arguments
+/// * `existing` - List of existing files to delete
+///
+/// # Returns
+/// A vector of `CommitOperationDelete` for each existing file.
+fn create_delete_operations(existing: Vec<ExistingFile>) -> Vec<CommitOperationDelete> {
+    existing
+        .into_iter()
+        .map(|f| CommitOperationDelete {
+            path_in_repo: f.path,
+        })
+        .collect()
+}
+
+/// Renumber shard completions to continue from the max existing shard index.
+///
+/// Used by Append mode to avoid overwriting existing shards. Finds the maximum
+/// shard index from existing files that match the split pattern, then renumbers
+/// new completions to start from max + 1.
+///
+/// # Arguments
+/// * `completions` - Mutable slice of completions to renumber
+/// * `existing` - List of existing files in the repository
+/// * `split` - The split name (e.g., "train", "test") to match
+/// * `path_in_repo` - Base path for generating new shard paths
+///
+/// # Notes
+/// - If no existing files match the split pattern, completions are unchanged
+/// - Updates both `index` and `path_in_repo` fields on each completion
+fn renumber_for_append(
+    completions: &mut [ShardCompletion],
+    existing: &[ExistingFile],
+    split: &str,
+    path_in_repo: &str,
+) {
+    // Find max existing shard index from files matching our split pattern
+    let max_existing_idx = existing
+        .iter()
+        .filter_map(|f| parse_shard_index(&f.path, split))
+        .max();
+
+    // If there are existing shards, renumber new shards to start after the max
+    if let Some(max_idx) = max_existing_idx {
+        let start_idx = max_idx + 1;
+        for (i, c) in completions.iter_mut().enumerate() {
+            c.index = start_idx + i;
+            c.path_in_repo = shard_path(path_in_repo, split, c.index);
+        }
+    }
+    // If no existing shards match the pattern, keep original numbering (starting at 0)
+}
+
+// ============================================================================
 // Shard Writer Task
 // ============================================================================
 
@@ -713,11 +776,10 @@ impl SinkNode for HfSinkNode {
                 )
                 .await?;
 
-                existing
+                // Use extracted helper function
+                create_delete_operations(existing)
                     .into_iter()
-                    .map(|f| CommitOperation::Delete(CommitOperationDelete {
-                        path_in_repo: f.path,
-                    }))
+                    .map(CommitOperation::Delete)
                     .collect()
             } else {
                 Vec::new()
@@ -736,30 +798,24 @@ impl SinkNode for HfSinkNode {
                 )
                 .await?;
 
-                // Find max existing shard index from files matching our split pattern
-                let max_existing_idx = existing
-                    .iter()
-                    .filter_map(|f| parse_shard_index(&f.path, &options.split))
-                    .max();
+                // Get the first index before renumbering for logging
+                let first_idx_before = completions.first().map(|c| c.index);
 
-                // If there are existing shards, renumber new shards to start after the max
-                if let Some(max_idx) = max_existing_idx {
-                    let start_idx = max_idx + 1;
-                    for (i, c) in completions.iter_mut().enumerate() {
-                        let new_idx = start_idx + i;
-                        c.index = new_idx;
-                        c.path_in_repo = shard_path(&options.path_in_repo, &options.split, new_idx);
-                    }
+                // Use extracted helper function
+                renumber_for_append(&mut completions, &existing, &options.split, &options.path_in_repo);
 
-                    if config::verbose() {
-                        eprintln!(
-                            "HF sink: Append mode - renumbering {} shards starting from index {}",
-                            completions.len(),
-                            start_idx
-                        );
+                // Log if renumbering occurred
+                if config::verbose() {
+                    if let Some(first_c) = completions.first() {
+                        if first_idx_before != Some(first_c.index) {
+                            eprintln!(
+                                "HF sink: Append mode - renumbering {} shards starting from index {}",
+                                completions.len(),
+                                first_c.index
+                            );
+                        }
                     }
                 }
-                // If no existing shards match the pattern, keep original numbering (starting at 0)
             }
 
             // Step D: Resolve token for commit (required for write access)
@@ -1171,5 +1227,148 @@ mod tests {
         // Also verify index and rows are tracked for metrics
         assert_eq!(completion.index, 5);
         assert_eq!(completion.num_rows, 1_000_000);
+    }
+
+    // ========================================================================
+    // Tests for Task 5.1.5: Mode handling integration tests
+    // ========================================================================
+
+    #[test]
+    fn test_create_delete_operations_basic() {
+        let existing = vec![
+            ExistingFile {
+                path: "data/train-00000.parquet".to_string(),
+                size: 1000,
+            },
+            ExistingFile {
+                path: "data/train-00001.parquet".to_string(),
+                size: 2000,
+            },
+        ];
+        let ops = create_delete_operations(existing);
+        assert_eq!(ops.len(), 2);
+        assert_eq!(ops[0].path_in_repo, "data/train-00000.parquet");
+        assert_eq!(ops[1].path_in_repo, "data/train-00001.parquet");
+    }
+
+    #[test]
+    fn test_create_delete_operations_empty() {
+        let ops = create_delete_operations(vec![]);
+        assert!(ops.is_empty());
+    }
+
+    #[test]
+    fn test_renumber_for_append_with_existing() {
+        let existing = vec![
+            ExistingFile {
+                path: "data/train-00000.parquet".to_string(),
+                size: 1000,
+            },
+            ExistingFile {
+                path: "data/train-00001.parquet".to_string(),
+                size: 2000,
+            },
+        ];
+        let mut completions = vec![
+            ShardCompletion {
+                index: 0,
+                path_in_repo: "data/train-00000.parquet".to_string(),
+                sha256: "a".repeat(64),
+                size: 500,
+                num_rows: 100,
+            },
+            ShardCompletion {
+                index: 1,
+                path_in_repo: "data/train-00001.parquet".to_string(),
+                sha256: "b".repeat(64),
+                size: 600,
+                num_rows: 200,
+            },
+        ];
+
+        renumber_for_append(&mut completions, &existing, "train", "data");
+
+        // Should start from index 2 (max existing is 1)
+        assert_eq!(completions[0].index, 2);
+        assert_eq!(completions[0].path_in_repo, "data/train-00002.parquet");
+        assert_eq!(completions[1].index, 3);
+        assert_eq!(completions[1].path_in_repo, "data/train-00003.parquet");
+    }
+
+    #[test]
+    fn test_renumber_for_append_empty_repo() {
+        let mut completions = vec![ShardCompletion {
+            index: 0,
+            path_in_repo: "data/train-00000.parquet".to_string(),
+            sha256: "a".repeat(64),
+            size: 500,
+            num_rows: 100,
+        }];
+
+        renumber_for_append(&mut completions, &[], "train", "data");
+
+        // No existing files: indices stay the same
+        assert_eq!(completions[0].index, 0);
+        assert_eq!(completions[0].path_in_repo, "data/train-00000.parquet");
+    }
+
+    #[test]
+    fn test_renumber_for_append_different_split() {
+        // Existing files are "test" split, new files are "train" split
+        let existing = vec![
+            ExistingFile {
+                path: "data/test-00000.parquet".to_string(),
+                size: 1000,
+            },
+            ExistingFile {
+                path: "data/test-00005.parquet".to_string(),
+                size: 2000,
+            },
+        ];
+        let mut completions = vec![ShardCompletion {
+            index: 0,
+            path_in_repo: "data/train-00000.parquet".to_string(),
+            sha256: "a".repeat(64),
+            size: 500,
+            num_rows: 100,
+        }];
+
+        renumber_for_append(&mut completions, &existing, "train", "data");
+
+        // "train" split doesn't match "test" files, so no renumbering
+        assert_eq!(completions[0].index, 0);
+        assert_eq!(completions[0].path_in_repo, "data/train-00000.parquet");
+    }
+
+    #[test]
+    fn test_renumber_for_append_non_contiguous() {
+        // Existing shards with gaps: 0, 2, 5
+        let existing = vec![
+            ExistingFile {
+                path: "data/train-00000.parquet".to_string(),
+                size: 1000,
+            },
+            ExistingFile {
+                path: "data/train-00002.parquet".to_string(),
+                size: 1000,
+            },
+            ExistingFile {
+                path: "data/train-00005.parquet".to_string(),
+                size: 1000,
+            },
+        ];
+        let mut completions = vec![ShardCompletion {
+            index: 0,
+            path_in_repo: "data/train-00000.parquet".to_string(),
+            sha256: "a".repeat(64),
+            size: 500,
+            num_rows: 100,
+        }];
+
+        renumber_for_append(&mut completions, &existing, "train", "data");
+
+        // Should start from 6 (max existing is 5)
+        assert_eq!(completions[0].index, 6);
+        assert_eq!(completions[0].path_in_repo, "data/train-00006.parquet");
     }
 }

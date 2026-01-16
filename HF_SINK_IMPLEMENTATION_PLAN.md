@@ -6,14 +6,15 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ---
 
-## Current Status (2026-01-15)
+## Current Status (2026-01-16)
 
 ```
 ✅ Phases 0-4 complete (Foundation, Core Writer, LFS Protocol, Streaming Integration)
-🔄 Phase 5: Commit Coordination - Task 5.1.4 complete, all write modes implemented
+✅ Task 5.1 complete: Mode Handling (ErrorIfExists, Overwrite, Append) with tests
+🔄 Phase 5: Commit Coordination - Task 5.2 next (Dataset Card Updates)
 ```
 
-**Latest Commit:** `feat(hf-sink): implement Append mode (renumber shards) (Task 5.1.4)`
+**Latest Commit:** `feat(hf-sink): add mode handling tests (Task 5.1.5)`
 
 **Build Status:**
 ```bash
@@ -27,9 +28,16 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ## What's Next
 
-### Task 5.1: Mode Handling for CommitCoordinator
+### Task 5.2: Dataset Card Updates
+**File:** `hf_sink/dataset_card.rs`
+
+- Update README.md YAML metadata
+- Add split info (rows, bytes)
+- Preserve existing content
+
+### Task 5.1: Mode Handling for CommitCoordinator ✅ COMPLETE
 The coordinator logic already exists in `HfSinkNode::finalize()` (lines 624-714).
-What's missing is mode handling (ErrorIfExists, Overwrite, Append).
+Mode handling (ErrorIfExists, Overwrite, Append) is now fully implemented and tested.
 
 **Key Files:**
 - `crates/polars-io/src/cloud/hf/api.rs` - Shared API types (GetPages, list_existing_files)
@@ -41,7 +49,7 @@ What's missing is mode handling (ErrorIfExists, Overwrite, Append).
 - [x] **5.1.2** Implement ErrorIfExists mode check in finalize()
 - [x] **5.1.3** Implement Overwrite mode (delete + add) in finalize()
 - [x] **5.1.4** Implement Append mode (renumber shards) in finalize()
-- [ ] **5.1.5** Integration tests for all modes
+- [x] **5.1.5** Integration tests for all modes (6 tests added)
 
 ---
 
@@ -319,7 +327,7 @@ def test_streaming_upload(hf_test_repo):
 - [x] **Phase 2:** Core Writer (3/3)
 - [x] **Phase 3:** LFS Protocol (4/4)
 - [x] **Phase 4:** Streaming Integration (4/4)
-- [ ] **Phase 5:** Commit Coordination (0/2) ← **Current**
+- [ ] **Phase 5:** Commit Coordination (1/2) ← **Current** (5.1 Mode Handling complete)
 - [ ] **Phase 6:** Advanced Features (0/3)
 - [ ] **Phase 7:** Python Bindings (0/3)
 - [ ] **Phase 8:** Testing (0/4)
