@@ -18,9 +18,10 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
   ✅ Task 5.2.3.2: Create dataset_card.rs with SplitInfo struct
   ✅ Task 5.2.3.3: Add YAML frontmatter extraction (parse README)
   ✅ Task 5.2.3.4: Add dataset_info update logic (update_split, update_splits)
+  ✅ Task 5.2.3.5: Add generate_updated_readme() function
 ```
 
-**Latest Commit:** `feat(hf-sink): add dataset_info update logic (Task 5.2.3.4)`
+**Latest Commit:** `feat(hf-sink): add generate_updated_readme() function (Task 5.2.3.5)`
 
 **Build Status:**
 ```bash
@@ -246,7 +247,7 @@ impl CommitCoordinator {
   - Updated `build_ndjson_payload()` to handle both LFS and regular files
   - Added helper methods: `CommitOperationAdd::lfs()`, `CommitOperationAdd::regular()`, `path_in_repo()`
   - Added 6 new tests for regular file support
-- [ ] **5.2.3** Create dataset_card.rs module (YAML parsing, SplitInfo)
+- [x] **5.2.3** Create dataset_card.rs module (YAML parsing, SplitInfo)
   - [x] **5.2.3.1** Add `serde_yaml` dependency to polars-io (version 0.9, optional, in hf_sink feature)
   - [x] **5.2.3.2** Create dataset_card.rs with SplitInfo struct
     - Added `SplitInfo` struct with `name`, `num_bytes`, `num_examples` fields
@@ -266,8 +267,13 @@ impl CommitCoordinator {
     - Added `DatasetInfo::update_splits()` - bulk update multiple splits
     - Auto-recalculates `dataset_size` after updates
     - Added 6 unit tests for update scenarios
-  - [ ] **5.2.3.5** Add generate_updated_readme() function
-  - [ ] **5.2.3.6** Add unit tests
+  - [x] **5.2.3.5** Add generate_updated_readme() function
+    - Added `CardYaml` internal struct with `#[serde(flatten)]` to preserve unknown YAML fields
+    - Added `generate_updated_readme()` - reconstructs README with updated dataset_info
+    - Added `generate_new_readme()` - creates minimal README for repos without one
+    - Preserves all existing YAML fields (license, task_categories, etc.)
+    - Added 6 unit tests including round-trip verification
+  - [x] **5.2.3.6** Add unit tests (included in 5.2.3.5)
 - [ ] **5.2.4** Add fetch_readme() to api.rs
 - [ ] **5.2.5** Update mod.rs exports
 - [ ] **5.2.6** Integrate into HfSinkNode::finalize()

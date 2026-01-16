@@ -21,6 +21,7 @@
 //! Description here...
 //! ```
 
+use polars_error::{PolarsResult, polars_err};
 use serde::{Deserialize, Serialize};
 
 /// Information about a dataset split (e.g., "train", "test").
@@ -152,6 +153,16 @@ pub struct ExtractedFrontmatter<'a> {
     pub body: &'a str,
 }
 
+/// Internal struct for parsing/serializing full README YAML frontmatter.
+/// Uses `#[serde(flatten)]` to preserve unknown fields like license, task_categories, etc.
+#[derive(Debug, Serialize, Deserialize)]
+struct CardYaml {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dataset_info: Option<DatasetInfo>,
+    #[serde(flatten)]
+    other: serde_yaml::Mapping,
+}
+
 /// Extract YAML frontmatter from a README string.
 ///
 /// Returns `None` if no valid frontmatter is found.
@@ -195,6 +206,74 @@ pub fn extract_frontmatter(readme: &str) -> Option<ExtractedFrontmatter<'_>> {
     };
 
     Some(ExtractedFrontmatter { yaml, body })
+}
+
+/// Reconstruct README.md with updated dataset_info section.
+///
+/// Takes YAML frontmatter and body from `extract_frontmatter()`,
+/// updates the `dataset_info` field, and reconstructs the README
+/// with proper `---` delimiters.
+///
+/// # Arguments
+/// * `yaml` - The YAML frontmatter (from ExtractedFrontmatter.yaml)
+/// * `body` - The markdown body (from ExtractedFrontmatter.body)
+/// * `updated_info` - The updated DatasetInfo to inject
+///
+/// # Returns
+/// Complete README string with updated frontmatter
+///
+/// # Example
+/// ```ignore
+/// let extracted = extract_frontmatter(original_readme).unwrap();
+/// let updated_readme = generate_updated_readme(
+///     extracted.yaml,
+///     extracted.body,
+///     &updated_dataset_info
+/// )?;
+/// ```
+pub fn generate_updated_readme(
+    yaml: &str,
+    body: &str,
+    updated_info: &DatasetInfo,
+) -> PolarsResult<String> {
+    // 1. Parse existing YAML, preserving all other fields
+    let mut card: CardYaml = serde_yaml::from_str(yaml)
+        .map_err(|e| polars_err!(ComputeError: "Failed to parse YAML frontmatter: {}", e))?;
+
+    // 2. Update dataset_info
+    card.dataset_info = Some(updated_info.clone());
+
+    // 3. Serialize back to YAML
+    let yaml_str = serde_yaml::to_string(&card)
+        .map_err(|e| polars_err!(ComputeError: "Failed to serialize YAML: {}", e))?;
+
+    // 4. Reconstruct README with frontmatter delimiters
+    // Note: serde_yaml already adds trailing newline
+    Ok(format!("---\n{}---\n{}", yaml_str, body))
+}
+
+/// Generate a new README.md with only dataset_info metadata.
+///
+/// Use when no existing README exists in the repository.
+///
+/// # Example
+/// ```ignore
+/// let info = DatasetInfo::new(vec![
+///     SplitInfo::new("train", 1024, 100),
+/// ]);
+/// let readme = generate_new_readme(&info)?;
+/// ```
+pub fn generate_new_readme(info: &DatasetInfo) -> PolarsResult<String> {
+    // Create a CardYaml with just the dataset_info
+    let card = CardYaml {
+        dataset_info: Some(info.clone()),
+        other: serde_yaml::Mapping::new(),
+    };
+
+    let yaml_str = serde_yaml::to_string(&card)
+        .map_err(|e| polars_err!(ComputeError: "Failed to serialize YAML: {}", e))?;
+
+    Ok(format!("---\n{}---\n", yaml_str))
 }
 
 #[cfg(test)]
@@ -462,5 +541,166 @@ dataset_info:
 
         assert_eq!(info.config_name, Some("default".to_string()));
         assert_eq!(info.splits.len(), 2);
+    }
+
+    // generate_updated_readme tests
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_generate_updated_readme_basic() {
+        let readme = "---\nlicense: mit\n---\n\n# My Dataset";
+        let extracted = extract_frontmatter(readme).unwrap();
+
+        let info = DatasetInfo::new(vec![SplitInfo::new("train", 1024, 100)]);
+        let updated = generate_updated_readme(extracted.yaml, extracted.body, &info).unwrap();
+
+        // Should contain the frontmatter delimiters
+        assert!(updated.starts_with("---\n"));
+        assert!(updated.contains("---\n\n# My Dataset"));
+
+        // Should contain the new dataset_info
+        assert!(updated.contains("dataset_info:"));
+        assert!(updated.contains("name: train"));
+        assert!(updated.contains("num_bytes: 1024"));
+        assert!(updated.contains("num_examples: 100"));
+
+        // Should preserve the license
+        assert!(updated.contains("license: mit"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_generate_updated_readme_preserves_other_fields() {
+        let readme = r#"---
+license: apache-2.0
+task_categories:
+  - text-classification
+language:
+  - en
+---
+
+# My Dataset
+
+Description here.
+"#;
+        let extracted = extract_frontmatter(readme).unwrap();
+        let info = DatasetInfo::new(vec![SplitInfo::new("train", 2048, 200)]);
+        let updated = generate_updated_readme(extracted.yaml, extracted.body, &info).unwrap();
+
+        // Should preserve all original fields
+        assert!(updated.contains("license:"));
+        assert!(updated.contains("task_categories:"));
+        assert!(updated.contains("text-classification"));
+        assert!(updated.contains("language:"));
+
+        // Should have the new dataset_info
+        assert!(updated.contains("dataset_info:"));
+        assert!(updated.contains("num_bytes: 2048"));
+
+        // Should preserve the body
+        assert!(updated.contains("# My Dataset"));
+        assert!(updated.contains("Description here."));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_generate_updated_readme_replaces_existing_dataset_info() {
+        let readme = r#"---
+license: mit
+dataset_info:
+  splits:
+    - name: old_split
+      num_bytes: 100
+      num_examples: 10
+---
+
+# Dataset
+"#;
+        let extracted = extract_frontmatter(readme).unwrap();
+        let info = DatasetInfo::new(vec![SplitInfo::new("new_split", 5000, 500)]);
+        let updated = generate_updated_readme(extracted.yaml, extracted.body, &info).unwrap();
+
+        // Should NOT contain the old split
+        assert!(!updated.contains("old_split"));
+        assert!(!updated.contains("num_bytes: 100"));
+
+        // Should contain the new split
+        assert!(updated.contains("new_split"));
+        assert!(updated.contains("num_bytes: 5000"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_generate_updated_readme_empty_body() {
+        let readme = "---\nlicense: mit\n---";
+        let extracted = extract_frontmatter(readme).unwrap();
+        let info = DatasetInfo::new(vec![SplitInfo::new("train", 1024, 100)]);
+        let updated = generate_updated_readme(extracted.yaml, extracted.body, &info).unwrap();
+
+        assert!(updated.starts_with("---\n"));
+        assert!(updated.contains("dataset_info:"));
+        assert!(updated.ends_with("---\n"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_generate_new_readme() {
+        let info = DatasetInfo::new(vec![
+            SplitInfo::new("train", 1024, 100),
+            SplitInfo::new("test", 512, 50),
+        ]);
+        let readme = generate_new_readme(&info).unwrap();
+
+        // Should have proper frontmatter structure
+        assert!(readme.starts_with("---\n"));
+        assert!(readme.ends_with("---\n"));
+
+        // Should contain the dataset_info
+        assert!(readme.contains("dataset_info:"));
+        assert!(readme.contains("splits:"));
+        assert!(readme.contains("name: train"));
+        assert!(readme.contains("num_bytes: 1024"));
+        assert!(readme.contains("name: test"));
+        assert!(readme.contains("num_bytes: 512"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_generate_updated_readme_roundtrip() {
+        // Test that we can extract → update → extract again
+        let original = r#"---
+license: mit
+dataset_info:
+  splits:
+    - name: train
+      num_bytes: 1000
+      num_examples: 100
+---
+
+# Original Dataset
+"#;
+        let extracted1 = extract_frontmatter(original).unwrap();
+
+        // Update with new info
+        let mut info = DatasetInfo::new(vec![SplitInfo::new("train", 2000, 200)]);
+        info.update_split(SplitInfo::new("test", 500, 50));
+
+        let updated = generate_updated_readme(extracted1.yaml, extracted1.body, &info).unwrap();
+
+        // Extract from updated README
+        let extracted2 = extract_frontmatter(&updated).unwrap();
+
+        // Parse and verify
+        #[derive(serde::Deserialize)]
+        struct CardYaml {
+            dataset_info: Option<DatasetInfo>,
+        }
+        let card: CardYaml = serde_yaml::from_str(extracted2.yaml).unwrap();
+        let parsed_info = card.dataset_info.unwrap();
+
+        assert_eq!(parsed_info.splits.len(), 2);
+        assert_eq!(parsed_info.splits[0].name, "train");
+        assert_eq!(parsed_info.splits[0].num_bytes, 2000);
+        assert_eq!(parsed_info.splits[1].name, "test");
+        assert_eq!(parsed_info.splits[1].num_bytes, 500);
     }
 }
