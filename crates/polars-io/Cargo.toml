@@ -44,6 +44,7 @@ reqwest = { workspace = true, optional = true, features = ["json"] }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, features = ["rc"], optional = true }
 serde_json = { version = "1", optional = true }
+serde_yaml = { version = "0.9", optional = true }
 simd-json = { workspace = true, optional = true }
 simdutf8 = { workspace = true, optional = true }
 strum = { workspace = true, optional = true }
@@ -136,7 +137,7 @@ aws = ["object_store/aws", "cloud", "reqwest"]
 azure = ["object_store/azure", "cloud"]
 gcp = ["object_store/gcp", "cloud"]
 http = ["object_store/http", "cloud"]
-hf_sink = ["cloud", "sha2", "tempfile", "base64"]
+hf_sink = ["cloud", "sha2", "tempfile", "base64", "serde_yaml"]
 temporal = ["dtype-datetime", "dtype-date", "dtype-time"]
 simd = []
 python = ["pyo3", "polars-error/python", "polars-utils/python"]
