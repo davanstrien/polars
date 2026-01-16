@@ -14,9 +14,10 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 🔄 Phase 5: Commit Coordination - Task 5.2 in progress (Dataset Card Updates)
   ✅ Task 5.2.1: Add update_card option to HfSinkOptions
   ✅ Task 5.2.2: Add regular file support to commit.rs (NdjsonFile, base64)
+  ✅ Task 5.2.3.1: Add serde_yaml dependency to polars-io
 ```
 
-**Latest Commit:** `f16bce3d25 feat(hf-sink): add regular file support to commit.rs (Task 5.2.2)`
+**Latest Commit:** `183c58881a feat(hf-sink): add serde_yaml dependency for dataset card support (Task 5.2.3.1)`
 
 **Build Status:**
 ```bash
@@ -243,6 +244,12 @@ impl CommitCoordinator {
   - Added helper methods: `CommitOperationAdd::lfs()`, `CommitOperationAdd::regular()`, `path_in_repo()`
   - Added 6 new tests for regular file support
 - [ ] **5.2.3** Create dataset_card.rs module (YAML parsing, SplitInfo)
+  - [x] **5.2.3.1** Add `serde_yaml` dependency to polars-io (version 0.9, optional, in hf_sink feature)
+  - [ ] **5.2.3.2** Create dataset_card.rs with SplitInfo struct
+  - [ ] **5.2.3.3** Add YAML frontmatter extraction (parse README)
+  - [ ] **5.2.3.4** Add dataset_info update logic
+  - [ ] **5.2.3.5** Add generate_updated_readme() function
+  - [ ] **5.2.3.6** Add unit tests
 - [ ] **5.2.4** Add fetch_readme() to api.rs
 - [ ] **5.2.5** Update mod.rs exports
 - [ ] **5.2.6** Integrate into HfSinkNode::finalize()
