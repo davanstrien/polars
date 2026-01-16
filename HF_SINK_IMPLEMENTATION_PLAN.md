@@ -19,9 +19,10 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
   ✅ Task 5.2.3.3: Add YAML frontmatter extraction (parse README)
   ✅ Task 5.2.3.4: Add dataset_info update logic (update_split, update_splits)
   ✅ Task 5.2.3.5: Add generate_updated_readme() function
+  ✅ Task 5.2.4: Add fetch_readme() to api.rs
 ```
 
-**Latest Commit:** `feat(hf-sink): add generate_updated_readme() function (Task 5.2.3.5)`
+**Latest Commit:** `feat(hf-sink): add fetch_readme() function (Task 5.2.4)`
 
 **Build Status:**
 ```bash
@@ -30,21 +31,16 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink  # 21 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (70 commits ahead, local only)
+**Branch:** `feature/hf-hub-sink` (71 commits ahead, local only)
 
 ---
 
 ## What's Next
 
-### Task 5.2.4: Add fetch_readme() to api.rs
-**File:** `crates/polars-io/src/cloud/hf/api.rs`
+### Task 5.2.5: Update mod.rs exports
+**File:** `crates/polars-io/src/cloud/hf/mod.rs`
 
-Fetch existing README.md from HF Hub repository to allow updating it with new split metadata.
-
-**Subtasks:**
-- Add `fetch_readme()` async function
-- Handle 404 (no README exists)
-- Return Option<String> for README content
+Ensure all dataset_card functions are properly exported for use in polars-stream.
 
 ### Task 5.1: Mode Handling for CommitCoordinator ✅ COMPLETE
 The coordinator logic already exists in `HfSinkNode::finalize()` (lines 624-714).
@@ -277,7 +273,12 @@ impl CommitCoordinator {
     - Preserves all existing YAML fields (license, task_categories, etc.)
     - Added 6 unit tests including round-trip verification
   - [x] **5.2.3.6** Add unit tests (included in 5.2.3.5)
-- [ ] **5.2.4** Add fetch_readme() to api.rs
+- [x] **5.2.4** Add fetch_readme() to api.rs
+  - Added async `fetch_readme()` function to api.rs
+  - Handles 404 (no README exists) → returns `Ok(None)`
+  - Returns `Ok(Some(content))` on success
+  - Uses same HTTP client pattern as `check_existing_files()`
+  - Exported from mod.rs
 - [ ] **5.2.5** Update mod.rs exports
 - [ ] **5.2.6** Integrate into HfSinkNode::finalize()
 - [ ] **5.2.7** Integration tests

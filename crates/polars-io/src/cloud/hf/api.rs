@@ -3,7 +3,7 @@
 //! Provides common types for interacting with the HF Hub Tree API,
 //! used by both glob expansion (read) and mode handling (write).
 
-use polars_error::{PolarsResult, to_compute_err};
+use polars_error::{PolarsResult, polars_bail, to_compute_err};
 
 use super::url::HFRepoLocation;
 use crate::pl_async::with_concurrency_budget;
@@ -192,6 +192,70 @@ pub async fn check_existing_files(
     let repo_location = HFRepoLocation::new(repo_type, repo_id, revision);
 
     list_existing_files(&client, &repo_location, path_prefix).await
+}
+
+/// Fetch the README.md file from an HF Hub repository.
+///
+/// Used to retrieve the existing dataset card content before updating it
+/// with new split metadata during writes.
+///
+/// # Arguments
+/// * `repo_type` - Repository bucket type ("datasets", "spaces")
+/// * `repo_id` - Repository ID ("user/repo" or "org/repo")
+/// * `revision` - Git revision ("main", etc.)
+/// * `token` - Optional HF API token for private repos
+///
+/// # Returns
+/// * `Ok(Some(content))` - README content as a string
+/// * `Ok(None)` - README does not exist (404)
+/// * `Err(...)` - Other errors (network, auth, etc.)
+pub async fn fetch_readme(
+    repo_type: &str,
+    repo_id: &str,
+    revision: &str,
+    token: Option<&str>,
+) -> PolarsResult<Option<String>> {
+    use crate::cloud::options::USER_AGENT;
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(token) = token {
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token))
+                .map_err(to_compute_err)?,
+        );
+    }
+
+    let client = reqwest::ClientBuilder::new()
+        .user_agent(USER_AGENT)
+        .http1_only()
+        .https_only(true)
+        .default_headers(headers)
+        .build()
+        .map_err(to_compute_err)?;
+
+    let repo_location = HFRepoLocation::new(repo_type, repo_id, revision);
+    let uri = repo_location.get_file_uri("README.md");
+
+    let resp = with_concurrency_budget(1, || async { client.get(&uri).send().await })
+        .await
+        .map_err(to_compute_err)?;
+
+    let status = resp.status();
+
+    // Handle 404 - README doesn't exist
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+
+    // Handle other errors
+    if !status.is_success() {
+        polars_bail!(ComputeError: "Failed to fetch README.md: HTTP {}", status);
+    }
+
+    // Read content
+    let content = resp.text().await.map_err(to_compute_err)?;
+    Ok(Some(content))
 }
 
 #[cfg(test)]
