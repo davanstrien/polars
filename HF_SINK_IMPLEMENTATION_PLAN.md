@@ -14,15 +14,16 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 🔄 Phase 5: Commit Coordination - Task 5.2 next (Dataset Card Updates)
 ```
 
-**Latest Commit:** `feat(hf-sink): add mode handling tests (Task 5.1.5)`
+**Latest Commit:** `f88d2e709d feat(hf-sink): add mode handling tests and refactor helpers (Task 5.1.5)`
 
 **Build Status:**
 ```bash
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
+✅ cargo test -p polars-stream --features hf_sink hf_sink  # 21 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (56 commits ahead, local only)
+**Branch:** `feature/hf-hub-sink` (57 commits ahead, local only)
 
 ---
 
