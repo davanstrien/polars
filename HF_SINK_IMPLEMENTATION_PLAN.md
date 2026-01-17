@@ -20,6 +20,8 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
   ✅ Task 5.2.3.4: Add dataset_info update logic (update_split, update_splits)
   ✅ Task 5.2.3.5: Add generate_updated_readme() function
   ✅ Task 5.2.4: Add fetch_readme() to api.rs
+  ✅ Task 5.2.5: Update mod.rs exports (already complete)
+  ✅ Task 5.2.6: Integrate into HfSinkNode::finalize()
 ```
 
 **Latest Commit:** `ae7efae28b feat(hf-sink): add fetch_readme() function (Task 5.2.4)`
@@ -37,10 +39,23 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ## What's Next
 
-### Task 5.2.5: Update mod.rs exports
-**File:** `crates/polars-io/src/cloud/hf/mod.rs`
+### Task 5.2.7: Integration tests for dataset card updates
+**File:** `crates/polars-stream/src/nodes/io_sinks/hf_sink/mod.rs` (tests section)
 
-Ensure all dataset_card functions are properly exported for use in polars-stream.
+Add tests to verify dataset card update logic:
+1. Test README update when `update_card=true` (default)
+2. Test no README update when `update_card=false`
+3. Test handling missing README (creates new)
+4. Test handling README without frontmatter
+5. Test preserving existing splits when updating
+6. Test preserving other YAML fields (license, etc.)
+
+### Task 5.2.6: Integrate into HfSinkNode::finalize() ✅ COMPLETE
+Integration complete. The finalize() method now:
+- Fetches existing README via fetch_readme()
+- Parses/updates DatasetInfo with new SplitInfo
+- Generates updated README content
+- Includes README.md as regular file in atomic commit
 
 ### Task 5.1: Mode Handling for CommitCoordinator ✅ COMPLETE
 The coordinator logic already exists in `HfSinkNode::finalize()` (lines 624-714).
@@ -279,8 +294,12 @@ impl CommitCoordinator {
   - Returns `Ok(Some(content))` on success
   - Uses same HTTP client pattern as `check_existing_files()`
   - Exported from mod.rs
-- [ ] **5.2.5** Update mod.rs exports
-- [ ] **5.2.6** Integrate into HfSinkNode::finalize()
+- [x] **5.2.5** Update mod.rs exports (already complete - all exports in place)
+- [x] **5.2.6** Integrate into HfSinkNode::finalize()
+  - Added imports for dataset_card types in hf_sink/mod.rs
+  - Added parse_dataset_info_from_yaml() to polars-io (exported from mod.rs)
+  - Implemented Step G.5 in finalize() for README generation
+  - README is included as regular file in atomic commit
 - [ ] **5.2.7** Integration tests
 
 ---

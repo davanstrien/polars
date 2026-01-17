@@ -276,6 +276,27 @@ pub fn generate_new_readme(info: &DatasetInfo) -> PolarsResult<String> {
     Ok(format!("---\n{}---\n", yaml_str))
 }
 
+/// Parse existing DatasetInfo from YAML frontmatter.
+///
+/// Used to extract and preserve existing split information when updating
+/// the README.md. Returns None if parsing fails or no dataset_info exists.
+///
+/// # Arguments
+/// * `yaml` - The YAML frontmatter content (without `---` delimiters)
+///
+/// # Example
+/// ```ignore
+/// let readme = "---\ndataset_info:\n  splits:\n  - name: train\n---\n";
+/// let extracted = extract_frontmatter(readme).unwrap();
+/// let info = parse_dataset_info_from_yaml(extracted.yaml);
+/// assert!(info.is_some());
+/// ```
+pub fn parse_dataset_info_from_yaml(yaml: &str) -> Option<DatasetInfo> {
+    serde_yaml::from_str::<CardYaml>(yaml)
+        .ok()
+        .and_then(|c| c.dataset_info)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

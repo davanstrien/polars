@@ -53,7 +53,7 @@ pub mod dataset_card;
 #[cfg(feature = "hf_sink")]
 pub use dataset_card::{
     DatasetInfo, ExtractedFrontmatter, SplitInfo, extract_frontmatter,
-    generate_new_readme, generate_updated_readme,
+    generate_new_readme, generate_updated_readme, parse_dataset_info_from_yaml,
 };
 // API utilities for mode handling (list existing files) and README fetching
 #[cfg(feature = "hf_sink")]

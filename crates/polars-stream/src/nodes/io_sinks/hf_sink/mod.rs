@@ -23,7 +23,11 @@ use polars_core::prelude::CompatLevel;
 use polars_core::schema::SchemaRef;
 use polars_error::{PolarsResult, polars_bail, polars_err};
 use polars_io::cloud::hf::commit::{CommitClient, CommitOperation, CommitOperationAdd, CommitOperationDelete};
-use polars_io::cloud::hf::{check_existing_files, get_hf_token};
+use polars_io::cloud::hf::{
+    DatasetInfo, SplitInfo, check_existing_files, extract_frontmatter,
+    fetch_readme, generate_new_readme, generate_updated_readme, get_hf_token,
+    parse_dataset_info_from_yaml,
+};
 use polars_io::cloud::hf::lfs::client::LfsClient;
 use polars_io::cloud::hf::lfs::upload::UploadExecutor;
 use polars_io::cloud::hf::options::{HfSinkOptions, HfWriteMode};
@@ -827,7 +831,7 @@ impl SinkNode for HfSinkNode {
                 options.repo_type.as_str(),
                 &options.repo_id,
                 &options.effective_revision(),
-                token,
+                token.clone(),
             )?;
 
             // Step F: Build commit operations from ShardCompletions
@@ -842,14 +846,9 @@ impl SinkNode for HfSinkNode {
                 })
                 .collect();
 
-            // Combine: deletes first, then adds (for atomic replace)
             let num_deleted = delete_ops.len();
-            let operations: Vec<CommitOperation> = delete_ops
-                .into_iter()
-                .chain(add_ops)
-                .collect();
 
-            // Step G: Build commit message
+            // Step G: Build commit message (compute totals first for G.5)
             let total_rows: usize = completions.iter().map(|c| c.num_rows).sum();
             let total_bytes: u64 = completions.iter().map(|c| c.size).sum();
             let summary = options
@@ -884,6 +883,69 @@ impl SinkNode for HfSinkNode {
                     total_bytes as f64 / (1024.0 * 1024.0)
                 )
             };
+
+            // Step G.5: Update dataset card (README.md) if enabled
+            let readme_operation: Option<CommitOperation> = if options.update_card {
+                // Create SplitInfo from totals
+                let split_info = SplitInfo::new(&options.split, total_bytes, total_rows as u64);
+
+                // Fetch existing README
+                let readme_content = fetch_readme(
+                    options.repo_type.as_str(),
+                    &options.repo_id,
+                    options.effective_revision(),
+                    Some(&token),
+                )
+                .await?;
+
+                // Generate updated README
+                let updated_readme = match readme_content {
+                    Some(content) => {
+                        // Parse existing frontmatter
+                        if let Some(extracted) = extract_frontmatter(&content) {
+                            // Parse existing dataset_info and update with new split
+                            let mut dataset_info = parse_dataset_info_from_yaml(extracted.yaml)
+                                .unwrap_or_default();
+                            dataset_info.update_split(split_info);
+                            generate_updated_readme(extracted.yaml, extracted.body, &dataset_info)?
+                        } else {
+                            // README exists but no frontmatter - prepend new frontmatter
+                            let dataset_info = DatasetInfo::new(vec![split_info]);
+                            let new_frontmatter = generate_new_readme(&dataset_info)?;
+                            // generate_new_readme returns "---\n...\n---\n", so just append content
+                            format!("{}{}", new_frontmatter, content)
+                        }
+                    }
+                    None => {
+                        // No README exists - create minimal one with just dataset_info
+                        let dataset_info = DatasetInfo::new(vec![split_info]);
+                        generate_new_readme(&dataset_info)?
+                    }
+                };
+
+                if config::verbose() {
+                    eprintln!(
+                        "HF sink: updating README.md with split '{}' ({} rows, {:.2} MB)",
+                        options.split,
+                        total_rows,
+                        total_bytes as f64 / (1024.0 * 1024.0)
+                    );
+                }
+
+                Some(CommitOperation::Add(CommitOperationAdd::regular(
+                    "README.md",
+                    updated_readme.into_bytes(),
+                )))
+            } else {
+                None
+            };
+
+            // Combine: deletes first, then adds, then README (for atomic commit)
+            let operations: Vec<CommitOperation> = delete_ops
+                .into_iter()
+                .chain(add_ops)
+                .chain(readme_operation)
+                .collect();
 
             // Step H: Execute atomic commit
             let commit_info = commit_client
