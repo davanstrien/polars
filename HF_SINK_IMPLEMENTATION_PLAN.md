@@ -9,24 +9,9 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ## Current Status (2026-01-17)
 
 ```
-✅ Phases 0-4 complete (Foundation, Core Writer, LFS Protocol, Streaming Integration)
-✅ Task 5.1 complete: Mode Handling (ErrorIfExists, Overwrite, Append) with tests
-✅ Task 5.2 complete: Dataset Card Updates (README.md generation)
-  ✅ Task 5.2.1: Add update_card option to HfSinkOptions
-  ✅ Task 5.2.2: Add regular file support to commit.rs (NdjsonFile, base64)
-  ✅ Task 5.2.3.1: Add serde_yaml dependency to polars-io
-  ✅ Task 5.2.3.2: Create dataset_card.rs with SplitInfo struct
-  ✅ Task 5.2.3.3: Add YAML frontmatter extraction (parse README)
-  ✅ Task 5.2.3.4: Add dataset_info update logic (update_split, update_splits)
-  ✅ Task 5.2.3.5: Add generate_updated_readme() function
-  ✅ Task 5.2.4: Add fetch_readme() to api.rs
-  ✅ Task 5.2.5: Update mod.rs exports (already complete)
-  ✅ Task 5.2.6: Integrate into HfSinkNode::finalize()
-  ✅ Task 5.2.7: Integration tests for dataset card updates (6 tests)
-🔄 Phase 5 complete - Moving to Phase 6
+✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
+🔄 Phase 6 next: Advanced Features (Checkpoint, Partitioned Writes, Metrics)
 ```
-
-**Latest Commit:** `5276086b32 feat(hf-sink): add integration tests for dataset card updates (Task 5.2.7)`
 
 **Build Status:**
 ```bash
@@ -35,54 +20,36 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink  # 27 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (76 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (77 commits ahead of main, local only)
 
 ---
 
 ## What's Next
 
-### Task 5.2.7: Integration tests for dataset card updates ✅ COMPLETE
-**File:** `crates/polars-stream/src/nodes/io_sinks/hf_sink/mod.rs` (tests section)
+### Phase 6: Advanced Features (Current Priority)
 
-Added `build_readme_operation()` helper function and 6 unit tests:
-1. ✅ Test README update when `update_card=true` (default)
-2. ✅ Test no README update when `update_card=false`
-3. ✅ Test handling missing README (creates new)
-4. ✅ Test handling README without frontmatter
-5. ✅ Test preserving existing splits when updating
-6. ✅ Test preserving other YAML fields (license, etc.)
-
-### Next: Phase 6 - Advanced Features
-
-Phase 5 (Commit Coordination) is now complete. The next phase is:
-
-**Task 6.1: Checkpoint System**
+**Task 6.1: Checkpoint System** ← Start Here
+- **File:** `cloud/hf/checkpoint.rs` (new)
 - Persist checkpoint state to JSON for resume on failure
-- Skip already-uploaded shards
+- Skip already-uploaded shards on resume
 - Delete checkpoint on successful commit
 
-### Task 5.2.6: Integrate into HfSinkNode::finalize() ✅ COMPLETE
-Integration complete. The finalize() method now:
-- Fetches existing README via fetch_readme()
-- Parses/updates DatasetInfo with new SplitInfo
-- Generates updated README content
-- Includes README.md as regular file in atomic commit
+**Task 6.2: Partitioned Write Support**
+- Hive-style paths: `data/{col}={val}/train-00000.parquet`
+- Per-partition shard limits
+- Atomic commit across partitions
 
-### Task 5.1: Mode Handling for CommitCoordinator ✅ COMPLETE
-The coordinator logic already exists in `HfSinkNode::finalize()` (lines 624-714).
-Mode handling (ErrorIfExists, Overwrite, Append) is now fully implemented and tested.
+**Task 6.3: Progress Reporting**
+- `UploadProgress` trait for callbacks
+- Note: `get_metrics()` stub exists in hf_sink/mod.rs
 
-**Key Files:**
-- `crates/polars-io/src/cloud/hf/api.rs` - Shared API types (GetPages, list_existing_files)
-- `crates/polars-stream/src/nodes/io_sinks/hf_sink/mod.rs` - finalize() where mode logic goes
-- `crates/polars-io/src/cloud/hf/options.rs` - HfWriteMode enum
+### Phase 7: Python Bindings (After Phase 6)
 
-**Subtasks:**
-- [x] **5.1.1** Add `list_existing_files()` helper in api.rs
-- [x] **5.1.2** Implement ErrorIfExists mode check in finalize()
-- [x] **5.1.3** Implement Overwrite mode (delete + add) in finalize()
-- [x] **5.1.4** Implement Append mode (renumber shards) in finalize()
-- [x] **5.1.5** Integration tests for all modes (6 tests added)
+Expose `sink_parquet("hf://...")` to users:
+- **File:** `py-polars/src/cloud/hf.rs` (new)
+- PyO3 bindings for HfSinkOptions
+- Detect `hf://` prefix in sink_parquet
+- Pass storage_options for auth
 
 ---
 
@@ -117,235 +84,318 @@ User: lf.sink_parquet("hf://datasets/user/repo/data/train.parquet")
 
 ## Completed Phases (Summary)
 
-| Phase | Description | Files |
-|-------|-------------|-------|
-| **1: Foundation** | Options, URL parsing, auth | `cloud/hf/{options,url,auth}.rs` |
-| **2: Core Writer** | Hash+buffer+parquet | `{hashing_writer,mmap_buffer,shard_writer}.rs` |
-| **3: LFS Protocol** | Upload + commit APIs | `lfs/{types,client,upload}.rs`, `commit.rs` |
+| Phase | Description | Key Files | Status |
+|-------|-------------|-----------|--------|
+| **0: Dev Setup** | Branch, build, tests | - | ✅ Complete |
+| **1: Foundation** | Options, URL, auth | `cloud/hf/{options,url,auth}.rs` | ✅ Complete |
+| **2: Core Writer** | Hash+buffer+parquet | `{hashing_writer,mmap_buffer,shard_writer}.rs` | ✅ Complete |
+| **3: LFS Protocol** | Upload + commit APIs | `lfs/{types,client,upload}.rs`, `commit.rs` | ✅ Complete |
+| **4: Streaming** | HfSinkNode integration | `hf_sink/mod.rs`, `to_graph.rs` | ✅ Complete |
+| **5: Coordination** | Mode handling, README | `api.rs`, `dataset_card.rs` | ✅ Complete |
 
-See [HF_SINK_ARCHIVE.md](./HF_SINK_ARCHIVE.md) for details.
-
----
-
-## Phase 4: Streaming Integration (In Progress)
-
-### Task 4.1-4.3 ✅ Complete
-- HfSinkNode skeleton implemented
-- Shard Writer Task with buffer_and_write_task() and upload_shard_task()
-- finalize() for atomic commit
-
-### Task 4.4: IOSinkNode Integration ✅
-**Status:** Complete (4/4 subtasks)
-
-#### 4.4.1 ✅ Add PhysNodeKind::HfSink variant
-```rust
-// crates/polars-stream/src/physical_plan/mod.rs
-pub enum PhysNodeKind {
-    // ...
-    HfSink { input: PhysNodeKey },
-}
-```
-
-#### 4.4.2 ✅ Add URL detection in lower_ir.rs
-```rust
-// crates/polars-stream/src/physical_plan/lower_ir.rs
-SinkTypeIR::File(options) => {
-    let options = options.clone();
-    let input = lower_ir!(*input)?;
-
-    #[cfg(feature = "hf_sink")]
-    {
-        if options.target.cloud_scheme() == Some(CloudScheme::Hf) {
-            PhysNodeKind::HfSink { input, options }
-        } else {
-            PhysNodeKind::FileSink { input, options }
-        }
-    }
-
-    #[cfg(not(feature = "hf_sink"))]
-    PhysNodeKind::FileSink { input, options }
-},
-```
-
-#### 4.4.3 ✅ Add graph conversion in to_graph.rs
-```rust
-// crates/polars-stream/src/physical_plan/to_graph.rs
-#[cfg(feature = "hf_sink")]
-HfSink { input, options } => {
-    use polars_io::cloud::hf::HfSinkOptions;
-    use polars_plan::dsl::{SinkOptions, SinkTarget};
-
-    let FileSinkOptions { target, unified_sink_args, .. } = options;
-    let input_schema = ctx.phys_sm[input.node].output_schema.clone();
-    let input_key = to_graph_rec(input.node, ctx)?;
-
-    let url = match target {
-        SinkTarget::Path(path) => path.as_str(),
-        SinkTarget::Dyn(_) => polars_bail!(ComputeError: "HF sink does not support dynamic targets"),
-    };
-
-    let hf_options = HfSinkOptions::from_url(url)?;
-    let sink_options = SinkOptions {
-        sync_on_close: unified_sink_args.sync_on_close,
-        maintain_order: unified_sink_args.maintain_order,
-        mkdir: unified_sink_args.mkdir,
-    };
-
-    let node = HfSinkNode::new(hf_options, input_schema, sink_options)?;
-    ctx.graph.add_node(SinkComputeNode::from(node), [(input_key, input.port)])
-}
-```
-
-Also added `HfSinkOptions::from_url()` in `crates/polars-io/src/cloud/hf/options.rs`:
-```rust
-pub fn from_url(url: &str) -> PolarsResult<Self> {
-    let parts = super::url::HFPathParts::try_from_uri(url)?;
-    HfSinkOptions::builder(&parts.repository)
-        .with_repo_type(parts.repo_type())
-        .with_revision(parts.revision)
-        .with_path_in_repo(parts.path)
-        .build()
-}
-```
-
-#### 4.4.4 ✅ End-to-end integration test
-**File:** `crates/polars-stream/src/physical_plan/lower_ir.rs` (test module at end)
-
-```rust
-#[cfg(all(test, feature = "hf_sink", feature = "parquet"))]
-mod hf_sink_integration_tests {
-    // Tests verify the IR → PhysNodeKind::HfSink pipeline
-    fn test_hf_url_creates_hf_sink_node();      // hf:// → HfSink
-    fn test_non_hf_url_creates_file_sink_node(); // local → FileSink
-    fn test_hf_url_with_revision();             // @revision syntax
-    fn test_hf_url_spaces_repo_type();          // hf://spaces/
-    fn test_hf_url_options_parsing();           // HfSinkOptions::from_url()
-    fn test_invalid_hf_url_errors();            // Error handling
-}
-```
-
-**Run tests:**
-```bash
-cargo test -p polars-stream --features hf_sink,parquet hf_sink_integration_tests
-```
+See [HF_SINK_ARCHIVE.md](./HF_SINK_ARCHIVE.md) for implementation details.
 
 ---
 
-## Phase 5: Commit Coordination
+## Phase 4: Streaming Integration ✅ COMPLETE
 
-### Task 5.1: CommitCoordinator [ ]
-**File:** `hf_sink/coordinator.rs`
+HfSinkNode (4.1-4.3) and IOSinkNode integration (4.4) fully implemented.
+- SinkNode trait implementation with `buffer_and_write_task()`, `upload_shard_task()`
+- PhysNodeKind::HfSink variant with URL detection in lower_ir.rs
+- Graph conversion in to_graph.rs with `HfSinkOptions::from_url()`
+- 6 integration tests in lower_ir.rs
 
-```rust
-pub struct CommitCoordinator {
-    options: Arc<HfSinkOptions>,
-    commit_client: CommitClient,
-    additions: Vec<CommitOperationAdd>,
-}
+**Key Files:** `hf_sink/mod.rs`, `physical_plan/{mod,lower_ir,to_graph}.rs`, `options.rs`
 
-impl CommitCoordinator {
-    pub fn register_completion(&mut self, completion: ShardCompletion);
-    pub async fn execute_commit(&mut self) -> PolarsResult<CommitInfo>;
-    async fn handle_overwrite(&self) -> PolarsResult<Vec<CommitOperationDelete>>;
-}
-```
+**Tests:** `cargo test -p polars-stream --features hf_sink,parquet hf_sink_integration_tests`
 
-**Acceptance:**
-- [ ] Collects all shard completions
-- [ ] Overwrite: deletes existing files first
-- [ ] Append: renumbers shards
-- [ ] ErrorIfExists: fails if files exist
+---
 
-### Task 5.2: Dataset Card Updates [ ]
-**File:** `cloud/hf/dataset_card.rs`
+## Phase 5: Commit Coordination ✅ COMPLETE
 
-- Update README.md YAML metadata
-- Add split info (rows, bytes)
-- Preserve existing content
+### Task 5.1: Mode Handling ✅ COMPLETE
+ErrorIfExists, Overwrite (delete + add), and Append (renumber shards) modes in `finalize()`.
+6 integration tests for all modes.
 
-**Subtasks:**
-- [x] **5.2.1** Add `update_card` option to HfSinkOptions (default: true)
-- [x] **5.2.2** Add regular file support to commit.rs (NdjsonFile, base64)
-  - Added `base64` dependency to polars-io
-  - Refactored `CommitOperationAdd` from struct to enum with `Lfs` and `Regular` variants
-  - Added `NdjsonRegularFile` serialization type for base64-encoded files
-  - Updated `build_ndjson_payload()` to handle both LFS and regular files
-  - Added helper methods: `CommitOperationAdd::lfs()`, `CommitOperationAdd::regular()`, `path_in_repo()`
-  - Added 6 new tests for regular file support
-- [x] **5.2.3** Create dataset_card.rs module (YAML parsing, SplitInfo)
-  - [x] **5.2.3.1** Add `serde_yaml` dependency to polars-io (version 0.9, optional, in hf_sink feature)
-  - [x] **5.2.3.2** Create dataset_card.rs with SplitInfo struct
-    - Added `SplitInfo` struct with `name`, `num_bytes`, `num_examples` fields
-    - Derives: `Debug, Clone, PartialEq, Eq, Serialize, Deserialize`
-    - Added `SplitInfo::new()` constructor
-    - Exported from `mod.rs` under `hf_sink` feature
-    - Added unit tests for basic functionality and serde round-trips
-  - [x] **5.2.3.3** Add YAML frontmatter extraction (parse README)
-    - Added `DatasetInfo` struct with `config_name`, `splits`, `download_size`, `dataset_size`
-    - Added `ExtractedFrontmatter` struct for extracted YAML and body
-    - Added `extract_frontmatter()` function to parse `---` delimited YAML
-    - Exported new types from `mod.rs`
-    - Added 10 unit tests for frontmatter extraction and DatasetInfo
-  - [x] **5.2.3.4** Add dataset_info update logic
-    - Added `DatasetInfo::recalculate_dataset_size()` private helper
-    - Added `DatasetInfo::update_split()` - update or add single split by name
-    - Added `DatasetInfo::update_splits()` - bulk update multiple splits
-    - Auto-recalculates `dataset_size` after updates
-    - Added 6 unit tests for update scenarios
-  - [x] **5.2.3.5** Add generate_updated_readme() function
-    - Added `CardYaml` internal struct with `#[serde(flatten)]` to preserve unknown YAML fields
-    - Added `generate_updated_readme()` - reconstructs README with updated dataset_info
-    - Added `generate_new_readme()` - creates minimal README for repos without one
-    - Preserves all existing YAML fields (license, task_categories, etc.)
-    - Added 6 unit tests including round-trip verification
-  - [x] **5.2.3.6** Add unit tests (included in 5.2.3.5)
-- [x] **5.2.4** Add fetch_readme() to api.rs
-  - Added async `fetch_readme()` function to api.rs
-  - Handles 404 (no README exists) → returns `Ok(None)`
-  - Returns `Ok(Some(content))` on success
-  - Uses same HTTP client pattern as `check_existing_files()`
-  - Exported from mod.rs
-- [x] **5.2.5** Update mod.rs exports (already complete - all exports in place)
-- [x] **5.2.6** Integrate into HfSinkNode::finalize()
-  - Added imports for dataset_card types in hf_sink/mod.rs
-  - Added parse_dataset_info_from_yaml() to polars-io (exported from mod.rs)
-  - Implemented Step G.5 in finalize() for README generation
-  - README is included as regular file in atomic commit
-- [x] **5.2.7** Integration tests
-  - Added `build_readme_operation()` helper function for testability
-  - Refactored finalize() to use the helper
-  - Added 6 unit tests for all README update scenarios
+**Key Files:** `api.rs` (list_existing_files), `hf_sink/mod.rs` (finalize), `options.rs` (HfWriteMode)
+
+### Task 5.2: Dataset Card Updates ✅ COMPLETE
+README.md generation with YAML frontmatter (SplitInfo, DatasetInfo). All 7 subtasks complete.
+- `update_card` option, regular file support in commit.rs (base64)
+- `dataset_card.rs`: extract_frontmatter(), generate_updated_readme()
+- `fetch_readme()` in api.rs, integration in finalize()
+- 6 integration tests for README scenarios
+
+**Key Files:** `dataset_card.rs`, `api.rs`, `commit.rs`, `hf_sink/mod.rs`
 
 ---
 
 ## Phase 6: Advanced Features
 
 ### Task 6.1: Checkpoint System [ ]
-**File:** `cloud/hf/checkpoint.rs`
 
+#### Overview
+Enable resume-on-failure by persisting upload state to a local JSON checkpoint file. If a write fails mid-stream, users can resume without re-uploading already-completed shards.
+
+#### Existing Infrastructure
+- **`HfSinkOptions.checkpoint_path: Option<PathBuf>`** - Already exists in `options.rs:122-123`
+- **`ShardCompletion`** struct in `hf_sink/mod.rs:84-95` - Contains all needed shard metadata:
+  ```rust
+  pub struct ShardCompletion {
+      pub index: usize,           // Shard index (0, 1, 2, ...)
+      pub path_in_repo: String,   // "data/train-00000.parquet"
+      pub sha256: String,         // Lowercase hex, 64 chars
+      pub size: u64,              // Bytes
+      pub num_rows: usize,        // Row count
+  }
+  ```
+
+#### Files to Create/Modify
+| File | Action | Purpose |
+|------|--------|---------|
+| `crates/polars-io/src/cloud/hf/checkpoint.rs` | Create | CheckpointState struct, save/load logic |
+| `crates/polars-io/src/cloud/hf/mod.rs` | Modify | Export checkpoint module |
+| `crates/polars-stream/src/nodes/io_sinks/hf_sink/mod.rs` | Modify | Integrate into upload_shard_task() and finalize() |
+
+#### CheckpointState Definition
 ```rust
+// crates/polars-io/src/cloud/hf/checkpoint.rs
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::path::Path;
+
+/// Checkpoint format version for forward compatibility
+const CHECKPOINT_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointState {
-    completed_shards: HashSet<usize>,
-    pending_additions: Vec<SerializedAddition>,
+    /// Format version (for future migrations)
+    pub version: u32,
+
+    /// Repository identifier for validation on resume
+    pub repo_id: String,
+
+    /// Path in repo being written to
+    pub path_in_repo: String,
+
+    /// Shards that have been uploaded to LFS (index → completion data)
+    pub completed_shards: Vec<ShardCheckpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShardCheckpoint {
+    pub index: usize,
+    pub path_in_repo: String,
+    pub sha256: String,
+    pub size: u64,
+    pub num_rows: usize,
+}
+
+impl CheckpointState {
+    pub fn new(repo_id: &str, path_in_repo: &str) -> Self { ... }
+    pub fn add_shard(&mut self, completion: &ShardCompletion) { ... }
+    pub fn completed_indices(&self) -> HashSet<usize> { ... }
+    pub fn save(&self, path: &Path) -> PolarsResult<()> { ... }
+    pub fn load(path: &Path) -> PolarsResult<Option<Self>> { ... }
+    pub fn delete(path: &Path) -> PolarsResult<()> { ... }
 }
 ```
 
-- Persist to JSON for resume
-- Skip already-uploaded shards
-- Delete checkpoint on success
+#### Integration Points in hf_sink/mod.rs
+
+**1. During upload (upload_shard_task, ~line 600):**
+```rust
+// After successful LFS upload, before sending to completion channel:
+if let Some(ref checkpoint_path) = options.checkpoint_path {
+    // Load existing checkpoint or create new
+    let mut checkpoint = CheckpointState::load(checkpoint_path)?
+        .unwrap_or_else(|| CheckpointState::new(&options.repo_id, &options.path_in_repo));
+
+    // Add this shard
+    checkpoint.add_shard(&completion);
+
+    // Save atomically (write to .tmp, rename)
+    checkpoint.save(checkpoint_path)?;
+}
+```
+
+**2. On resume (initialize or new, ~line 700):**
+```rust
+// Load existing checkpoint if present
+let resumed_shards: HashSet<usize> = if let Some(ref checkpoint_path) = options.checkpoint_path {
+    if let Some(checkpoint) = CheckpointState::load(checkpoint_path)? {
+        // Validate repo_id and path_in_repo match
+        if checkpoint.repo_id != options.repo_id || checkpoint.path_in_repo != options.path_in_repo {
+            polars_bail!(ComputeError: "Checkpoint mismatch: was for {}/{}, now {}/{}",
+                checkpoint.repo_id, checkpoint.path_in_repo,
+                options.repo_id, options.path_in_repo);
+        }
+        checkpoint.completed_indices()
+    } else {
+        HashSet::new()
+    }
+} else {
+    HashSet::new()
+};
+```
+
+**3. In buffer_and_write_task (~line 450):**
+```rust
+// Skip shard if already in checkpoint
+if resumed_shards.contains(&shard_index) {
+    if config::verbose() {
+        eprintln!("HF sink: skipping shard {} (already uploaded)", shard_index);
+    }
+    continue;
+}
+```
+
+**4. On success (finalize, ~line 900):**
+```rust
+// After successful commit, delete checkpoint
+if let Some(ref checkpoint_path) = options.checkpoint_path {
+    CheckpointState::delete(checkpoint_path)?;
+}
+```
+
+#### Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Storage location | Local filesystem | Simpler than HF Hub; user controls path |
+| Checkpoint scope | Single sink instance | No multi-process coordination needed |
+| Atomic writes | Write .tmp + rename | Prevents corruption on crash |
+| Validation | repo_id + path_in_repo | Prevents resuming wrong job |
+| Versioning | version field | Future format migrations |
+
+#### Concurrency Model
+- **Single-writer assumption**: One HfSinkNode writes to checkpoint at a time
+- **No file locking needed**: Polars streaming engine is single-threaded per sink
+- **Thread-safe within node**: upload_shard_task runs sequentially per shard
+
+#### Error Handling
+
+| Scenario | Behavior |
+|----------|----------|
+| Checkpoint file missing | Start fresh (no resume) |
+| Checkpoint parse error | Return error, user must delete manually |
+| repo_id/path mismatch | Return error with clear message |
+| Write failure mid-save | .tmp file left behind, original intact |
+| Commit success | Delete checkpoint file |
+| Commit failure | Keep checkpoint for next resume |
+
+#### Acceptance Criteria
+
+**Unit Tests (checkpoint.rs):**
+1. `test_checkpoint_roundtrip` - save → load preserves all fields
+2. `test_checkpoint_add_shard` - adds shard, updates indices
+3. `test_checkpoint_completed_indices` - returns correct HashSet
+4. `test_checkpoint_missing_file` - load returns None
+5. `test_checkpoint_version_field` - version=1 in JSON
+6. `test_checkpoint_atomic_save` - uses .tmp + rename
+
+**Integration Tests (hf_sink/mod.rs):**
+1. `test_checkpoint_created_during_upload` - checkpoint file created after first shard
+2. `test_checkpoint_deleted_on_success` - file removed after commit
+3. `test_checkpoint_resume_skips_shards` - resumed upload skips completed shards
+4. `test_checkpoint_mismatch_error` - wrong repo_id fails with clear error
+5. `test_no_checkpoint_when_path_none` - no file created if checkpoint_path=None
+
+**Manual E2E Test:**
+```bash
+# 1. Start large upload, kill mid-way
+# 2. Verify checkpoint file exists with partial shards
+# 3. Resume same command
+# 4. Verify skipped shards in verbose output
+# 5. Verify checkpoint deleted after success
+```
+
+#### Example Checkpoint JSON
+```json
+{
+  "version": 1,
+  "repo_id": "username/my-dataset",
+  "path_in_repo": "data/train",
+  "completed_shards": [
+    {
+      "index": 0,
+      "path_in_repo": "data/train-00000.parquet",
+      "sha256": "abc123...",
+      "size": 104857600,
+      "num_rows": 500000
+    },
+    {
+      "index": 1,
+      "path_in_repo": "data/train-00001.parquet",
+      "sha256": "def456...",
+      "size": 104857600,
+      "num_rows": 500000
+    }
+  ]
+}
+```
 
 ### Task 6.2: Partitioned Write Support [ ]
-- Hive-style paths: `data/{col}={val}/train-00000.parquet`
-- Per-partition shard limits
-- Atomic commit across partitions
+
+#### Overview
+Support Hive-style partitioned writes: `data/{col}={val}/train-00000.parquet`
+
+#### Key Design Points
+- **Partition detection**: Parse partition columns from path template
+- **Per-partition sharding**: Each partition gets its own shard counter
+- **Atomic commit**: All partitions committed together in single commit
+- **Integration**: Extend `HfSinkOptions` with `partition_cols: Vec<String>`
+
+#### Files to Modify
+| File | Change |
+|------|--------|
+| `options.rs` | Add `partition_cols` field |
+| `hf_sink/mod.rs` | Route rows to partition-specific writers |
+| `shard_writer.rs` | Support dynamic path based on partition values |
+
+#### Complexity Note
+This is the most complex Phase 6 task. Consider implementing after 6.1 and 6.3.
+
+---
 
 ### Task 6.3: Progress Reporting [ ]
+
+#### Overview
+Add upload progress callbacks for user-facing progress bars.
+
+#### Existing Infrastructure
+- **`get_metrics()` stub** already exists in `hf_sink/mod.rs` - returns `Ok(None)`
+- **`UploadProgress` trait** already defined in `lfs/upload.rs`
+
+#### Key Design Points
 ```rust
-pub trait UploadProgress: Send + Sync {
-    fn on_shard_progress(&self, index: usize, bytes: u64, total: u64);
-    fn on_commit_complete(&self, info: &CommitInfo);
+// Extend existing trait or create new one
+pub trait SinkProgress: Send + Sync {
+    fn on_shard_start(&self, index: usize, path: &str);
+    fn on_shard_upload_progress(&self, index: usize, bytes: u64, total: u64);
+    fn on_shard_complete(&self, index: usize, path: &str);
+    fn on_commit_start(&self, num_shards: usize);
+    fn on_commit_complete(&self, commit_url: &str);
 }
 ```
+
+#### Files to Modify
+| File | Change |
+|------|--------|
+| `options.rs` | Add `progress: Option<Arc<dyn SinkProgress>>` |
+| `hf_sink/mod.rs` | Call progress methods at appropriate points |
+| `lfs/upload.rs` | Wire existing `UploadProgress` to new trait |
+
+#### Integration Points
+1. **Shard start**: In `buffer_and_write_task()` when starting new shard
+2. **Upload progress**: In `upload_shard_task()` during LFS upload
+3. **Shard complete**: After sending to completion channel
+4. **Commit**: In `finalize()` before and after commit API call
+
+#### Acceptance Criteria
+- `get_metrics()` returns `Some(SinkMetrics { shards_written, bytes_uploaded, ... })`
+- Progress trait called at all documented points
+- No performance regression when progress=None
 
 ---
 
@@ -408,16 +458,14 @@ def test_streaming_upload(hf_test_repo):
 
 ## Progress Checklist
 
-- [x] **Phase 0:** Dev Setup (5/6)
-- [x] **Phase 1:** Foundation (4/4)
-- [x] **Phase 2:** Core Writer (3/3)
-- [x] **Phase 3:** LFS Protocol (4/4)
-- [x] **Phase 4:** Streaming Integration (4/4)
-- [x] **Phase 5:** Commit Coordination (2/2) ✅
-- [ ] **Phase 6:** Advanced Features (0/3) ← **Current**
-- [ ] **Phase 7:** Python Bindings (0/3)
+- [x] **Phases 0-5:** Foundation through Commit Coordination ✅
+- [ ] **Phase 6:** Advanced Features (0/3) ← Current Priority
+- [ ] **Phase 7:** Python Bindings (0/3) ← After Phase 6
 - [ ] **Phase 8:** Testing (0/4)
 - [ ] **Phase 9:** Documentation (0/4)
+
+**Status:** 6/9 phases complete. Rust implementation functional.
+**Next:** Phase 6.1 (Checkpoint System) for production reliability.
 
 ---
 
@@ -456,9 +504,7 @@ crates/polars-stream/src/nodes/io_sinks/hf_sink/  # Streaming node
 ## Dependencies
 
 ```
-Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 7
-                                          ↓
-                                       Phase 6
+Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 → Phase 7
 ```
 
-**Critical Path:** 4.4 → 5.1 → 7.2 (minimum for working Python API)
+**Current Path:** Phase 6 (Checkpoint, Partitioned Writes, Metrics) → Phase 7 (Python API)
