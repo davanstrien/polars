@@ -6,12 +6,12 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ---
 
-## Current Status (2026-01-16)
+## Current Status (2026-01-17)
 
 ```
 ✅ Phases 0-4 complete (Foundation, Core Writer, LFS Protocol, Streaming Integration)
 ✅ Task 5.1 complete: Mode Handling (ErrorIfExists, Overwrite, Append) with tests
-🔄 Phase 5: Commit Coordination - Task 5.2 in progress (Dataset Card Updates)
+✅ Task 5.2 complete: Dataset Card Updates (README.md generation)
   ✅ Task 5.2.1: Add update_card option to HfSinkOptions
   ✅ Task 5.2.2: Add regular file support to commit.rs (NdjsonFile, base64)
   ✅ Task 5.2.3.1: Add serde_yaml dependency to polars-io
@@ -22,33 +22,44 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
   ✅ Task 5.2.4: Add fetch_readme() to api.rs
   ✅ Task 5.2.5: Update mod.rs exports (already complete)
   ✅ Task 5.2.6: Integrate into HfSinkNode::finalize()
+  ✅ Task 5.2.7: Integration tests for dataset card updates (6 tests)
+🔄 Phase 5 complete - Moving to Phase 6
 ```
 
-**Latest Commit:** `ff44860cb4 feat(hf-sink): integrate dataset card updates into finalize() (Task 5.2.6)`
+**Latest Commit:** `17093cf2ad feat(hf-sink): add integration tests for dataset card updates (Task 5.2.7)`
 
 **Build Status:**
 ```bash
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
-✅ cargo test -p polars-stream --features hf_sink hf_sink  # 21 tests pass
+✅ cargo test -p polars-stream --features hf_sink hf_sink  # 27 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (140 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (76 commits ahead of main, local only)
 
 ---
 
 ## What's Next
 
-### Task 5.2.7: Integration tests for dataset card updates
+### Task 5.2.7: Integration tests for dataset card updates ✅ COMPLETE
 **File:** `crates/polars-stream/src/nodes/io_sinks/hf_sink/mod.rs` (tests section)
 
-Add tests to verify dataset card update logic:
-1. Test README update when `update_card=true` (default)
-2. Test no README update when `update_card=false`
-3. Test handling missing README (creates new)
-4. Test handling README without frontmatter
-5. Test preserving existing splits when updating
-6. Test preserving other YAML fields (license, etc.)
+Added `build_readme_operation()` helper function and 6 unit tests:
+1. ✅ Test README update when `update_card=true` (default)
+2. ✅ Test no README update when `update_card=false`
+3. ✅ Test handling missing README (creates new)
+4. ✅ Test handling README without frontmatter
+5. ✅ Test preserving existing splits when updating
+6. ✅ Test preserving other YAML fields (license, etc.)
+
+### Next: Phase 6 - Advanced Features
+
+Phase 5 (Commit Coordination) is now complete. The next phase is:
+
+**Task 6.1: Checkpoint System**
+- Persist checkpoint state to JSON for resume on failure
+- Skip already-uploaded shards
+- Delete checkpoint on successful commit
 
 ### Task 5.2.6: Integrate into HfSinkNode::finalize() ✅ COMPLETE
 Integration complete. The finalize() method now:
@@ -300,7 +311,10 @@ impl CommitCoordinator {
   - Added parse_dataset_info_from_yaml() to polars-io (exported from mod.rs)
   - Implemented Step G.5 in finalize() for README generation
   - README is included as regular file in atomic commit
-- [ ] **5.2.7** Integration tests
+- [x] **5.2.7** Integration tests
+  - Added `build_readme_operation()` helper function for testability
+  - Refactored finalize() to use the helper
+  - Added 6 unit tests for all README update scenarios
 
 ---
 
@@ -399,8 +413,8 @@ def test_streaming_upload(hf_test_repo):
 - [x] **Phase 2:** Core Writer (3/3)
 - [x] **Phase 3:** LFS Protocol (4/4)
 - [x] **Phase 4:** Streaming Integration (4/4)
-- [ ] **Phase 5:** Commit Coordination (1/2) ← **Current** (5.1 Mode Handling complete)
-- [ ] **Phase 6:** Advanced Features (0/3)
+- [x] **Phase 5:** Commit Coordination (2/2) ✅
+- [ ] **Phase 6:** Advanced Features (0/3) ← **Current**
 - [ ] **Phase 7:** Python Bindings (0/3)
 - [ ] **Phase 8:** Testing (0/4)
 - [ ] **Phase 9:** Documentation (0/4)

@@ -345,6 +345,64 @@ fn renumber_for_append(
     // If no existing shards match the pattern, keep original numbering (starting at 0)
 }
 
+/// Builds the README.md commit operation for dataset card updates.
+///
+/// Returns None if update_card is false, otherwise generates updated README
+/// based on existing content (if any).
+///
+/// # Arguments
+/// * `readme_content` - Existing README content, or None if no README exists
+/// * `split_info` - Information about the split being written (name, bytes, rows)
+/// * `update_card` - Whether to generate a README operation
+///
+/// # Returns
+/// * `Ok(None)` if update_card is false
+/// * `Ok(Some(CommitOperation))` with updated README content if update_card is true
+///
+/// # Behavior
+/// 1. If `update_card` is false: returns `Ok(None)`
+/// 2. If `readme_content` is `None`: creates new README with just dataset_info
+/// 3. If README exists without frontmatter: prepends new frontmatter
+/// 4. If README exists with frontmatter: updates existing dataset_info, preserving other fields
+fn build_readme_operation(
+    readme_content: Option<&str>,
+    split_info: SplitInfo,
+    update_card: bool,
+) -> PolarsResult<Option<CommitOperation>> {
+    if !update_card {
+        return Ok(None);
+    }
+
+    let updated_readme = match readme_content {
+        Some(content) => {
+            // Parse existing frontmatter
+            if let Some(extracted) = extract_frontmatter(content) {
+                // Parse existing dataset_info and update with new split
+                let mut dataset_info =
+                    parse_dataset_info_from_yaml(extracted.yaml).unwrap_or_default();
+                dataset_info.update_split(split_info);
+                generate_updated_readme(extracted.yaml, extracted.body, &dataset_info)?
+            } else {
+                // README exists but no frontmatter - prepend new frontmatter
+                let dataset_info = DatasetInfo::new(vec![split_info]);
+                let new_frontmatter = generate_new_readme(&dataset_info)?;
+                // generate_new_readme returns "---\n...\n---\n", so just append content
+                format!("{}{}", new_frontmatter, content)
+            }
+        },
+        None => {
+            // No README exists - create minimal one with just dataset_info
+            let dataset_info = DatasetInfo::new(vec![split_info]);
+            generate_new_readme(&dataset_info)?
+        },
+    };
+
+    Ok(Some(CommitOperation::Add(CommitOperationAdd::regular(
+        "README.md",
+        updated_readme.into_bytes(),
+    ))))
+}
+
 // ============================================================================
 // Shard Writer Task
 // ============================================================================
@@ -885,60 +943,33 @@ impl SinkNode for HfSinkNode {
             };
 
             // Step G.5: Update dataset card (README.md) if enabled
-            let readme_operation: Option<CommitOperation> = if options.update_card {
-                // Create SplitInfo from totals
-                let split_info = SplitInfo::new(&options.split, total_bytes, total_rows as u64);
+            let split_info = SplitInfo::new(&options.split, total_bytes, total_rows as u64);
 
-                // Fetch existing README
-                let readme_content = fetch_readme(
+            // Fetch existing README if update_card is enabled
+            let readme_content = if options.update_card {
+                fetch_readme(
                     options.repo_type.as_str(),
                     &options.repo_id,
                     options.effective_revision(),
                     Some(&token),
                 )
-                .await?;
-
-                // Generate updated README
-                let updated_readme = match readme_content {
-                    Some(content) => {
-                        // Parse existing frontmatter
-                        if let Some(extracted) = extract_frontmatter(&content) {
-                            // Parse existing dataset_info and update with new split
-                            let mut dataset_info = parse_dataset_info_from_yaml(extracted.yaml)
-                                .unwrap_or_default();
-                            dataset_info.update_split(split_info);
-                            generate_updated_readme(extracted.yaml, extracted.body, &dataset_info)?
-                        } else {
-                            // README exists but no frontmatter - prepend new frontmatter
-                            let dataset_info = DatasetInfo::new(vec![split_info]);
-                            let new_frontmatter = generate_new_readme(&dataset_info)?;
-                            // generate_new_readme returns "---\n...\n---\n", so just append content
-                            format!("{}{}", new_frontmatter, content)
-                        }
-                    }
-                    None => {
-                        // No README exists - create minimal one with just dataset_info
-                        let dataset_info = DatasetInfo::new(vec![split_info]);
-                        generate_new_readme(&dataset_info)?
-                    }
-                };
-
-                if config::verbose() {
-                    eprintln!(
-                        "HF sink: updating README.md with split '{}' ({} rows, {:.2} MB)",
-                        options.split,
-                        total_rows,
-                        total_bytes as f64 / (1024.0 * 1024.0)
-                    );
-                }
-
-                Some(CommitOperation::Add(CommitOperationAdd::regular(
-                    "README.md",
-                    updated_readme.into_bytes(),
-                )))
+                .await?
             } else {
                 None
             };
+
+            // Build README operation (returns None if update_card is false)
+            let readme_operation =
+                build_readme_operation(readme_content.as_deref(), split_info, options.update_card)?;
+
+            if readme_operation.is_some() && config::verbose() {
+                eprintln!(
+                    "HF sink: updating README.md with split '{}' ({} rows, {:.2} MB)",
+                    options.split,
+                    total_rows,
+                    total_bytes as f64 / (1024.0 * 1024.0)
+                );
+            }
 
             // Combine: deletes first, then adds, then README (for atomic commit)
             let operations: Vec<CommitOperation> = delete_ops
@@ -1432,5 +1463,198 @@ mod tests {
         // Should start from 6 (max existing is 5)
         assert_eq!(completions[0].index, 6);
         assert_eq!(completions[0].path_in_repo, "data/train-00006.parquet");
+    }
+
+    // ========================================================================
+    // Tests for Task 5.2.7: Dataset card (README.md) update integration tests
+    // ========================================================================
+
+    #[test]
+    fn test_build_readme_operation_update_card_false() {
+        let split = SplitInfo::new("train", 1024, 100);
+        let result = build_readme_operation(Some("# My Dataset"), split, false).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_build_readme_operation_no_existing_readme() {
+        let split = SplitInfo::new("train", 1024, 100);
+        let result = build_readme_operation(None, split, true).unwrap();
+        assert!(result.is_some());
+
+        // Extract the content from the operation
+        if let Some(CommitOperation::Add(add_op)) = result {
+            let content = match add_op {
+                CommitOperationAdd::Regular {
+                    content,
+                    path_in_repo,
+                } => {
+                    assert_eq!(path_in_repo, "README.md");
+                    String::from_utf8(content).unwrap()
+                },
+                _ => panic!("Expected Regular file operation"),
+            };
+
+            // Verify it has dataset_info with train split
+            assert!(content.contains("dataset_info:"));
+            assert!(content.contains("name: train"));
+            assert!(content.contains("num_bytes: 1024"));
+            assert!(content.contains("num_examples: 100"));
+        } else {
+            panic!("Expected CommitOperation::Add");
+        }
+    }
+
+    #[test]
+    fn test_build_readme_operation_existing_without_frontmatter() {
+        let split = SplitInfo::new("train", 1024, 100);
+        let existing_readme = "# My Dataset\n\nThis is a dataset without frontmatter.";
+        let result = build_readme_operation(Some(existing_readme), split, true).unwrap();
+        assert!(result.is_some());
+
+        if let Some(CommitOperation::Add(add_op)) = result {
+            let content = match add_op {
+                CommitOperationAdd::Regular {
+                    content,
+                    path_in_repo,
+                } => {
+                    assert_eq!(path_in_repo, "README.md");
+                    String::from_utf8(content).unwrap()
+                },
+                _ => panic!("Expected Regular file operation"),
+            };
+
+            // Verify frontmatter was prepended
+            assert!(content.starts_with("---\n"));
+            assert!(content.contains("dataset_info:"));
+            assert!(content.contains("name: train"));
+
+            // Verify original content preserved
+            assert!(content.contains("# My Dataset"));
+            assert!(content.contains("This is a dataset without frontmatter."));
+        } else {
+            panic!("Expected CommitOperation::Add");
+        }
+    }
+
+    #[test]
+    fn test_build_readme_operation_existing_with_frontmatter() {
+        let split = SplitInfo::new("train", 2048, 200);
+        let existing_readme = "---\nlicense: mit\n---\n\n# My Dataset\n\nDescription.";
+        let result = build_readme_operation(Some(existing_readme), split, true).unwrap();
+        assert!(result.is_some());
+
+        if let Some(CommitOperation::Add(add_op)) = result {
+            let content = match add_op {
+                CommitOperationAdd::Regular {
+                    content,
+                    path_in_repo,
+                } => {
+                    assert_eq!(path_in_repo, "README.md");
+                    String::from_utf8(content).unwrap()
+                },
+                _ => panic!("Expected Regular file operation"),
+            };
+
+            // Verify dataset_info was added
+            assert!(content.contains("dataset_info:"));
+            assert!(content.contains("name: train"));
+            assert!(content.contains("num_bytes: 2048"));
+
+            // Verify license preserved
+            assert!(content.contains("license:"));
+
+            // Verify body preserved
+            assert!(content.contains("# My Dataset"));
+            assert!(content.contains("Description."));
+        } else {
+            panic!("Expected CommitOperation::Add");
+        }
+    }
+
+    #[test]
+    fn test_build_readme_operation_preserves_other_fields() {
+        let split = SplitInfo::new("train", 1024, 100);
+        let existing_readme = r#"---
+license: apache-2.0
+task_categories:
+  - text-classification
+language:
+  - en
+---
+
+# Dataset
+
+Some content.
+"#;
+        let result = build_readme_operation(Some(existing_readme), split, true).unwrap();
+        assert!(result.is_some());
+
+        if let Some(CommitOperation::Add(add_op)) = result {
+            let content = match add_op {
+                CommitOperationAdd::Regular {
+                    content,
+                    path_in_repo,
+                } => {
+                    assert_eq!(path_in_repo, "README.md");
+                    String::from_utf8(content).unwrap()
+                },
+                _ => panic!("Expected Regular file operation"),
+            };
+
+            // Verify all original fields preserved
+            assert!(content.contains("license:"));
+            assert!(content.contains("task_categories:"));
+            assert!(content.contains("text-classification"));
+            assert!(content.contains("language:"));
+
+            // Verify dataset_info added
+            assert!(content.contains("dataset_info:"));
+            assert!(content.contains("name: train"));
+
+            // Verify body preserved
+            assert!(content.contains("# Dataset"));
+            assert!(content.contains("Some content."));
+        } else {
+            panic!("Expected CommitOperation::Add");
+        }
+    }
+
+    #[test]
+    fn test_build_readme_operation_preserves_existing_splits() {
+        let split = SplitInfo::new("train", 1024, 100);
+        let existing_readme = r#"---
+dataset_info:
+  splits:
+    - name: test
+      num_bytes: 500
+      num_examples: 50
+---
+
+# Dataset
+"#;
+        let result = build_readme_operation(Some(existing_readme), split, true).unwrap();
+        assert!(result.is_some());
+
+        if let Some(CommitOperation::Add(add_op)) = result {
+            let content = match add_op {
+                CommitOperationAdd::Regular {
+                    content,
+                    path_in_repo,
+                } => {
+                    assert_eq!(path_in_repo, "README.md");
+                    String::from_utf8(content).unwrap()
+                },
+                _ => panic!("Expected Regular file operation"),
+            };
+
+            // Verify both splits present
+            assert!(content.contains("name: test"));
+            assert!(content.contains("num_bytes: 500"));
+            assert!(content.contains("name: train"));
+            assert!(content.contains("num_bytes: 1024"));
+        } else {
+            panic!("Expected CommitOperation::Add");
+        }
     }
 }
