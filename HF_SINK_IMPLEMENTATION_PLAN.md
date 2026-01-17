@@ -132,7 +132,21 @@ README.md generation with YAML frontmatter (SplitInfo, DatasetInfo). All 7 subta
 
 ## Phase 6: Advanced Features
 
-### Task 6.1: Checkpoint System [ ]
+### Task 6.1: Checkpoint System [IN PROGRESS]
+
+#### Subtasks
+| Subtask | Description | Status |
+|---------|-------------|--------|
+| **6.1.1** | Create `checkpoint.rs` with struct definitions | ✅ Complete |
+| 6.1.2 | Implement `new()`, `add_shard()`, `completed_indices()` | Pending |
+| 6.1.3 | Implement `save()`, `load()`, `delete()` with atomic writes | Pending |
+| 6.1.4 | Export checkpoint module from `mod.rs` | Pending |
+| 6.1.5 | Unit tests for checkpoint.rs (6 tests) | Pending |
+| 6.1.6 | Integration: Load checkpoint on startup | Pending |
+| 6.1.7 | Integration: Skip completed shards in buffer_and_write_task | Pending |
+| 6.1.8 | Integration: Save checkpoint after each upload | Pending |
+| 6.1.9 | Integration: Delete checkpoint on success | Pending |
+| 6.1.10 | Integration tests (5 tests) | Pending |
 
 #### Overview
 Enable resume-on-failure by persisting upload state to a local JSON checkpoint file. If a write fails mid-stream, users can resume without re-uploading already-completed shards.

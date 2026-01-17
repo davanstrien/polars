@@ -26,6 +26,9 @@ pub mod mmap_buffer;
 pub mod options;
 #[cfg(feature = "hf_sink")]
 pub mod shard_writer;
+// Checkpoint support for resumable uploads
+#[cfg(feature = "hf_sink")]
+pub mod checkpoint;
 
 // Re-export auth function
 #[cfg(feature = "hf_sink")]
