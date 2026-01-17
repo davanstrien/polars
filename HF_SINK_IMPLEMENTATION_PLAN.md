@@ -26,7 +26,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 🔄 Phase 5 complete - Moving to Phase 6
 ```
 
-**Latest Commit:** `17093cf2ad feat(hf-sink): add integration tests for dataset card updates (Task 5.2.7)`
+**Latest Commit:** `5276086b32 feat(hf-sink): add integration tests for dataset card updates (Task 5.2.7)`
 
 **Build Status:**
 ```bash
