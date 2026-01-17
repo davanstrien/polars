@@ -24,7 +24,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
   ✅ Task 5.2.6: Integrate into HfSinkNode::finalize()
 ```
 
-**Latest Commit:** `ae7efae28b feat(hf-sink): add fetch_readme() function (Task 5.2.4)`
+**Latest Commit:** `ff44860cb4 feat(hf-sink): integrate dataset card updates into finalize() (Task 5.2.6)`
 
 **Build Status:**
 ```bash
@@ -33,7 +33,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink  # 21 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (72 commits ahead, local only)
+**Branch:** `feature/hf-hub-sink` (140 commits ahead of main, local only)
 
 ---
 
