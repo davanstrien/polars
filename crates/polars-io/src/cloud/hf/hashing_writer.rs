@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn test_empty_write() {
-        let cursor = Cursor::new(Vec::new());
+        let cursor = Cursor::new(Vec::<u8>::new());
         let writer = HashingWriter::new(cursor);
         let (cursor, hash, bytes) = writer.finish();
 
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_single_write() {
-        let cursor = Cursor::new(Vec::new());
+        let cursor = Cursor::new(Vec::<u8>::new());
         let mut writer = HashingWriter::new(cursor);
         writer.write_all(b"hello world").unwrap();
 
@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn test_multiple_writes() {
-        let cursor = Cursor::new(Vec::new());
+        let cursor = Cursor::new(Vec::<u8>::new());
         let mut writer = HashingWriter::new(cursor);
         writer.write_all(b"hello").unwrap();
         writer.write_all(b" ").unwrap();
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn test_bytes_written_tracking() {
-        let cursor = Cursor::new(Vec::new());
+        let cursor = Cursor::new(Vec::<u8>::new());
         let mut writer = HashingWriter::new(cursor);
 
         assert_eq!(writer.bytes_written(), 0);
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_flush_passthrough() {
-        let cursor = Cursor::new(Vec::new());
+        let cursor = Cursor::new(Vec::<u8>::new());
         let mut writer = HashingWriter::new(cursor);
         writer.write_all(b"data").unwrap();
         // Should not panic
