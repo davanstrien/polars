@@ -142,3 +142,137 @@ impl CheckpointState {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_checkpoint_roundtrip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("checkpoint.json");
+
+        // Create checkpoint with some shards
+        let mut checkpoint = CheckpointState::new("user/test-repo", "data/train");
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 0,
+            path_in_repo: "data/train-00000.parquet".to_string(),
+            sha256: "abc123".to_string(),
+            size: 1024,
+            num_rows: 100,
+        });
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 1,
+            path_in_repo: "data/train-00001.parquet".to_string(),
+            sha256: "def456".to_string(),
+            size: 2048,
+            num_rows: 200,
+        });
+
+        // Save and reload
+        checkpoint.save(&path).unwrap();
+        let loaded = CheckpointState::load(&path).unwrap().unwrap();
+
+        // Verify all fields preserved
+        assert_eq!(loaded.version, CHECKPOINT_VERSION);
+        assert_eq!(loaded.repo_id, "user/test-repo");
+        assert_eq!(loaded.path_in_repo, "data/train");
+        assert_eq!(loaded.completed_shards.len(), 2);
+        assert_eq!(loaded.completed_shards[0].index, 0);
+        assert_eq!(loaded.completed_shards[0].sha256, "abc123");
+        assert_eq!(loaded.completed_shards[1].index, 1);
+        assert_eq!(loaded.completed_shards[1].num_rows, 200);
+    }
+
+    #[test]
+    fn test_checkpoint_add_shard() {
+        let mut checkpoint = CheckpointState::new("user/repo", "data");
+        assert!(checkpoint.completed_shards.is_empty());
+
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 5,
+            path_in_repo: "data/train-00005.parquet".to_string(),
+            sha256: "abc".to_string(),
+            size: 100,
+            num_rows: 10,
+        });
+
+        assert_eq!(checkpoint.completed_shards.len(), 1);
+        assert_eq!(checkpoint.completed_shards[0].index, 5);
+    }
+
+    #[test]
+    fn test_checkpoint_completed_indices() {
+        let mut checkpoint = CheckpointState::new("user/repo", "data");
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 0,
+            path_in_repo: "p0".to_string(),
+            sha256: "a".to_string(),
+            size: 1,
+            num_rows: 1,
+        });
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 2,
+            path_in_repo: "p2".to_string(),
+            sha256: "b".to_string(),
+            size: 2,
+            num_rows: 2,
+        });
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 5,
+            path_in_repo: "p5".to_string(),
+            sha256: "c".to_string(),
+            size: 3,
+            num_rows: 3,
+        });
+
+        let indices = checkpoint.completed_indices();
+        assert_eq!(indices.len(), 3);
+        assert!(indices.contains(&0));
+        assert!(indices.contains(&2));
+        assert!(indices.contains(&5));
+        assert!(!indices.contains(&1));
+        assert!(!indices.contains(&3));
+    }
+
+    #[test]
+    fn test_checkpoint_missing_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nonexistent.json");
+
+        let result = CheckpointState::load(&path).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_checkpoint_version_field() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("checkpoint.json");
+
+        let checkpoint = CheckpointState::new("user/repo", "data");
+        checkpoint.save(&path).unwrap();
+
+        // Read raw JSON and verify version field
+        let json_str = fs::read_to_string(&path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(json["version"], 1);
+    }
+
+    #[test]
+    fn test_checkpoint_atomic_save() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("checkpoint.json");
+
+        let checkpoint = CheckpointState::new("user/repo", "data");
+        checkpoint.save(&path).unwrap();
+
+        // Verify main file exists
+        assert!(path.exists());
+
+        // Verify no .tmp file left behind
+        let tmp_path = path.with_extension("tmp");
+        assert!(!tmp_path.exists());
+    }
+}
