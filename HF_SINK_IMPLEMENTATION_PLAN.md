@@ -10,7 +10,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ```
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
-🔄 Phase 6 in progress: Task 6.1 (Checkpoint) - subtasks 6.1.1-6.1.7 complete
+🔄 Phase 6 in progress: Task 6.1 (Checkpoint) - subtasks 6.1.1-6.1.8 complete
 ```
 
 **Build Status:**
@@ -28,10 +28,10 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ### Phase 6: Advanced Features (Current Priority)
 
-**Task 6.1: Checkpoint System** ← In Progress (6.1.1-6.1.7 complete)
+**Task 6.1: Checkpoint System** ← In Progress (6.1.1-6.1.8 complete)
 - **File:** `cloud/hf/checkpoint.rs` ✅ Complete
-- **Next:** Task 6.1.8 - Save checkpoint after each upload
-- Remaining: 6.1.8-6.1.10 (save/delete + tests)
+- **Next:** Task 6.1.9 - Delete checkpoint on success
+- Remaining: 6.1.9-6.1.10 (delete + tests)
 
 **Task 6.2: Partitioned Write Support**
 - Hive-style paths: `data/{col}={val}/train-00000.parquet`
@@ -143,7 +143,7 @@ README.md generation with YAML frontmatter (SplitInfo, DatasetInfo). All 7 subta
 | **6.1.5** | Unit tests for checkpoint.rs (6 tests) | ✅ Complete |
 | **6.1.6** | Integration: Load checkpoint on startup | ✅ Complete |
 | **6.1.7** | Integration: Skip completed shards in buffer_and_write_task | ✅ Complete |
-| 6.1.8 | Integration: Save checkpoint after each upload | Pending |
+| **6.1.8** | Integration: Save checkpoint after each upload | ✅ Complete |
 | 6.1.9 | Integration: Delete checkpoint on success | Pending |
 | 6.1.10 | Integration tests (5 tests) | Pending |
 

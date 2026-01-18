@@ -23,7 +23,7 @@ use polars_core::prelude::CompatLevel;
 use polars_core::schema::SchemaRef;
 use polars_error::{PolarsResult, polars_bail, polars_err};
 use polars_io::cloud::hf::commit::{CommitClient, CommitOperation, CommitOperationAdd, CommitOperationDelete};
-use polars_io::cloud::hf::checkpoint::CheckpointState;
+use polars_io::cloud::hf::checkpoint::{CheckpointState, ShardCheckpoint};
 use polars_io::cloud::hf::{
     DatasetInfo, SplitInfo, check_existing_files, extract_frontmatter,
     fetch_readme, generate_new_readme, generate_updated_readme, get_hf_token,
@@ -640,6 +640,8 @@ fn upload_shard_task(
     lfs_client: LfsClient,
     upload_executor: UploadExecutor,
     #[allow(unused_variables)] resumed_shards: Arc<HashSet<usize>>,
+    repo_id: String,
+    checkpoint_path: Option<std::path::PathBuf>,
 ) -> JoinHandle<PolarsResult<()>> {
     spawn(TaskPriority::Low, async move {
         let mut shard_rx = shard_rx;
@@ -672,6 +674,41 @@ fn upload_shard_task(
                 lfs_client
                     .complete_multipart(&finished_shard.sha256, completions)
                     .await?;
+            }
+
+            // 4a. Save checkpoint if path configured
+            if let Some(ref ckpt_path) = checkpoint_path {
+                // Load existing or create new checkpoint
+                let mut checkpoint = match CheckpointState::load(ckpt_path) {
+                    Ok(Some(cp)) => cp,
+                    Ok(None) => CheckpointState::new(&repo_id, &path_in_repo),
+                    Err(e) => {
+                        // Log warning but don't fail - upload already succeeded
+                        if config::verbose() {
+                            eprintln!("HF sink: warning - failed to load checkpoint: {}", e);
+                        }
+                        // Continue without checkpoint save
+                        CheckpointState::new(&repo_id, &path_in_repo)
+                    },
+                };
+
+                // Add this shard
+                checkpoint.add_shard(ShardCheckpoint {
+                    index: shard_index,
+                    path_in_repo: path.clone(),
+                    sha256: finished_shard.sha256.clone(),
+                    size: finished_shard.size,
+                    num_rows: finished_shard.num_rows,
+                });
+
+                // Save atomically
+                if let Err(e) = checkpoint.save(ckpt_path) {
+                    if config::verbose() {
+                        eprintln!("HF sink: warning - failed to save checkpoint: {}", e);
+                    }
+                } else if config::verbose() {
+                    eprintln!("HF sink: checkpoint saved (shard {})", shard_index);
+                }
             }
 
             // 5. Create and send completion
@@ -830,6 +867,8 @@ impl SinkNode for HfSinkNode {
             lfs_client,
             upload_executor,
             Arc::clone(&self.resumed_shards),
+            self.options.repo_id.clone(),
+            self.options.checkpoint_path.clone(),
         );
 
         // 6. Store channels and task handle for use in spawn_sink() and finalize()
@@ -1381,6 +1420,8 @@ mod tests {
             lfs_client: LfsClient,
             upload_executor: UploadExecutor,
             resumed_shards: Arc<HashSet<usize>>,
+            repo_id: String,
+            checkpoint_path: Option<std::path::PathBuf>,
         ) -> JoinHandle<PolarsResult<()>> {
             upload_shard_task(
                 shard_rx,
@@ -1390,6 +1431,8 @@ mod tests {
                 lfs_client,
                 upload_executor,
                 resumed_shards,
+                repo_id,
+                checkpoint_path,
             )
         }
         // If this compiles, the test passes
