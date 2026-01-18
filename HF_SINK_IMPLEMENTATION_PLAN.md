@@ -11,7 +11,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ```
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
-🔄 Task 6.3 (Progress Reporting) in progress - subtask 6.3.1 next
+🔄 Task 6.3 (Progress Reporting) in progress - subtask 6.3.2 complete
 ```
 
 **Build Status:**
@@ -21,7 +21,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink  # 32 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (95 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (96 commits ahead of main, local only)
 
 ---
 
@@ -377,7 +377,7 @@ This is the most complex Phase 6 task. Consider implementing after 6.1 and 6.3.
 | Subtask | Description | Status |
 |---------|-------------|--------|
 | **6.3.1** | Add metrics field to HfSinkNode, store completions in finalize | ✅ Complete |
-| **6.3.2** | Implement get_metrics() returning shard-level WriteMetrics | Pending |
+| **6.3.2** | Implement get_metrics() returning shard-level WriteMetrics | ✅ Complete |
 | **6.3.3** | Add HfSinkProgress trait for higher-level callbacks | Pending |
 | **6.3.4** | Wire UploadProgress into upload_shard_task | Pending |
 | **6.3.5** | Add progress option to HfSinkOptions | Pending |

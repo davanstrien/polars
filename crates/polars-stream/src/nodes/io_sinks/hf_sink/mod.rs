@@ -1166,27 +1166,60 @@ impl SinkNode for HfSinkNode {
     }
 
     fn get_metrics(&self) -> PolarsResult<Option<super::metrics::WriteMetrics>> {
-        // Task 6.3.1: Access stored completions (full WriteMetrics in 6.3.2)
+        // Task 6.3.2: Return aggregate WriteMetrics across all shards
         let completions = self.shard_completions.lock().unwrap();
 
         if completions.is_empty() {
             return Ok(None);
         }
 
-        // Log that we have metrics data available (for verification)
+        // Aggregate metrics across all shards
+        let total_rows: u64 = completions.iter().map(|c| c.num_rows as u64).sum();
+        let total_bytes: u64 = completions.iter().map(|c| c.size).sum();
+
+        // Build full HF URL path for identification
+        let repo_type_str = match self.options.repo_type {
+            polars_io::cloud::hf::RepoType::Dataset => "datasets",
+            polars_io::cloud::hf::RepoType::Model => "models",
+            polars_io::cloud::hf::RepoType::Space => "spaces",
+        };
+        let path = format!(
+            "hf://{}/{}/{}",
+            repo_type_str, self.options.repo_id, self.options.path_in_repo
+        );
+
+        // Log metrics in verbose mode
         if config::verbose() {
-            let total_rows: usize = completions.iter().map(|c| c.num_rows).sum();
-            let total_bytes: u64 = completions.iter().map(|c| c.size).sum();
             eprintln!(
-                "HF sink metrics: {} shards, {} rows, {:.2} MB",
+                "HF sink metrics: {} shards, {} rows, {:.2} MB -> {}",
                 completions.len(),
                 total_rows,
-                total_bytes as f64 / (1024.0 * 1024.0)
+                total_bytes as f64 / (1024.0 * 1024.0),
+                path
             );
         }
 
-        // TODO (Task 6.3.2): Build and return WriteMetrics with shard data
-        Ok(None)
+        // Create column entries for the schema
+        // HF sink doesn't track column-level statistics during streaming,
+        // so we report zero null/nan counts and no bounds.
+        let columns = self
+            .input_schema
+            .iter_values()
+            .map(|_dtype| super::metrics::WriteMetricsColumn {
+                null_count: 0,
+                nan_count: 0,
+                lower_bound: None,
+                upper_bound: None,
+            })
+            .collect();
+
+        Ok(Some(super::metrics::WriteMetrics {
+            path,
+            num_rows: total_rows,
+            file_size: total_bytes,
+            keys: None, // No partition keys for non-partitioned writes
+            columns,
+        }))
     }
 }
 
