@@ -20,7 +20,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink  # 27 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (147 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (150 commits ahead of main, local only)
 
 ---
 
@@ -28,11 +28,10 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ### Phase 6: Advanced Features (Current Priority)
 
-**Task 6.1: Checkpoint System** ← Start Here
-- **File:** `cloud/hf/checkpoint.rs` (new)
-- Persist checkpoint state to JSON for resume on failure
-- Skip already-uploaded shards on resume
-- Delete checkpoint on successful commit
+**Task 6.1: Checkpoint System** ← In Progress (6.1.1-6.1.5 complete)
+- **File:** `cloud/hf/checkpoint.rs` ✅ Complete
+- **Next:** Task 6.1.6 - Integrate checkpoint loading into `hf_sink/mod.rs`
+- Remaining: 6.1.6-6.1.10 (integration + tests)
 
 **Task 6.2: Partitioned Write Support**
 - Hive-style paths: `data/{col}={val}/train-00000.parquet`
