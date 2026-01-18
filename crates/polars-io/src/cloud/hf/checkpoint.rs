@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use polars_error::PolarsResult;
+use polars_error::{PolarsResult, polars_err};
 use serde::{Deserialize, Serialize};
 
 /// Checkpoint format version for forward compatibility.
@@ -65,17 +65,80 @@ impl CheckpointState {
     }
 
     /// Save checkpoint to disk atomically (write .tmp, then rename).
-    pub fn save(&self, _path: &Path) -> PolarsResult<()> {
-        todo!("Implement in subtask 6.1.3")
+    pub fn save(&self, path: &Path) -> PolarsResult<()> {
+        use std::fs;
+        use std::io::Write;
+
+        // Create parent directory if needed
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    polars_err!(ComputeError: "Failed to create checkpoint directory: {}", e)
+                })?;
+            }
+        }
+
+        // Write to temporary file first (atomic write pattern)
+        let tmp_path = path.with_extension("tmp");
+        let json = serde_json::to_vec_pretty(self)
+            .map_err(|e| polars_err!(ComputeError: "Failed to serialize checkpoint: {}", e))?;
+
+        let mut file = fs::File::create(&tmp_path).map_err(|e| {
+            polars_err!(ComputeError: "Failed to create checkpoint temp file: {}", e)
+        })?;
+        file.write_all(&json).map_err(|e| {
+            polars_err!(ComputeError: "Failed to write checkpoint: {}", e)
+        })?;
+        file.sync_all().map_err(|e| {
+            polars_err!(ComputeError: "Failed to sync checkpoint: {}", e)
+        })?;
+
+        // Atomic rename
+        fs::rename(&tmp_path, path).map_err(|e| {
+            polars_err!(ComputeError: "Failed to rename checkpoint file: {}", e)
+        })?;
+
+        Ok(())
     }
 
     /// Load checkpoint from disk, returning None if file doesn't exist.
-    pub fn load(_path: &Path) -> PolarsResult<Option<Self>> {
-        todo!("Implement in subtask 6.1.3")
+    pub fn load(path: &Path) -> PolarsResult<Option<Self>> {
+        use std::fs::File;
+        use std::io::BufReader;
+
+        // Return None if file doesn't exist (not an error)
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let file = File::open(path).map_err(|e| {
+            polars_err!(ComputeError: "Failed to open checkpoint file: {}", e)
+        })?;
+        let reader = BufReader::new(file);
+        let checkpoint: Self = serde_json::from_reader(reader).map_err(|e| {
+            polars_err!(ComputeError: "Failed to parse checkpoint file: {}", e)
+        })?;
+
+        Ok(Some(checkpoint))
     }
 
     /// Delete checkpoint file if it exists.
-    pub fn delete(_path: &Path) -> PolarsResult<()> {
-        todo!("Implement in subtask 6.1.3")
+    pub fn delete(path: &Path) -> PolarsResult<()> {
+        use std::fs;
+
+        // Silently succeed if file doesn't exist
+        if path.exists() {
+            fs::remove_file(path).map_err(|e| {
+                polars_err!(ComputeError: "Failed to delete checkpoint file: {}", e)
+            })?;
+        }
+
+        // Also clean up any leftover .tmp file
+        let tmp_path = path.with_extension("tmp");
+        if tmp_path.exists() {
+            let _ = fs::remove_file(&tmp_path); // Best effort, don't fail
+        }
+
+        Ok(())
     }
 }

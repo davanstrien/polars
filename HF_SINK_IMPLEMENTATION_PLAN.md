@@ -10,7 +10,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ```
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
-🔄 Phase 6 in progress: Task 6.1 (Checkpoint) - subtask 6.1.1 complete
+🔄 Phase 6 in progress: Task 6.1 (Checkpoint) - subtasks 6.1.1-6.1.3 complete
 ```
 
 **Build Status:**
@@ -138,8 +138,8 @@ README.md generation with YAML frontmatter (SplitInfo, DatasetInfo). All 7 subta
 | Subtask | Description | Status |
 |---------|-------------|--------|
 | **6.1.1** | Create `checkpoint.rs` with struct definitions | ✅ Complete |
-| 6.1.2 | Implement `new()`, `add_shard()`, `completed_indices()` | Pending |
-| 6.1.3 | Implement `save()`, `load()`, `delete()` with atomic writes | Pending |
+| **6.1.2** | Implement `new()`, `add_shard()`, `completed_indices()` | ✅ Complete |
+| **6.1.3** | Implement `save()`, `load()`, `delete()` with atomic writes | ✅ Complete |
 | 6.1.4 | Export checkpoint module from `mod.rs` | Pending |
 | 6.1.5 | Unit tests for checkpoint.rs (6 tests) | Pending |
 | 6.1.6 | Integration: Load checkpoint on startup | Pending |
