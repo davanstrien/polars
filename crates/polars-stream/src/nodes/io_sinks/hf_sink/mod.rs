@@ -1125,6 +1125,17 @@ impl SinkNode for HfSinkNode {
                 .create_commit(&summary, Some(&description), &operations, options.create_pr)
                 .await?;
 
+            // Step H.5: Delete checkpoint on success (Task 6.1.9)
+            if let Some(ref checkpoint_path) = options.checkpoint_path {
+                if let Err(e) = CheckpointState::delete(checkpoint_path) {
+                    if config::verbose() {
+                        eprintln!("HF sink: warning - failed to delete checkpoint: {}", e);
+                    }
+                } else if config::verbose() {
+                    eprintln!("HF sink: checkpoint deleted after successful commit");
+                }
+            }
+
             // Step I: Log success
             if config::verbose() {
                 eprintln!(
