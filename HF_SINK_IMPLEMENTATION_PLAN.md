@@ -11,7 +11,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ```
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
-🔄 Phase 6 in progress: Tasks 6.2-6.3 remaining
+🔄 Task 6.3 (Progress Reporting) in progress - subtask 6.3.1 next
 ```
 
 **Build Status:**
@@ -21,7 +21,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink  # 32 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (94 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (95 commits ahead of main, local only)
 
 ---
 
@@ -38,9 +38,9 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 - Per-partition shard limits
 - Atomic commit across partitions
 
-**Task 6.3: Progress Reporting**
-- `UploadProgress` trait for callbacks
-- Note: `get_metrics()` stub exists in hf_sink/mod.rs
+**Task 6.3: Progress Reporting** ← In Progress (6.3.1-6.3.6)
+- `get_metrics()` returning WriteMetrics
+- `UploadProgress` callbacks for real-time progress
 
 ### Phase 7: Python Bindings (After Phase 6)
 
@@ -371,14 +371,30 @@ This is the most complex Phase 6 task. Consider implementing after 6.1 and 6.3.
 
 ---
 
-### Task 6.3: Progress Reporting [ ]
+### Task 6.3: Progress Reporting [IN PROGRESS]
+
+#### Subtasks
+| Subtask | Description | Status |
+|---------|-------------|--------|
+| **6.3.1** | Add metrics field to HfSinkNode, store completions in finalize | ✅ Complete |
+| **6.3.2** | Implement get_metrics() returning shard-level WriteMetrics | Pending |
+| **6.3.3** | Add HfSinkProgress trait for higher-level callbacks | Pending |
+| **6.3.4** | Wire UploadProgress into upload_shard_task | Pending |
+| **6.3.5** | Add progress option to HfSinkOptions | Pending |
+| **6.3.6** | Integration tests for metrics and progress | Pending |
 
 #### Overview
-Add upload progress callbacks for user-facing progress bars.
+Add upload progress callbacks for user-facing progress bars and metrics collection.
+
+Two aspects:
+1. **get_metrics()** - Return WriteMetrics after upload (statistics for user)
+2. **UploadProgress callbacks** - Real-time progress during upload (for progress bars)
 
 #### Existing Infrastructure
 - **`get_metrics()` stub** already exists in `hf_sink/mod.rs` - returns `Ok(None)`
-- **`UploadProgress` trait** already defined in `lfs/upload.rs`
+- **`UploadProgress` trait** already defined in `lfs/upload.rs` (stub, not wired)
+- **`WriteMetrics` struct** in `metrics.rs` - expects column-level stats
+- **`ShardCompletion`** data available in finalize() - path, size, num_rows, sha256
 
 #### Key Design Points
 ```rust
@@ -395,8 +411,8 @@ pub trait SinkProgress: Send + Sync {
 #### Files to Modify
 | File | Change |
 |------|--------|
+| `hf_sink/mod.rs` | Add shard_completions field, store in finalize, update get_metrics |
 | `options.rs` | Add `progress: Option<Arc<dyn SinkProgress>>` |
-| `hf_sink/mod.rs` | Call progress methods at appropriate points |
 | `lfs/upload.rs` | Wire existing `UploadProgress` to new trait |
 
 #### Integration Points
@@ -406,7 +422,7 @@ pub trait SinkProgress: Send + Sync {
 4. **Commit**: In `finalize()` before and after commit API call
 
 #### Acceptance Criteria
-- `get_metrics()` returns `Some(SinkMetrics { shards_written, bytes_uploaded, ... })`
+- `get_metrics()` returns `Some(WriteMetrics { ... })` with shard data
 - Progress trait called at all documented points
 - No performance regression when progress=None
 

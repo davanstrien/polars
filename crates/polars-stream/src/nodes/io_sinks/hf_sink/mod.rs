@@ -14,7 +14,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arrow::record_batch::RecordBatch;
 use polars_core::config;
@@ -771,6 +771,8 @@ pub struct HfSinkNode {
     resumed_shards: Arc<HashSet<usize>>,
     /// Shard completions from checkpoint, for including in final commit
     resumed_completions: Vec<ShardCompletion>,
+    /// Collected shard completions for metrics (populated in finalize)
+    shard_completions: Arc<Mutex<Vec<ShardCompletion>>>,
 }
 
 impl HfSinkNode {
@@ -801,6 +803,7 @@ impl HfSinkNode {
             upload_task: None,
             resumed_shards: Arc::new(HashSet::new()),
             resumed_completions: Vec::new(),
+            shard_completions: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -919,6 +922,9 @@ impl SinkNode for HfSinkNode {
         // 4. Take resumed completions for inclusion in commit (already uploaded shards)
         let resumed_completions = std::mem::take(&mut self.resumed_completions);
 
+        // 5. Clone shard_completions Arc to store completions for get_metrics()
+        let shard_completions = Arc::clone(&self.shard_completions);
+
         Some(Box::pin(async move {
             // Step A: Wait for upload task to complete
             // This ensures all shards are uploaded before we commit
@@ -1020,6 +1026,13 @@ impl SinkNode for HfSinkNode {
                         }
                     }
                 }
+            }
+
+            // Step C.6: Store completions for get_metrics() (Task 6.3.1)
+            // Clone completions before consuming them for commit operations
+            {
+                let mut stored = shard_completions.lock().unwrap();
+                *stored = completions.clone();
             }
 
             // Step D: Resolve token for commit (required for write access)
@@ -1153,7 +1166,26 @@ impl SinkNode for HfSinkNode {
     }
 
     fn get_metrics(&self) -> PolarsResult<Option<super::metrics::WriteMetrics>> {
-        // TODO (Task 6.3): Implement metrics collection
+        // Task 6.3.1: Access stored completions (full WriteMetrics in 6.3.2)
+        let completions = self.shard_completions.lock().unwrap();
+
+        if completions.is_empty() {
+            return Ok(None);
+        }
+
+        // Log that we have metrics data available (for verification)
+        if config::verbose() {
+            let total_rows: usize = completions.iter().map(|c| c.num_rows).sum();
+            let total_bytes: u64 = completions.iter().map(|c| c.size).sum();
+            eprintln!(
+                "HF sink metrics: {} shards, {} rows, {:.2} MB",
+                completions.len(),
+                total_rows,
+                total_bytes as f64 / (1024.0 * 1024.0)
+            );
+        }
+
+        // TODO (Task 6.3.2): Build and return WriteMetrics with shard data
         Ok(None)
     }
 }
