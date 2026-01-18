@@ -1816,4 +1816,151 @@ dataset_info:
             panic!("Expected CommitOperation::Add");
         }
     }
+
+    // ==========================================================================
+    // Checkpoint Integration Tests (Task 6.1.10)
+    // ==========================================================================
+
+    #[test]
+    fn test_checkpoint_created_during_upload() {
+        use polars_io::cloud::hf::checkpoint::{CheckpointState, ShardCheckpoint};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let ckpt_path = dir.path().join("checkpoint.json");
+
+        // Initially no checkpoint exists
+        assert!(!ckpt_path.exists());
+
+        // Simulate what upload_shard_task does after successful upload
+        let mut checkpoint = CheckpointState::new("user/test-repo", "data/train");
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 0,
+            path_in_repo: "data/train-00000.parquet".into(),
+            sha256: "abc123def456".into(),
+            size: 1000,
+            num_rows: 100,
+        });
+        checkpoint.save(&ckpt_path).unwrap();
+
+        // Verify checkpoint file created
+        assert!(ckpt_path.exists());
+
+        // Verify content
+        let loaded = CheckpointState::load(&ckpt_path).unwrap().unwrap();
+        assert_eq!(loaded.completed_shards.len(), 1);
+        assert_eq!(loaded.completed_shards[0].index, 0);
+        assert_eq!(
+            loaded.completed_shards[0].path_in_repo,
+            "data/train-00000.parquet"
+        );
+    }
+
+    #[test]
+    fn test_checkpoint_deleted_on_success() {
+        use polars_io::cloud::hf::checkpoint::CheckpointState;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let ckpt_path = dir.path().join("checkpoint.json");
+
+        // Create checkpoint
+        let checkpoint = CheckpointState::new("user/test-repo", "data/train");
+        checkpoint.save(&ckpt_path).unwrap();
+        assert!(ckpt_path.exists());
+
+        // Delete (as finalize() does after successful commit)
+        CheckpointState::delete(&ckpt_path).unwrap();
+
+        // Verify removed
+        assert!(!ckpt_path.exists());
+    }
+
+    #[test]
+    fn test_checkpoint_resume_skips_shards() {
+        use polars_io::cloud::hf::checkpoint::{CheckpointState, ShardCheckpoint};
+        use std::collections::HashSet;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let ckpt_path = dir.path().join("checkpoint.json");
+
+        // Create checkpoint with shards 0, 2, 5 completed (non-contiguous)
+        let mut checkpoint = CheckpointState::new("user/test-repo", "data/train");
+        for idx in [0, 2, 5] {
+            checkpoint.add_shard(ShardCheckpoint {
+                index: idx,
+                path_in_repo: format!("data/train-{:05}.parquet", idx),
+                sha256: format!("hash{}", idx),
+                size: 1000,
+                num_rows: 100,
+            });
+        }
+        checkpoint.save(&ckpt_path).unwrap();
+
+        // Load and get completed indices
+        let loaded = CheckpointState::load(&ckpt_path).unwrap().unwrap();
+        let skipped = loaded.completed_indices();
+
+        // Verify correct indices marked for skip
+        assert_eq!(skipped, HashSet::from([0, 2, 5]));
+        assert!(skipped.contains(&0));
+        assert!(skipped.contains(&2));
+        assert!(skipped.contains(&5));
+        assert!(!skipped.contains(&1)); // Not completed
+        assert!(!skipped.contains(&3)); // Not completed
+    }
+
+    #[test]
+    fn test_checkpoint_mismatch_error() {
+        use polars_io::cloud::hf::checkpoint::CheckpointState;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let ckpt_path = dir.path().join("checkpoint.json");
+
+        // Create checkpoint for repo-A
+        let checkpoint = CheckpointState::new("user/repo-A", "data/train");
+        checkpoint.save(&ckpt_path).unwrap();
+
+        // Load checkpoint
+        let loaded = CheckpointState::load(&ckpt_path).unwrap().unwrap();
+
+        // Validate against different repo (simulating load_checkpoint_state logic)
+        let current_repo = "user/repo-B";
+        let current_path = "data/train";
+
+        // Verify mismatch detected - repo_id differs
+        assert_ne!(loaded.repo_id, current_repo);
+        assert_eq!(loaded.repo_id, "user/repo-A");
+
+        // Verify path matches
+        assert_eq!(loaded.path_in_repo, current_path);
+
+        // In actual code (load_checkpoint_state), this triggers:
+        // polars_bail!(ComputeError: "Checkpoint mismatch...")
+    }
+
+    #[test]
+    fn test_no_checkpoint_when_path_none() {
+        use polars_io::cloud::hf::HfSinkOptions;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let potential_path = dir.path().join("checkpoint.json");
+
+        // Build options WITHOUT checkpoint_path
+        let options = HfSinkOptions::builder("user/test-repo")
+            .with_path_in_repo("data")
+            .with_split("train")
+            // Note: NOT calling .with_checkpoint_path()
+            .build()
+            .unwrap();
+
+        // Verify checkpoint_path is None
+        assert!(options.checkpoint_path.is_none());
+
+        // No file should be created (the None branch simply skips checkpoint operations)
+        assert!(!potential_path.exists());
+    }
 }

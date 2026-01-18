@@ -52,6 +52,9 @@ polars-utils = { workspace = true }
 [build-dependencies]
 version_check = { workspace = true }
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 nightly = ["polars-expr/nightly"]
 approx_unique = ["polars-plan/approx_unique", "polars-expr/approx_unique"]

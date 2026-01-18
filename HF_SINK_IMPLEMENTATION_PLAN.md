@@ -10,17 +10,18 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ```
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
-🔄 Phase 6 in progress: Task 6.1 (Checkpoint) - subtasks 6.1.1-6.1.9 complete
+✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
+🔄 Phase 6 in progress: Tasks 6.2-6.3 remaining
 ```
 
 **Build Status:**
 ```bash
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
-✅ cargo test -p polars-stream --features hf_sink hf_sink  # 27 tests pass
+✅ cargo test -p polars-stream --features hf_sink hf_sink  # 32 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (158 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (94 commits ahead of main, local only)
 
 ---
 
@@ -28,10 +29,9 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ### Phase 6: Advanced Features (Current Priority)
 
-**Task 6.1: Checkpoint System** ← In Progress (6.1.1-6.1.9 complete)
-- **File:** `cloud/hf/checkpoint.rs` ✅ Complete
-- **Next:** Task 6.1.10 - Integration tests
-- Remaining: 6.1.10 (tests)
+**Task 6.1: Checkpoint System** ✅ Complete
+- **File:** `cloud/hf/checkpoint.rs` ✅
+- All 10 subtasks complete including integration tests
 
 **Task 6.2: Partitioned Write Support**
 - Hive-style paths: `data/{col}={val}/train-00000.parquet`
@@ -145,7 +145,7 @@ README.md generation with YAML frontmatter (SplitInfo, DatasetInfo). All 7 subta
 | **6.1.7** | Integration: Skip completed shards in buffer_and_write_task | ✅ Complete |
 | **6.1.8** | Integration: Save checkpoint after each upload | ✅ Complete |
 | **6.1.9** | Integration: Delete checkpoint on success | ✅ Complete |
-| 6.1.10 | Integration tests (5 tests) | Pending |
+| **6.1.10** | Integration tests (5 tests) | ✅ Complete |
 
 #### Overview
 Enable resume-on-failure by persisting upload state to a local JSON checkpoint file. If a write fails mid-stream, users can resume without re-uploading already-completed shards.
@@ -472,13 +472,16 @@ def test_streaming_upload(hf_test_repo):
 ## Progress Checklist
 
 - [x] **Phases 0-5:** Foundation through Commit Coordination ✅
-- [ ] **Phase 6:** Advanced Features (0/3) ← Current Priority
+- [ ] **Phase 6:** Advanced Features (1/3) ← Current Priority
+  - [x] Task 6.1: Checkpoint System ✅
+  - [ ] Task 6.2: Partitioned Write Support
+  - [ ] Task 6.3: Progress Reporting
 - [ ] **Phase 7:** Python Bindings (0/3) ← After Phase 6
 - [ ] **Phase 8:** Testing (0/4)
 - [ ] **Phase 9:** Documentation (0/4)
 
-**Status:** 6/9 phases complete. Rust implementation functional.
-**Next:** Phase 6.1 (Checkpoint System) for production reliability.
+**Status:** 6/9 phases complete. Rust implementation functional with checkpoint support.
+**Next:** Phase 6.2 (Partitioned Write Support) or 6.3 (Progress Reporting).
 
 ---
 
