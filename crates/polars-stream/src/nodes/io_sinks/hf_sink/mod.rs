@@ -410,20 +410,25 @@ fn build_readme_operation(
 
 /// Loads checkpoint state from disk and validates it matches the current operation.
 ///
-/// Returns the set of completed shard indices if a valid checkpoint exists,
-/// or an empty set if no checkpoint is found.
+/// Returns a tuple of:
+/// - Set of completed shard indices (for skip logic)
+/// - Vec of ShardCompletion (for including in final commit)
+///
+/// Returns empty collections if no checkpoint is found.
 ///
 /// # Errors
 /// Returns an error if:
 /// - The checkpoint file exists but cannot be parsed
 /// - The checkpoint repo_id or path_in_repo doesn't match current operation
-fn load_checkpoint_state(options: &HfSinkOptions) -> PolarsResult<HashSet<usize>> {
+fn load_checkpoint_state(
+    options: &HfSinkOptions,
+) -> PolarsResult<(HashSet<usize>, Vec<ShardCompletion>)> {
     let Some(ref checkpoint_path) = options.checkpoint_path else {
-        return Ok(HashSet::new());
+        return Ok((HashSet::new(), Vec::new()));
     };
 
     let Some(checkpoint) = CheckpointState::load(checkpoint_path)? else {
-        return Ok(HashSet::new());
+        return Ok((HashSet::new(), Vec::new()));
     };
 
     // Validate checkpoint matches current operation
@@ -441,7 +446,21 @@ fn load_checkpoint_state(options: &HfSinkOptions) -> PolarsResult<HashSet<usize>
     if config::verbose() && !indices.is_empty() {
         eprintln!("HF sink: resuming with {} completed shards", indices.len());
     }
-    Ok(indices)
+
+    // Convert ShardCheckpoint to ShardCompletion for commit tracking
+    let completions: Vec<ShardCompletion> = checkpoint
+        .completed_shards
+        .into_iter()
+        .map(|sc| ShardCompletion {
+            index: sc.index,
+            path_in_repo: sc.path_in_repo,
+            sha256: sc.sha256,
+            size: sc.size,
+            num_rows: sc.num_rows,
+        })
+        .collect();
+
+    Ok((indices, completions))
 }
 
 // ============================================================================
@@ -475,7 +494,7 @@ fn buffer_and_write_task(
     mut shard_tx: Sender<FinishedShard>,
     options: Arc<HfSinkOptions>,
     schema: SchemaRef,
-    #[allow(unused_variables)] resumed_shards: Arc<HashSet<usize>>,
+    resumed_shards: Arc<HashSet<usize>>,
 ) -> JoinHandle<PolarsResult<()>> {
     spawn(TaskPriority::High, async move {
         let chunk_size = DEFAULT_CHUNK_SIZE;
@@ -517,6 +536,18 @@ fn buffer_and_write_task(
                         let shard_idx = state.next_shard_index();
                         let path = shard_path(&options.path_in_repo, &options.split, shard_idx);
 
+                        // Skip if already in checkpoint (resumed shard)
+                        if resumed_shards.contains(&shard_idx) {
+                            if config::verbose() {
+                                eprintln!(
+                                    "HF sink: skipping shard {} (already uploaded)",
+                                    shard_idx
+                                );
+                            }
+                            shard_rows = 0;
+                            continue;
+                        }
+
                         // Record completion for tracking
                         state.record_completion(ShardCompletion::from_finished(
                             shard_idx, path, &finished,
@@ -556,10 +587,22 @@ fn buffer_and_write_task(
                 let shard_idx = state.next_shard_index();
                 let path = shard_path(&options.path_in_repo, &options.split, shard_idx);
 
-                state.record_completion(ShardCompletion::from_finished(shard_idx, path, &finished));
+                // Skip if already in checkpoint (resumed shard)
+                if resumed_shards.contains(&shard_idx) {
+                    if config::verbose() {
+                        eprintln!(
+                            "HF sink: skipping final shard {} (already uploaded)",
+                            shard_idx
+                        );
+                    }
+                } else {
+                    state.record_completion(ShardCompletion::from_finished(
+                        shard_idx, path, &finished,
+                    ));
 
-                // Send final shard for upload
-                let _ = shard_tx.send(finished).await;
+                    // Send final shard for upload
+                    let _ = shard_tx.send(finished).await;
+                }
             }
         }
 
@@ -689,6 +732,8 @@ pub struct HfSinkNode {
     upload_task: Option<JoinHandle<PolarsResult<()>>>,
     /// Shard indices already uploaded (from checkpoint), wrapped in Arc for cheap cloning
     resumed_shards: Arc<HashSet<usize>>,
+    /// Shard completions from checkpoint, for including in final commit
+    resumed_completions: Vec<ShardCompletion>,
 }
 
 impl HfSinkNode {
@@ -718,6 +763,7 @@ impl HfSinkNode {
             completion_rx: None,
             upload_task: None,
             resumed_shards: Arc::new(HashSet::new()),
+            resumed_completions: Vec::new(),
         })
     }
 
@@ -752,8 +798,9 @@ impl SinkNode for HfSinkNode {
 
     fn initialize(&mut self, _state: &StreamingExecutionState) -> PolarsResult<()> {
         // 0. Load checkpoint state (if any) for resumable uploads
-        let resumed_shards = load_checkpoint_state(&self.options)?;
+        let (resumed_shards, resumed_completions) = load_checkpoint_state(&self.options)?;
         self.resumed_shards = Arc::new(resumed_shards);
+        self.resumed_completions = resumed_completions;
 
         // 1. Resolve HF token (required for writes)
         let token = get_hf_token(self.options.token.as_deref(), true)?
@@ -830,13 +877,17 @@ impl SinkNode for HfSinkNode {
         // 3. Clone options for use in async block (Arc clone is cheap)
         let options = Arc::clone(&self.options);
 
+        // 4. Take resumed completions for inclusion in commit (already uploaded shards)
+        let resumed_completions = std::mem::take(&mut self.resumed_completions);
+
         Some(Box::pin(async move {
             // Step A: Wait for upload task to complete
             // This ensures all shards are uploaded before we commit
             upload_task.await?;
 
             // Step B: Collect all ShardCompletions from the channel
-            let mut completions = Vec::new();
+            // Start with resumed completions (already uploaded), then add new ones
+            let mut completions = resumed_completions;
             let mut completion_rx = completion_rx;
             while let Ok(completion) = completion_rx.recv().await {
                 completions.push(completion);
