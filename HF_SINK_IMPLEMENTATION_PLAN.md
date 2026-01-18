@@ -6,7 +6,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ---
 
-## Current Status (2026-01-17)
+## Current Status (2026-01-18)
 
 ```
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
@@ -20,7 +20,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink  # 27 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (145 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (147 commits ahead of main, local only)
 
 ---
 
