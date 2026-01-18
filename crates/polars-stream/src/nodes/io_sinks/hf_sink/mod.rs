@@ -11,7 +11,7 @@
 //! lf.sink_parquet("hf://datasets/user/repo/data/train.parquet", options)
 //! ```
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -23,6 +23,7 @@ use polars_core::prelude::CompatLevel;
 use polars_core::schema::SchemaRef;
 use polars_error::{PolarsResult, polars_bail, polars_err};
 use polars_io::cloud::hf::commit::{CommitClient, CommitOperation, CommitOperationAdd, CommitOperationDelete};
+use polars_io::cloud::hf::checkpoint::CheckpointState;
 use polars_io::cloud::hf::{
     DatasetInfo, SplitInfo, check_existing_files, extract_frontmatter,
     fetch_readme, generate_new_readme, generate_updated_readme, get_hf_token,
@@ -404,6 +405,46 @@ fn build_readme_operation(
 }
 
 // ============================================================================
+// Checkpoint Loading
+// ============================================================================
+
+/// Loads checkpoint state from disk and validates it matches the current operation.
+///
+/// Returns the set of completed shard indices if a valid checkpoint exists,
+/// or an empty set if no checkpoint is found.
+///
+/// # Errors
+/// Returns an error if:
+/// - The checkpoint file exists but cannot be parsed
+/// - The checkpoint repo_id or path_in_repo doesn't match current operation
+fn load_checkpoint_state(options: &HfSinkOptions) -> PolarsResult<HashSet<usize>> {
+    let Some(ref checkpoint_path) = options.checkpoint_path else {
+        return Ok(HashSet::new());
+    };
+
+    let Some(checkpoint) = CheckpointState::load(checkpoint_path)? else {
+        return Ok(HashSet::new());
+    };
+
+    // Validate checkpoint matches current operation
+    if checkpoint.repo_id != options.repo_id || checkpoint.path_in_repo != options.path_in_repo {
+        polars_bail!(ComputeError:
+            "Checkpoint mismatch: checkpoint is for {}/{} but operation is {}/{}. \
+             Delete {} to start fresh.",
+            checkpoint.repo_id, checkpoint.path_in_repo,
+            options.repo_id, options.path_in_repo,
+            checkpoint_path.display()
+        );
+    }
+
+    let indices = checkpoint.completed_indices();
+    if config::verbose() && !indices.is_empty() {
+        eprintln!("HF sink: resuming with {} completed shards", indices.len());
+    }
+    Ok(indices)
+}
+
+// ============================================================================
 // Shard Writer Task
 // ============================================================================
 
@@ -434,6 +475,7 @@ fn buffer_and_write_task(
     mut shard_tx: Sender<FinishedShard>,
     options: Arc<HfSinkOptions>,
     schema: SchemaRef,
+    #[allow(unused_variables)] resumed_shards: Arc<HashSet<usize>>,
 ) -> JoinHandle<PolarsResult<()>> {
     spawn(TaskPriority::High, async move {
         let chunk_size = DEFAULT_CHUNK_SIZE;
@@ -554,6 +596,7 @@ fn upload_shard_task(
     split: String,
     lfs_client: LfsClient,
     upload_executor: UploadExecutor,
+    #[allow(unused_variables)] resumed_shards: Arc<HashSet<usize>>,
 ) -> JoinHandle<PolarsResult<()>> {
     spawn(TaskPriority::Low, async move {
         let mut shard_rx = shard_rx;
@@ -644,6 +687,8 @@ pub struct HfSinkNode {
     completion_rx: Option<Receiver<ShardCompletion>>,
     /// Handle to await upload task completion
     upload_task: Option<JoinHandle<PolarsResult<()>>>,
+    /// Shard indices already uploaded (from checkpoint), wrapped in Arc for cheap cloning
+    resumed_shards: Arc<HashSet<usize>>,
 }
 
 impl HfSinkNode {
@@ -672,6 +717,7 @@ impl HfSinkNode {
             shard_tx: None,
             completion_rx: None,
             upload_task: None,
+            resumed_shards: Arc::new(HashSet::new()),
         })
     }
 
@@ -705,6 +751,10 @@ impl SinkNode for HfSinkNode {
     }
 
     fn initialize(&mut self, _state: &StreamingExecutionState) -> PolarsResult<()> {
+        // 0. Load checkpoint state (if any) for resumable uploads
+        let resumed_shards = load_checkpoint_state(&self.options)?;
+        self.resumed_shards = Arc::new(resumed_shards);
+
         // 1. Resolve HF token (required for writes)
         let token = get_hf_token(self.options.token.as_deref(), true)?
             .expect("token required=true guarantees Some");
@@ -732,6 +782,7 @@ impl SinkNode for HfSinkNode {
             split,
             lfs_client,
             upload_executor,
+            Arc::clone(&self.resumed_shards),
         );
 
         // 6. Store channels and task handle for use in spawn_sink() and finalize()
@@ -760,6 +811,7 @@ impl SinkNode for HfSinkNode {
             shard_tx,
             Arc::clone(&self.options),
             self.input_schema.clone(),
+            Arc::clone(&self.resumed_shards),
         );
 
         join_handles.push(task);
@@ -1277,6 +1329,7 @@ mod tests {
             split: String,
             lfs_client: LfsClient,
             upload_executor: UploadExecutor,
+            resumed_shards: Arc<HashSet<usize>>,
         ) -> JoinHandle<PolarsResult<()>> {
             upload_shard_task(
                 shard_rx,
@@ -1285,6 +1338,7 @@ mod tests {
                 split,
                 lfs_client,
                 upload_executor,
+                resumed_shards,
             )
         }
         // If this compiles, the test passes
