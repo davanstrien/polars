@@ -1274,6 +1274,106 @@ impl SinkNode for HfSinkNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use polars_io::cloud::hf::HfSinkProgress;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    // =========================================================================
+    // Test Helper: TestProgress
+    // =========================================================================
+
+    /// Event types recorded by TestProgress for verification
+    #[derive(Debug, Clone, PartialEq)]
+    enum ProgressEvent {
+        ShardStart { index: usize, path: String },
+        UploadProgress { index: usize, bytes: u64, total: u64 },
+        ShardComplete { index: usize, path: String, size: u64 },
+        CommitStart { num_shards: usize },
+        CommitComplete { url: Option<String> },
+    }
+
+    /// Test helper that records all progress callbacks with thread-safe counters
+    struct TestProgress {
+        shard_starts: AtomicUsize,
+        shard_completes: AtomicUsize,
+        upload_progress_calls: AtomicUsize,
+        commit_starts: AtomicUsize,
+        commit_completes: AtomicUsize,
+        events: Mutex<Vec<ProgressEvent>>,
+    }
+
+    impl TestProgress {
+        fn new() -> Self {
+            Self {
+                shard_starts: AtomicUsize::new(0),
+                shard_completes: AtomicUsize::new(0),
+                upload_progress_calls: AtomicUsize::new(0),
+                commit_starts: AtomicUsize::new(0),
+                commit_completes: AtomicUsize::new(0),
+                events: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn events(&self) -> Vec<ProgressEvent> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    impl HfSinkProgress for TestProgress {
+        fn on_shard_start(&self, index: usize, path: &str) {
+            self.shard_starts.fetch_add(1, Ordering::SeqCst);
+            self.events.lock().unwrap().push(ProgressEvent::ShardStart {
+                index,
+                path: path.to_string(),
+            });
+        }
+
+        fn on_shard_upload_progress(&self, index: usize, bytes_uploaded: u64, total_bytes: u64) {
+            self.upload_progress_calls.fetch_add(1, Ordering::SeqCst);
+            self.events
+                .lock()
+                .unwrap()
+                .push(ProgressEvent::UploadProgress {
+                    index,
+                    bytes: bytes_uploaded,
+                    total: total_bytes,
+                });
+        }
+
+        fn on_shard_complete(&self, index: usize, path: &str, size: u64) {
+            self.shard_completes.fetch_add(1, Ordering::SeqCst);
+            self.events
+                .lock()
+                .unwrap()
+                .push(ProgressEvent::ShardComplete {
+                    index,
+                    path: path.to_string(),
+                    size,
+                });
+        }
+
+        fn on_commit_start(&self, num_shards: usize) {
+            self.commit_starts.fetch_add(1, Ordering::SeqCst);
+            self.events
+                .lock()
+                .unwrap()
+                .push(ProgressEvent::CommitStart { num_shards });
+        }
+
+        fn on_commit_complete(&self, commit_url: Option<&str>) {
+            self.commit_completes.fetch_add(1, Ordering::SeqCst);
+            self.events
+                .lock()
+                .unwrap()
+                .push(ProgressEvent::CommitComplete {
+                    url: commit_url.map(String::from),
+                });
+        }
+    }
+
+    // =========================================================================
+    // Tests
+    // =========================================================================
 
     #[test]
     fn test_hf_sink_node_creation() {
@@ -2077,5 +2177,61 @@ dataset_info:
 
         // No file should be created (the None branch simply skips checkpoint operations)
         assert!(!potential_path.exists());
+    }
+
+    // =========================================================================
+    // Progress Callback Tests
+    // =========================================================================
+
+    #[test]
+    fn test_progress_helper_records_events() {
+        use std::sync::Arc;
+
+        let progress = Arc::new(TestProgress::new());
+
+        // Simulate callback sequence for a single shard upload
+        progress.on_shard_start(0, "data/train-00000.parquet");
+        progress.on_shard_upload_progress(0, 500, 1000);
+        progress.on_shard_upload_progress(0, 1000, 1000);
+        progress.on_shard_complete(0, "data/train-00000.parquet", 1000);
+        progress.on_commit_start(1);
+        progress.on_commit_complete(Some("https://huggingface.co/datasets/user/repo/commit/abc123"));
+
+        // Verify counters
+        assert_eq!(progress.shard_starts.load(Ordering::SeqCst), 1);
+        assert_eq!(progress.upload_progress_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(progress.shard_completes.load(Ordering::SeqCst), 1);
+        assert_eq!(progress.commit_starts.load(Ordering::SeqCst), 1);
+        assert_eq!(progress.commit_completes.load(Ordering::SeqCst), 1);
+
+        // Verify event log has correct count
+        let events = progress.events();
+        assert_eq!(events.len(), 6);
+
+        // Verify event order and content
+        assert!(matches!(
+            &events[0],
+            ProgressEvent::ShardStart { index: 0, path } if path == "data/train-00000.parquet"
+        ));
+        assert!(matches!(
+            &events[1],
+            ProgressEvent::UploadProgress { index: 0, bytes: 500, total: 1000 }
+        ));
+        assert!(matches!(
+            &events[2],
+            ProgressEvent::UploadProgress { index: 0, bytes: 1000, total: 1000 }
+        ));
+        assert!(matches!(
+            &events[3],
+            ProgressEvent::ShardComplete { index: 0, size: 1000, .. }
+        ));
+        assert!(matches!(
+            &events[4],
+            ProgressEvent::CommitStart { num_shards: 1 }
+        ));
+        assert!(matches!(
+            &events[5],
+            ProgressEvent::CommitComplete { url: Some(_) }
+        ));
     }
 }
