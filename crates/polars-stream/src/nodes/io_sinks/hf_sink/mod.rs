@@ -663,6 +663,7 @@ fn upload_shard_task(
     #[allow(unused_variables)] resumed_shards: Arc<HashSet<usize>>,
     repo_id: String,
     checkpoint_path: Option<std::path::PathBuf>,
+    options: Arc<HfSinkOptions>,
 ) -> JoinHandle<PolarsResult<()>> {
     spawn(TaskPriority::Low, async move {
         let mut shard_rx = shard_rx;
@@ -740,6 +741,15 @@ fn upload_shard_task(
                 size: finished_shard.size,
                 num_rows: finished_shard.num_rows,
             };
+
+            // Notify progress callback of shard completion
+            if let Some(ref progress) = options.progress {
+                progress.on_shard_complete(
+                    completion.index,
+                    &completion.path_in_repo,
+                    completion.size,
+                );
+            }
 
             completion_tx
                 .send(completion)
@@ -893,6 +903,7 @@ impl SinkNode for HfSinkNode {
             Arc::clone(&self.resumed_shards),
             self.options.repo_id.clone(),
             self.options.checkpoint_path.clone(),
+            Arc::clone(&self.options),
         );
 
         // 6. Store channels and task handle for use in spawn_sink() and finalize()
@@ -1519,6 +1530,7 @@ mod tests {
             resumed_shards: Arc<HashSet<usize>>,
             repo_id: String,
             checkpoint_path: Option<std::path::PathBuf>,
+            options: Arc<HfSinkOptions>,
         ) -> JoinHandle<PolarsResult<()>> {
             upload_shard_task(
                 shard_rx,
@@ -1530,6 +1542,7 @@ mod tests {
                 resumed_shards,
                 repo_id,
                 checkpoint_path,
+                options,
             )
         }
         // If this compiles, the test passes
