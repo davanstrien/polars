@@ -153,6 +153,13 @@ impl WriterState {
         index
     }
 
+    /// Get the next shard index without incrementing.
+    ///
+    /// Use this to preview the index before actually consuming it.
+    pub fn peek_next_index(&self) -> usize {
+        self.current_shard_index
+    }
+
     /// Get the number of completed shards.
     pub fn num_completed(&self) -> usize {
         self.completed.len()
@@ -522,6 +529,13 @@ fn buffer_and_write_task(
                     // 3. Ensure we have a shard writer
                     if current_writer.is_none() {
                         current_writer = Some(create_shard_writer(&schema, &options)?);
+
+                        // Notify progress callback of shard start
+                        if let Some(ref progress) = options.progress {
+                            let shard_idx = state.peek_next_index();
+                            let path = shard_path(&options.path_in_repo, &options.split, shard_idx);
+                            progress.on_shard_start(shard_idx, &path);
+                        }
                     }
                     let writer = current_writer.as_mut().unwrap();
 
@@ -574,6 +588,13 @@ fn buffer_and_write_task(
             // Write remaining buffer to current (or new) shard
             if current_writer.is_none() {
                 current_writer = Some(create_shard_writer(&schema, &options)?);
+
+                // Notify progress callback of shard start
+                if let Some(ref progress) = options.progress {
+                    let shard_idx = state.peek_next_index();
+                    let path = shard_path(&options.path_in_repo, &options.split, shard_idx);
+                    progress.on_shard_start(shard_idx, &path);
+                }
             }
             let writer = current_writer.as_mut().unwrap();
             let batch = df_to_record_batch(buffer, &schema)?;
