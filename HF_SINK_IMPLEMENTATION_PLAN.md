@@ -11,7 +11,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ```
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
-🔄 Task 6.3 (Progress Reporting) in progress - subtask 6.3.4d complete (on_commit_start/complete wired)
+🔄 Task 6.3 (Progress Reporting) in progress - subtask 6.3.4e complete (upload progress wired)
 ```
 
 **Build Status:**
@@ -383,7 +383,7 @@ This is the most complex Phase 6 task. Consider implementing after 6.1 and 6.3.
 | **6.3.4b** | Wire on_shard_start callback in buffer_and_write_task | ✅ Complete |
 | **6.3.4c** | Wire on_shard_complete callback in upload_shard_task | ✅ Complete |
 | **6.3.4d** | Wire on_commit_start/complete callbacks in finalize | ✅ Complete |
-| **6.3.4e** | Implement byte-level upload progress (ProgressBody + UploadExecutor) | Pending |
+| **6.3.4e** | Implement byte-level upload progress (ProgressBody + UploadExecutor) | ✅ Complete |
 | **6.3.6** | Integration tests for metrics and progress | Pending |
 
 #### Overview
@@ -395,7 +395,7 @@ Two aspects:
 
 #### Existing Infrastructure
 - **`get_metrics()` stub** already exists in `hf_sink/mod.rs` - returns `Ok(None)`
-- **`UploadProgress` trait** already defined in `lfs/upload.rs` (stub, not wired)
+- **`HfSinkProgress` trait** in `progress.rs` - now wired to `upload()` in `lfs/upload.rs`
 - **`WriteMetrics` struct** in `metrics.rs` - expects column-level stats
 - **`ShardCompletion`** data available in finalize() - path, size, num_rows, sha256
 
@@ -419,11 +419,11 @@ pub trait SinkProgress: Send + Sync {
 | `cloud/hf/options.rs` | Add `progress: Option<SinkProgressRef>` | ✅ 6.3.4a |
 | `hf_sink/mod.rs` | Add `peek_next_index()`, wire `on_shard_start` in buffer_and_write_task | ✅ 6.3.4b |
 | `hf_sink/mod.rs` | Wire `on_shard_complete` in upload_shard_task, `on_commit_*` in finalize | ✅ 6.3.4c / ✅ 6.3.4d |
-| `cloud/hf/lfs/upload.rs` | Add ProgressBody, modify upload() for byte progress | Pending 6.3.4e |
+| `cloud/hf/lfs/upload.rs` | Add shard_index+progress params to upload(), per-part progress | ✅ 6.3.4e |
 
 #### Integration Points
 1. **Shard start**: In `buffer_and_write_task()` when starting new shard ✅ Done (6.3.4b)
-2. **Upload progress**: In `upload_shard_task()` during LFS upload
+2. **Upload progress**: In `upload_shard_task()` during LFS upload ✅ Done (6.3.4e)
 3. **Shard complete**: After upload in `upload_shard_task()` ✅ Done (6.3.4c)
 4. **Commit**: In `finalize()` before and after commit API call ✅ Done (6.3.4d)
 
