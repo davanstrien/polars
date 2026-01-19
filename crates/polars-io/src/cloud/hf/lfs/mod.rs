@@ -13,4 +13,4 @@ pub use types::{
     LfsObject, LfsObjectError, LfsObjectRequest, LfsOperation, LfsPartCompletion, LfsPartInfo,
     LfsTransfer,
 };
-pub use upload::{NoOpProgress, UploadExecutor, UploadProgress};
+pub use upload::UploadExecutor;

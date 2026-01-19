@@ -688,7 +688,13 @@ fn upload_shard_task(
 
             // 3. Upload data (handles AlreadyExists, Basic, Multipart)
             let maybe_completions = upload_executor
-                .upload(finished_shard.buffer, transfer, &finished_shard.sha256)
+                .upload(
+                    finished_shard.buffer,
+                    transfer,
+                    &finished_shard.sha256,
+                    shard_index,
+                    options.progress.clone(),
+                )
                 .await?;
 
             // 4. Complete multipart if needed

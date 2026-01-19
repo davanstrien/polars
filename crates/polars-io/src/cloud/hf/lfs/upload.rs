@@ -4,6 +4,7 @@
 //! Files uploaded via LFS are automatically migrated to Xet storage by HF Hub.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use polars_core::config;
@@ -12,6 +13,7 @@ use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG};
 
 use super::types::{LfsPartCompletion, LfsPartInfo, LfsTransfer};
 use crate::cloud::hf::mmap_buffer::MmapReadHandle;
+use crate::cloud::hf::HfSinkProgress;
 use crate::cloud::options::USER_AGENT;
 use crate::pl_async::with_concurrency_budget;
 
@@ -61,6 +63,8 @@ impl UploadExecutor {
     /// * `data` - The file data as a read handle (zero-copy mmap)
     /// * `transfer` - The transfer method from LFS batch response
     /// * `sha256` - SHA256 hash of the data (for logging)
+    /// * `shard_index` - Zero-based index of the shard being uploaded
+    /// * `progress` - Optional progress callback for upload tracking
     ///
     /// # Returns
     /// * `Ok(None)` - File already exists, skipped upload
@@ -71,6 +75,8 @@ impl UploadExecutor {
         data: MmapReadHandle,
         transfer: LfsTransfer,
         sha256: &str,
+        shard_index: usize,
+        progress: Option<Arc<dyn HfSinkProgress>>,
     ) -> PolarsResult<Option<Vec<LfsPartCompletion>>> {
         match transfer {
             LfsTransfer::AlreadyExists => {
@@ -80,11 +86,14 @@ impl UploadExecutor {
                 Ok(None)
             },
             LfsTransfer::Basic { url, headers } => {
-                self.upload_basic(data.as_slice(), &url, &headers).await?;
+                self.upload_basic(data.as_slice(), &url, &headers, shard_index, progress)
+                    .await?;
                 Ok(None)
             },
             LfsTransfer::Multipart { parts } => {
-                let completions = self.upload_multipart(data.as_slice(), &parts).await?;
+                let completions = self
+                    .upload_multipart(data.as_slice(), &parts, shard_index, progress)
+                    .await?;
                 Ok(Some(completions))
             },
         }
@@ -96,14 +105,29 @@ impl UploadExecutor {
         data: &[u8],
         url: &str,
         headers: &HashMap<String, String>,
+        shard_index: usize,
+        progress: Option<Arc<dyn HfSinkProgress>>,
     ) -> PolarsResult<()> {
+        let total = data.len() as u64;
+
+        // Report upload start (0 bytes)
+        if let Some(ref p) = progress {
+            p.on_shard_upload_progress(shard_index, 0, total);
+        }
+
         let mut retries = 0;
 
         loop {
             let result = self.send_put_request(url, data, headers).await;
 
             match result {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    // Report upload complete (all bytes)
+                    if let Some(ref p) = progress {
+                        p.on_shard_upload_progress(shard_index, total, total);
+                    }
+                    return Ok(());
+                },
                 Err(e) => {
                     retries += 1;
                     if retries > MAX_UPLOAD_RETRIES {
@@ -173,9 +197,18 @@ impl UploadExecutor {
         &self,
         data: &[u8],
         parts: &[LfsPartInfo],
+        shard_index: usize,
+        progress: Option<Arc<dyn HfSinkProgress>>,
     ) -> PolarsResult<Vec<LfsPartCompletion>> {
         if parts.is_empty() {
             polars_bail!(ComputeError: "multipart upload requires at least one part");
+        }
+
+        let total_size = data.len() as u64;
+
+        // Report upload start (0 bytes)
+        if let Some(ref p) = progress {
+            p.on_shard_upload_progress(shard_index, 0, total_size);
         }
 
         // Calculate byte ranges for each part
@@ -202,11 +235,18 @@ impl UploadExecutor {
         // Upload parts sequentially for now
         // TODO: Consider parallel upload with futures::stream::buffered()
         let mut completions = Vec::with_capacity(parts.len());
+        let mut bytes_uploaded: u64 = 0;
 
         for (part, range) in part_ranges {
-            let data_slice = &data[range];
+            let data_slice = &data[range.clone()];
             let completion = self.upload_single_part_with_retry(part, data_slice).await?;
             completions.push(completion);
+
+            // Report progress after each part
+            bytes_uploaded += data_slice.len() as u64;
+            if let Some(ref p) = progress {
+                p.on_shard_upload_progress(shard_index, bytes_uploaded, total_size);
+            }
         }
 
         if config::verbose() {
@@ -305,37 +345,6 @@ impl UploadExecutor {
     }
 }
 
-// ============================================================================
-// Progress Tracking (Stub for Future Implementation)
-// ============================================================================
-
-/// Progress callback for tracking upload progress.
-///
-/// This trait allows callers to receive progress updates during uploads.
-/// Implement this trait to add progress bars, logging, or metrics.
-pub trait UploadProgress: Send + Sync {
-    /// Called when upload of a shard starts.
-    fn on_upload_start(&self, sha256: &str, total_bytes: u64);
-
-    /// Called periodically during upload with bytes transferred.
-    fn on_progress(&self, sha256: &str, bytes_uploaded: u64, total_bytes: u64);
-
-    /// Called when upload completes successfully.
-    fn on_upload_complete(&self, sha256: &str);
-
-    /// Called when upload fails.
-    fn on_upload_error(&self, sha256: &str, error: &str);
-}
-
-/// No-op progress tracker (default).
-pub struct NoOpProgress;
-
-impl UploadProgress for NoOpProgress {
-    fn on_upload_start(&self, _sha256: &str, _total_bytes: u64) {}
-    fn on_progress(&self, _sha256: &str, _bytes_uploaded: u64, _total_bytes: u64) {}
-    fn on_upload_complete(&self, _sha256: &str) {}
-    fn on_upload_error(&self, _sha256: &str, _error: &str) {}
-}
 
 // ============================================================================
 // Tests
@@ -394,16 +403,5 @@ mod tests {
         assert_eq!(ranges[1], (2, 100..250));
         assert_eq!(ranges[2], (3, 250..300));
         assert_eq!(offset, 300); // Total size
-    }
-
-    #[test]
-    fn test_noop_progress() {
-        let progress = NoOpProgress;
-
-        // These should not panic
-        progress.on_upload_start("abc123", 1000);
-        progress.on_progress("abc123", 500, 1000);
-        progress.on_upload_complete("abc123");
-        progress.on_upload_error("abc123", "test error");
     }
 }
