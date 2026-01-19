@@ -2234,4 +2234,107 @@ dataset_info:
             ProgressEvent::CommitComplete { url: Some(_) }
         ));
     }
+
+    #[test]
+    fn test_progress_single_shard_callback_sequence() {
+        use std::sync::Arc;
+
+        let progress = Arc::new(TestProgress::new());
+
+        // Simulate expected callback sequence for single shard upload
+        // This is what HfSinkNode should call during a real upload
+
+        // 1. Shard starts (in buffer_and_write_task, before writing begins)
+        progress.on_shard_start(0, "data/train-00000.parquet");
+
+        // 2. Upload progress (in upload_shard_task, during LFS upload)
+        let total_bytes = 10_000u64;
+        progress.on_shard_upload_progress(0, 2_500, total_bytes);
+        progress.on_shard_upload_progress(0, 5_000, total_bytes);
+        progress.on_shard_upload_progress(0, 7_500, total_bytes);
+        progress.on_shard_upload_progress(0, 10_000, total_bytes);
+
+        // 3. Shard completes (in upload_shard_task, after LFS upload)
+        progress.on_shard_complete(0, "data/train-00000.parquet", total_bytes);
+
+        // 4. Commit starts (in finalize, before commit API call)
+        progress.on_commit_start(1);
+
+        // 5. Commit completes (in finalize, after commit API call)
+        progress.on_commit_complete(Some("https://huggingface.co/datasets/user/repo/commit/abc123"));
+
+        // ===== ASSERTIONS =====
+
+        // Counter assertions
+        assert_eq!(
+            progress.shard_starts.load(Ordering::SeqCst),
+            1,
+            "single shard should have 1 start"
+        );
+        assert_eq!(
+            progress.shard_completes.load(Ordering::SeqCst),
+            1,
+            "single shard should have 1 complete"
+        );
+        assert_eq!(
+            progress.upload_progress_calls.load(Ordering::SeqCst),
+            4,
+            "4 progress updates"
+        );
+        assert_eq!(
+            progress.commit_starts.load(Ordering::SeqCst),
+            1,
+            "1 commit start"
+        );
+        assert_eq!(
+            progress.commit_completes.load(Ordering::SeqCst),
+            1,
+            "1 commit complete"
+        );
+
+        // Event sequence assertions
+        let events = progress.events();
+        assert_eq!(events.len(), 8, "8 total events");
+
+        // Verify order: start → progress(4x) → complete → commit_start → commit_complete
+        assert!(matches!(
+            &events[0],
+            ProgressEvent::ShardStart { index: 0, .. }
+        ));
+        assert!(matches!(
+            &events[1],
+            ProgressEvent::UploadProgress { index: 0, .. }
+        ));
+        assert!(matches!(
+            &events[2],
+            ProgressEvent::UploadProgress { index: 0, .. }
+        ));
+        assert!(matches!(
+            &events[3],
+            ProgressEvent::UploadProgress { index: 0, .. }
+        ));
+        assert!(matches!(
+            &events[4],
+            ProgressEvent::UploadProgress { index: 0, .. }
+        ));
+        assert!(matches!(
+            &events[5],
+            ProgressEvent::ShardComplete { index: 0, .. }
+        ));
+        assert!(matches!(
+            &events[6],
+            ProgressEvent::CommitStart { num_shards: 1 }
+        ));
+        assert!(matches!(&events[7], ProgressEvent::CommitComplete { .. }));
+
+        // Verify upload progress bytes are monotonically increasing
+        let upload_events: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                ProgressEvent::UploadProgress { bytes, .. } => Some(*bytes),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(upload_events, vec![2_500, 5_000, 7_500, 10_000]);
+    }
 }
