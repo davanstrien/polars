@@ -29,6 +29,9 @@ pub mod shard_writer;
 // Checkpoint support for resumable uploads
 #[cfg(feature = "hf_sink")]
 pub mod checkpoint;
+// Progress tracking for real-time upload callbacks
+#[cfg(feature = "hf_sink")]
+pub mod progress;
 
 // Re-export auth function
 #[cfg(feature = "hf_sink")]
@@ -61,3 +64,6 @@ pub use dataset_card::{
 // API utilities for mode handling (list existing files) and README fetching
 #[cfg(feature = "hf_sink")]
 pub use api::{ExistingFile, check_existing_files, fetch_readme, list_existing_files};
+// Progress callback trait for monitoring uploads
+#[cfg(feature = "hf_sink")]
+pub use progress::{HfSinkProgress, NoOpSinkProgress, SinkProgressRef};

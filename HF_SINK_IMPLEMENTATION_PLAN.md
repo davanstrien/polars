@@ -6,12 +6,12 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ---
 
-## Current Status (2026-01-18)
+## Current Status (2026-01-19)
 
 ```
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
-🔄 Task 6.3 (Progress Reporting) in progress - subtask 6.3.2 complete
+🔄 Task 6.3 (Progress Reporting) in progress - subtask 6.3.3 complete (HfSinkProgress trait)
 ```
 
 **Build Status:**
@@ -21,7 +21,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink  # 32 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (96 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (97 commits ahead of origin, local only)
 
 ---
 
@@ -378,7 +378,7 @@ This is the most complex Phase 6 task. Consider implementing after 6.1 and 6.3.
 |---------|-------------|--------|
 | **6.3.1** | Add metrics field to HfSinkNode, store completions in finalize | ✅ Complete |
 | **6.3.2** | Implement get_metrics() returning shard-level WriteMetrics | ✅ Complete |
-| **6.3.3** | Add HfSinkProgress trait for higher-level callbacks | Pending |
+| **6.3.3** | Add HfSinkProgress trait for higher-level callbacks | ✅ Complete |
 | **6.3.4** | Wire UploadProgress into upload_shard_task | Pending |
 | **6.3.5** | Add progress option to HfSinkOptions | Pending |
 | **6.3.6** | Integration tests for metrics and progress | Pending |
@@ -408,12 +408,13 @@ pub trait SinkProgress: Send + Sync {
 }
 ```
 
-#### Files to Modify
-| File | Change |
-|------|--------|
-| `hf_sink/mod.rs` | Add shard_completions field, store in finalize, update get_metrics |
-| `options.rs` | Add `progress: Option<Arc<dyn SinkProgress>>` |
-| `lfs/upload.rs` | Wire existing `UploadProgress` to new trait |
+#### Files Modified/Created
+| File | Change | Status |
+|------|--------|--------|
+| `cloud/hf/progress.rs` | NEW: HfSinkProgress trait, NoOpSinkProgress, SinkProgressRef | ✅ 6.3.3 |
+| `cloud/hf/mod.rs` | Export progress module | ✅ 6.3.3 |
+| `hf_sink/mod.rs` | Wire progress callbacks into buffer_and_write_task, upload_shard_task, finalize | Pending 6.3.4 |
+| `options.rs` | Add `progress: Option<SinkProgressRef>` | Pending 6.3.5 |
 
 #### Integration Points
 1. **Shard start**: In `buffer_and_write_task()` when starting new shard
