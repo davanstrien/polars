@@ -11,7 +11,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ```
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
-🔄 Task 6.3 (Progress Reporting) in progress - subtask 6.3.3 complete (HfSinkProgress trait)
+🔄 Task 6.3 (Progress Reporting) in progress - subtask 6.3.4a complete (progress field in HfSinkOptions)
 ```
 
 **Build Status:**
@@ -379,8 +379,11 @@ This is the most complex Phase 6 task. Consider implementing after 6.1 and 6.3.
 | **6.3.1** | Add metrics field to HfSinkNode, store completions in finalize | ✅ Complete |
 | **6.3.2** | Implement get_metrics() returning shard-level WriteMetrics | ✅ Complete |
 | **6.3.3** | Add HfSinkProgress trait for higher-level callbacks | ✅ Complete |
-| **6.3.4** | Wire UploadProgress into upload_shard_task | Pending |
-| **6.3.5** | Add progress option to HfSinkOptions | Pending |
+| **6.3.4a** | Add progress field to HfSinkOptions (merged w/ 6.3.5) | ✅ Complete |
+| **6.3.4b** | Wire on_shard_start callback in buffer_and_write_task | Pending |
+| **6.3.4c** | Wire on_shard_complete callback in upload_shard_task | Pending |
+| **6.3.4d** | Wire on_commit_start/complete callbacks in finalize | Pending |
+| **6.3.4e** | Implement byte-level upload progress (ProgressBody + UploadExecutor) | Pending |
 | **6.3.6** | Integration tests for metrics and progress | Pending |
 
 #### Overview
@@ -413,8 +416,9 @@ pub trait SinkProgress: Send + Sync {
 |------|--------|--------|
 | `cloud/hf/progress.rs` | NEW: HfSinkProgress trait, NoOpSinkProgress, SinkProgressRef | ✅ 6.3.3 |
 | `cloud/hf/mod.rs` | Export progress module | ✅ 6.3.3 |
-| `hf_sink/mod.rs` | Wire progress callbacks into buffer_and_write_task, upload_shard_task, finalize | Pending 6.3.4 |
-| `options.rs` | Add `progress: Option<SinkProgressRef>` | Pending 6.3.5 |
+| `cloud/hf/options.rs` | Add `progress: Option<SinkProgressRef>` | ✅ 6.3.4a |
+| `hf_sink/mod.rs` | Wire progress callbacks into buffer_and_write_task, upload_shard_task, finalize | Pending 6.3.4b-d |
+| `cloud/hf/lfs/upload.rs` | Add ProgressBody, modify upload() for byte progress | Pending 6.3.4e |
 
 #### Integration Points
 1. **Shard start**: In `buffer_and_write_task()` when starting new shard

@@ -8,6 +8,8 @@ use polars_error::{PolarsResult, polars_bail};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use super::progress::SinkProgressRef;
+
 /// Default shard size: 500MB
 const DEFAULT_MAX_SHARD_SIZE: usize = 500 * 1024 * 1024;
 /// Default upload concurrency
@@ -92,7 +94,7 @@ pub enum HfWriteMode {
 ///     .with_mode(HfWriteMode::Overwrite)
 ///     .build()?;
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct HfSinkOptions {
     /// Repository ID in format "user/repo" or "org/repo"
@@ -125,6 +127,12 @@ pub struct HfSinkOptions {
     pub upload_concurrency: usize,
     /// Whether to update README.md with split metadata (default: true)
     pub update_card: bool,
+    /// Optional progress callback for tracking upload progress.
+    ///
+    /// When set, callbacks will be invoked at shard and commit lifecycle events.
+    /// This field is excluded from serialization and equality comparisons.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub progress: Option<SinkProgressRef>,
 }
 
 impl Default for HfSinkOptions {
@@ -145,7 +153,78 @@ impl Default for HfSinkOptions {
             checkpoint_path: None,
             upload_concurrency: DEFAULT_UPLOAD_CONCURRENCY,
             update_card: true,
+            progress: None,
         }
+    }
+}
+
+// Manual implementations of PartialEq, Eq, Hash that exclude the progress field
+// (progress is a runtime callback, not meaningful for equality/hashing)
+
+impl PartialEq for HfSinkOptions {
+    fn eq(&self, other: &Self) -> bool {
+        self.repo_id == other.repo_id
+            && self.repo_type == other.repo_type
+            && self.revision == other.revision
+            && self.path_in_repo == other.path_in_repo
+            && self.split == other.split
+            && self.max_shard_size == other.max_shard_size
+            && self.max_shard_rows == other.max_shard_rows
+            && self.num_shards == other.num_shards
+            && self.mode == other.mode
+            && self.token == other.token
+            && self.commit_message == other.commit_message
+            && self.create_pr == other.create_pr
+            && self.checkpoint_path == other.checkpoint_path
+            && self.upload_concurrency == other.upload_concurrency
+            && self.update_card == other.update_card
+        // Note: progress is intentionally excluded from equality comparison
+    }
+}
+
+impl Eq for HfSinkOptions {}
+
+impl std::hash::Hash for HfSinkOptions {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.repo_id.hash(state);
+        self.repo_type.hash(state);
+        self.revision.hash(state);
+        self.path_in_repo.hash(state);
+        self.split.hash(state);
+        self.max_shard_size.hash(state);
+        self.max_shard_rows.hash(state);
+        self.num_shards.hash(state);
+        self.mode.hash(state);
+        self.token.hash(state);
+        self.commit_message.hash(state);
+        self.create_pr.hash(state);
+        self.checkpoint_path.hash(state);
+        self.upload_concurrency.hash(state);
+        self.update_card.hash(state);
+        // Note: progress is intentionally excluded from hash computation
+    }
+}
+
+impl std::fmt::Debug for HfSinkOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HfSinkOptions")
+            .field("repo_id", &self.repo_id)
+            .field("repo_type", &self.repo_type)
+            .field("revision", &self.revision)
+            .field("path_in_repo", &self.path_in_repo)
+            .field("split", &self.split)
+            .field("max_shard_size", &self.max_shard_size)
+            .field("max_shard_rows", &self.max_shard_rows)
+            .field("num_shards", &self.num_shards)
+            .field("mode", &self.mode)
+            .field("token", &self.token.as_ref().map(|_| "***"))
+            .field("commit_message", &self.commit_message)
+            .field("create_pr", &self.create_pr)
+            .field("checkpoint_path", &self.checkpoint_path)
+            .field("upload_concurrency", &self.upload_concurrency)
+            .field("update_card", &self.update_card)
+            .field("progress", &self.progress.as_ref().map(|_| "<callback>"))
+            .finish()
     }
 }
 
@@ -325,6 +404,28 @@ impl HfSinkOptionsBuilder {
     /// with `dataset_info.splits` metadata including row counts and byte sizes.
     pub fn with_update_card(mut self, update: bool) -> Self {
         self.options.update_card = update;
+        self
+    }
+
+    /// Set a progress callback for tracking upload progress.
+    ///
+    /// The callback will receive notifications for:
+    /// - Shard start/complete events
+    /// - Upload byte progress
+    /// - Commit start/complete events
+    ///
+    /// # Example
+    /// ```ignore
+    /// use std::sync::Arc;
+    /// use polars_io::cloud::hf::{HfSinkOptions, NoOpSinkProgress};
+    ///
+    /// let options = HfSinkOptions::builder("user/repo")
+    ///     .with_path_in_repo("data")
+    ///     .with_progress(Arc::new(NoOpSinkProgress))
+    ///     .build()?;
+    /// ```
+    pub fn with_progress(mut self, progress: SinkProgressRef) -> Self {
+        self.options.progress = Some(progress);
         self
     }
 
