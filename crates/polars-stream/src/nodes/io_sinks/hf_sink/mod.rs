@@ -1166,9 +1166,19 @@ impl SinkNode for HfSinkNode {
                 .collect();
 
             // Step H: Execute atomic commit
+            // Notify progress callback of commit start (Task 6.3.4d)
+            if let Some(ref progress) = options.progress {
+                progress.on_commit_start(completions.len());
+            }
+
             let commit_info = commit_client
                 .create_commit(&summary, Some(&description), &operations, options.create_pr)
                 .await?;
+
+            // Notify progress callback of commit completion (Task 6.3.4d)
+            if let Some(ref progress) = options.progress {
+                progress.on_commit_complete(Some(&commit_info.commit_url));
+            }
 
             // Step H.5: Delete checkpoint on success (Task 6.1.9)
             if let Some(ref checkpoint_path) = options.checkpoint_path {
