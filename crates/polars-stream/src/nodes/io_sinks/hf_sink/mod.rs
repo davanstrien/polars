@@ -18,8 +18,10 @@ use std::sync::{Arc, Mutex};
 
 use arrow::record_batch::RecordBatch;
 use polars_core::config;
+use polars_core::datatypes::DataType;
 use polars_core::frame::DataFrame;
 use polars_core::prelude::CompatLevel;
+use polars_utils::pl_str::PlSmallStr;
 use polars_core::schema::SchemaRef;
 use polars_error::{PolarsResult, polars_bail, polars_err};
 use polars_io::cloud::hf::commit::{CommitClient, CommitOperation, CommitOperationAdd, CommitOperationDelete};
@@ -301,6 +303,99 @@ pub fn partitioned_shard_path(
         "{}/{}={}/{}-{:05}.parquet",
         path, partition_col, partition_value, split, index
     )
+}
+
+/// Hive default partition value for null partition keys.
+///
+/// Used when a partition column contains null values, following the Hive convention.
+const HIVE_DEFAULT_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
+
+/// Extract the first partition value from a DataFrame.
+///
+/// Returns the string representation of the first value in the partition column.
+/// Returns `__HIVE_DEFAULT_PARTITION__` for null values, following Hive convention.
+///
+/// # Arguments
+/// * `df` - The DataFrame to extract from
+/// * `partition_col` - Name of the partition column
+///
+/// # Errors
+/// Returns an error if:
+/// - The partition column doesn't exist
+/// - The DataFrame is empty
+/// - The value cannot be cast to string
+///
+/// # Examples
+/// ```ignore
+/// let df = df! { "split" => ["train", "train"] }.unwrap();
+/// assert_eq!(extract_partition_value(&df, "split").unwrap(), "train");
+/// ```
+fn extract_partition_value(df: &DataFrame, partition_col: &str) -> PolarsResult<String> {
+    let col = df.column(partition_col)?;
+
+    if col.is_empty() {
+        polars_bail!(ComputeError: "cannot extract partition value from empty DataFrame");
+    }
+
+    // Get first value, cast to string
+    let first = col.head(Some(1));
+    let str_col = first.cast(&DataType::String)?;
+    let str_arr = str_col.str()?;
+
+    match str_arr.get(0) {
+        Some(v) => Ok(v.to_string()),
+        None => Ok(HIVE_DEFAULT_PARTITION.to_string()),
+    }
+}
+
+/// Split a DataFrame by partition column into (partition_value, sub_df) pairs.
+///
+/// Uses Polars' built-in partitioning with stable ordering to preserve row order
+/// within each partition. The partition column is retained in output DataFrames.
+///
+/// # Arguments
+/// * `df` - The DataFrame to partition
+/// * `partition_col` - Name of the column to partition by
+///
+/// # Returns
+/// A vector of (partition_value, DataFrame) pairs, one per unique partition value.
+///
+/// # Errors
+/// Returns an error if:
+/// - The partition column doesn't exist
+/// - Partitioning fails internally
+///
+/// # Examples
+/// ```ignore
+/// let df = df! {
+///     "split" => ["train", "test", "train"],
+///     "data" => [1, 2, 3],
+/// }.unwrap();
+/// let partitions = partition_dataframe(df, "split").unwrap();
+/// // Returns [("train", df_with_2_rows), ("test", df_with_1_row)]
+/// ```
+fn partition_dataframe(
+    df: DataFrame,
+    partition_col: &str,
+) -> PolarsResult<Vec<(String, DataFrame)>> {
+    let col_names = [PlSmallStr::from_str(partition_col)];
+
+    // Use Polars' built-in partitioning (stable=true to preserve order)
+    let partitions = df._partition_by_impl(
+        &col_names,
+        true,  // stable
+        true,  // include_key (keep partition column)
+        false, // parallel (not needed for small chunks)
+    )?;
+
+    // Extract partition value from each sub-DataFrame
+    let mut result = Vec::with_capacity(partitions.len());
+    for sub_df in partitions {
+        let value = extract_partition_value(&sub_df, partition_col)?;
+        result.push((value, sub_df));
+    }
+
+    Ok(result)
 }
 
 /// Extract the shard index from a path like "data/train-00042.parquet".
@@ -3119,5 +3214,152 @@ dataset_info:
         assert!(values.contains("train"));
         assert!(values.contains("test"));
         assert!(values.contains("validation"));
+    }
+
+    // =========================================================================
+    // Tests for Partition Extraction (Task 6.2.4)
+    // =========================================================================
+
+    #[test]
+    fn test_extract_partition_value_string() {
+        use polars_core::prelude::*;
+
+        let df = df! {
+            "split" => ["train", "train", "train"],
+            "data" => [1i32, 2, 3],
+        }
+        .unwrap();
+
+        let value = extract_partition_value(&df, "split").unwrap();
+        assert_eq!(value, "train");
+    }
+
+    #[test]
+    fn test_extract_partition_value_int() {
+        use polars_core::prelude::*;
+
+        let df = df! {
+            "year" => [2024i32, 2024, 2024],
+            "data" => [1i32, 2, 3],
+        }
+        .unwrap();
+
+        let value = extract_partition_value(&df, "year").unwrap();
+        assert_eq!(value, "2024");
+    }
+
+    #[test]
+    fn test_extract_partition_value_null() {
+        use polars_core::prelude::*;
+
+        let split: Vec<Option<&str>> = vec![None, None];
+        let df = df! {
+            "split" => split,
+            "data" => [1i32, 2],
+        }
+        .unwrap();
+
+        let value = extract_partition_value(&df, "split").unwrap();
+        assert_eq!(value, HIVE_DEFAULT_PARTITION);
+    }
+
+    #[test]
+    fn test_extract_partition_value_missing_column() {
+        use polars_core::prelude::*;
+
+        let df = df! {
+            "data" => [1i32, 2, 3],
+        }
+        .unwrap();
+
+        let result = extract_partition_value(&df, "nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_partition_value_empty_df() {
+        use polars_core::prelude::*;
+
+        let df = DataFrame::empty_with_schema(&Schema::from_iter([
+            Field::new("split".into(), DataType::String),
+            Field::new("data".into(), DataType::Int32),
+        ]));
+
+        let result = extract_partition_value(&df, "split");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("empty DataFrame"));
+    }
+
+    #[test]
+    fn test_partition_dataframe_basic() {
+        use polars_core::prelude::*;
+
+        let df = df! {
+            "split" => ["train", "test", "train", "test"],
+            "data" => [1i32, 2, 3, 4],
+        }
+        .unwrap();
+
+        let partitions = partition_dataframe(df, "split").unwrap();
+        assert_eq!(partitions.len(), 2);
+
+        // Find train partition
+        let train = partitions.iter().find(|(v, _)| v == "train").unwrap();
+        assert_eq!(train.1.height(), 2);
+
+        // Find test partition
+        let test = partitions.iter().find(|(v, _)| v == "test").unwrap();
+        assert_eq!(test.1.height(), 2);
+    }
+
+    #[test]
+    fn test_partition_dataframe_single_partition() {
+        use polars_core::prelude::*;
+
+        let df = df! {
+            "split" => ["train", "train", "train"],
+            "data" => [1i32, 2, 3],
+        }
+        .unwrap();
+
+        let partitions = partition_dataframe(df, "split").unwrap();
+        assert_eq!(partitions.len(), 1);
+        assert_eq!(partitions[0].0, "train");
+        assert_eq!(partitions[0].1.height(), 3);
+    }
+
+    #[test]
+    fn test_partition_dataframe_preserves_column() {
+        use polars_core::prelude::*;
+
+        let df = df! {
+            "split" => ["train", "test"],
+            "data" => [1i32, 2],
+        }
+        .unwrap();
+
+        let partitions = partition_dataframe(df, "split").unwrap();
+
+        // Partition column should be retained
+        for (_, sub_df) in &partitions {
+            assert!(sub_df.column("split").is_ok());
+            assert!(sub_df.column("data").is_ok());
+        }
+    }
+
+    #[test]
+    fn test_partition_dataframe_missing_column() {
+        use polars_core::prelude::*;
+
+        let df = df! {
+            "data" => [1i32, 2, 3],
+        }
+        .unwrap();
+
+        let result = partition_dataframe(df, "nonexistent");
+        assert!(result.is_err());
     }
 }
