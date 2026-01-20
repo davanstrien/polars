@@ -11,17 +11,17 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ```
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
-🔄 Task 6.3 (Progress Reporting) in progress - subtask 6.3.6d complete (byte increments test)
+✅ Task 6.3 (Progress Reporting) complete - all subtasks done (6.3.6e checkpoint resume test)
 ```
 
 **Build Status:**
 ```bash
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
-✅ cargo test -p polars-stream --features hf_sink hf_sink  # 36 tests pass
+✅ cargo test -p polars-stream --features hf_sink hf_sink  # 37 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (117 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (118 commits ahead of main, local only)
 
 ---
 
@@ -38,7 +38,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 - Per-partition shard limits
 - Atomic commit across partitions
 
-**Task 6.3: Progress Reporting** ← In Progress (6.3.6d-6.3.6e remaining)
+**Task 6.3: Progress Reporting** ✅ Complete
 - `get_metrics()` returning WriteMetrics
 - `UploadProgress` callbacks for real-time progress
 - TestProgress helper + multi-shard test added (6.3.6a-c complete)
@@ -372,7 +372,7 @@ This is the most complex Phase 6 task. Consider implementing after 6.1 and 6.3.
 
 ---
 
-### Task 6.3: Progress Reporting [IN PROGRESS]
+### Task 6.3: Progress Reporting ✅ COMPLETE
 
 #### Subtasks
 | Subtask | Description | Status |
@@ -389,7 +389,7 @@ This is the most complex Phase 6 task. Consider implementing after 6.1 and 6.3.
 | **6.3.6b** | Test basic callback sequence (single shard) | ✅ Complete |
 | **6.3.6c** | Test multiple shard progress tracking | ✅ Complete |
 | **6.3.6d** | Test upload progress byte increments | ✅ Complete |
-| **6.3.6e** | Test progress with checkpoint resume | Pending |
+| **6.3.6e** | Test progress with checkpoint resume | ✅ Complete |
 
 #### Overview
 Add upload progress callbacks for user-facing progress bars and metrics collection.
@@ -500,16 +500,16 @@ def test_streaming_upload(hf_test_repo):
 ## Progress Checklist
 
 - [x] **Phases 0-5:** Foundation through Commit Coordination ✅
-- [ ] **Phase 6:** Advanced Features (1/3) ← Current Priority
+- [ ] **Phase 6:** Advanced Features (2/3) ← Current Priority
   - [x] Task 6.1: Checkpoint System ✅
   - [ ] Task 6.2: Partitioned Write Support
-  - [ ] Task 6.3: Progress Reporting
+  - [x] Task 6.3: Progress Reporting ✅
 - [ ] **Phase 7:** Python Bindings (0/3) ← After Phase 6
 - [ ] **Phase 8:** Testing (0/4)
 - [ ] **Phase 9:** Documentation (0/4)
 
-**Status:** 6/9 phases complete. Rust implementation functional with checkpoint support.
-**Next:** Phase 6.2 (Partitioned Write Support) or 6.3 (Progress Reporting).
+**Status:** 6/9 phases complete. Rust implementation functional with checkpoint and progress support.
+**Next:** Phase 6.2 (Partitioned Write Support) or Phase 7 (Python Bindings).
 
 ---
 

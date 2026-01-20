@@ -2649,4 +2649,208 @@ dataset_info:
             );
         }
     }
+
+    /// Tests that progress callbacks are NOT called for resumed shards (from checkpoint).
+    ///
+    /// When resuming from a checkpoint:
+    /// - Shards already in checkpoint → skipped (no progress callbacks)
+    /// - New shards → full progress callback sequence
+    /// - Commit includes total count of ALL shards (resumed + new)
+    ///
+    /// This test simulates a 4-shard upload where shards 0 and 2 were already uploaded:
+    /// - Shard 0: SKIPPED (in checkpoint)
+    /// - Shard 1: Uploaded (full callbacks)
+    /// - Shard 2: SKIPPED (in checkpoint)
+    /// - Shard 3: Uploaded (full callbacks)
+    #[test]
+    fn test_progress_with_checkpoint_resume() {
+        use std::collections::HashSet;
+        use std::sync::Arc;
+
+        let progress = Arc::new(TestProgress::new());
+
+        // Shards 0 and 2 are in checkpoint (already uploaded)
+        let resumed_shards: HashSet<usize> = HashSet::from([0, 2]);
+
+        // Simulate upload loop for 4 shards
+        let shard_sizes = [10_000u64, 12_000, 8_000, 15_000]; // sizes for shards 0-3
+        let total_shards = 4;
+
+        for shard_idx in 0..total_shards {
+            let path = format!("data/train-{:05}.parquet", shard_idx);
+            let total_bytes = shard_sizes[shard_idx];
+
+            // Skip resumed shards (no callbacks)
+            if resumed_shards.contains(&shard_idx) {
+                // This is what buffer_and_write_task does for resumed shards
+                continue;
+            }
+
+            // New shard: full callback sequence
+            progress.on_shard_start(shard_idx, &path);
+
+            // Upload progress (4 increments)
+            for i in 1..=4 {
+                let bytes = (total_bytes / 4) * i as u64;
+                progress.on_shard_upload_progress(shard_idx, bytes, total_bytes);
+            }
+
+            progress.on_shard_complete(shard_idx, &path, total_bytes);
+        }
+
+        // Commit includes ALL shards (resumed + new)
+        progress.on_commit_start(total_shards);
+        progress.on_commit_complete(Some(
+            "https://huggingface.co/datasets/user/repo/commit/abc123",
+        ));
+
+        // ===== COUNTER ASSERTIONS =====
+
+        // Only 2 shards uploaded (1 and 3), not 4
+        assert_eq!(
+            progress.shard_starts.load(Ordering::SeqCst),
+            2,
+            "only 2 shard starts (shards 1, 3)"
+        );
+        assert_eq!(
+            progress.shard_completes.load(Ordering::SeqCst),
+            2,
+            "only 2 shard completes (shards 1, 3)"
+        );
+        assert_eq!(
+            progress.upload_progress_calls.load(Ordering::SeqCst),
+            8,
+            "4 progress × 2 new shards = 8"
+        );
+        assert_eq!(
+            progress.commit_starts.load(Ordering::SeqCst),
+            1,
+            "1 commit start"
+        );
+        assert_eq!(
+            progress.commit_completes.load(Ordering::SeqCst),
+            1,
+            "1 commit complete"
+        );
+
+        // ===== EVENT SEQUENCE ASSERTIONS =====
+
+        let events = progress.events();
+
+        // 2 shards × (1 start + 4 progress + 1 complete) + 2 commit = 14 events
+        assert_eq!(
+            events.len(),
+            14,
+            "2×(1 start + 4 progress + 1 complete) + 2 commit = 14"
+        );
+
+        // Verify shard 1 events (first uploaded shard)
+        assert!(
+            matches!(
+                &events[0],
+                ProgressEvent::ShardStart { index: 1, path } if path == "data/train-00001.parquet"
+            ),
+            "first event should be shard 1 start"
+        );
+
+        for i in 1..=4 {
+            assert!(
+                matches!(
+                    &events[i],
+                    ProgressEvent::UploadProgress { index: 1, .. }
+                ),
+                "events 1-4 should be shard 1 progress"
+            );
+        }
+
+        assert!(
+            matches!(
+                &events[5],
+                ProgressEvent::ShardComplete { index: 1, .. }
+            ),
+            "event 5 should be shard 1 complete"
+        );
+
+        // Verify shard 3 events (second uploaded shard)
+        assert!(
+            matches!(
+                &events[6],
+                ProgressEvent::ShardStart { index: 3, path } if path == "data/train-00003.parquet"
+            ),
+            "event 6 should be shard 3 start"
+        );
+
+        for i in 7..=10 {
+            assert!(
+                matches!(
+                    &events[i],
+                    ProgressEvent::UploadProgress { index: 3, .. }
+                ),
+                "events 7-10 should be shard 3 progress"
+            );
+        }
+
+        assert!(
+            matches!(
+                &events[11],
+                ProgressEvent::ShardComplete { index: 3, .. }
+            ),
+            "event 11 should be shard 3 complete"
+        );
+
+        // Verify commit includes ALL shards (4, not 2)
+        assert!(
+            matches!(&events[12], ProgressEvent::CommitStart { num_shards: 4 }),
+            "commit should include ALL 4 shards (resumed + new)"
+        );
+        assert!(
+            matches!(&events[13], ProgressEvent::CommitComplete { .. }),
+            "final event should be commit complete"
+        );
+
+        // ===== VERIFY NO EVENTS FOR RESUMED SHARDS =====
+
+        // Shards 0 and 2 should have NO events at all
+        for resumed_idx in [0usize, 2] {
+            let resumed_events: Vec<_> = events
+                .iter()
+                .filter(|e| match e {
+                    ProgressEvent::ShardStart { index, .. } => *index == resumed_idx,
+                    ProgressEvent::UploadProgress { index, .. } => *index == resumed_idx,
+                    ProgressEvent::ShardComplete { index, .. } => *index == resumed_idx,
+                    _ => false,
+                })
+                .collect();
+
+            assert!(
+                resumed_events.is_empty(),
+                "shard {} should have no events (was resumed from checkpoint)",
+                resumed_idx
+            );
+        }
+
+        // Verify upload progress is monotonically increasing for new shards
+        for new_shard_idx in [1usize, 3] {
+            let shard_progress: Vec<u64> = events
+                .iter()
+                .filter_map(|e| match e {
+                    ProgressEvent::UploadProgress { index, bytes, .. }
+                        if *index == new_shard_idx =>
+                    {
+                        Some(*bytes)
+                    },
+                    _ => None,
+                })
+                .collect();
+
+            // Verify monotonically increasing
+            for window in shard_progress.windows(2) {
+                assert!(
+                    window[1] >= window[0],
+                    "shard {} progress should be monotonically increasing",
+                    new_shard_idx
+                );
+            }
+        }
+    }
 }
