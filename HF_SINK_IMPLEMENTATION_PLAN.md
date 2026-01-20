@@ -11,17 +11,17 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ```
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
-🔄 Task 6.3 (Progress Reporting) in progress - subtask 6.3.6c complete (multi-shard test)
+🔄 Task 6.3 (Progress Reporting) in progress - subtask 6.3.6d complete (byte increments test)
 ```
 
 **Build Status:**
 ```bash
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
-✅ cargo test -p polars-stream --features hf_sink hf_sink  # 35 tests pass
+✅ cargo test -p polars-stream --features hf_sink hf_sink  # 36 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (116 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (117 commits ahead of main, local only)
 
 ---
 
@@ -388,7 +388,7 @@ This is the most complex Phase 6 task. Consider implementing after 6.1 and 6.3.
 | **6.3.6a** | Create TestProgress helper struct for tests | ✅ Complete |
 | **6.3.6b** | Test basic callback sequence (single shard) | ✅ Complete |
 | **6.3.6c** | Test multiple shard progress tracking | ✅ Complete |
-| **6.3.6d** | Test upload progress byte increments | Pending |
+| **6.3.6d** | Test upload progress byte increments | ✅ Complete |
 | **6.3.6e** | Test progress with checkpoint resume | Pending |
 
 #### Overview

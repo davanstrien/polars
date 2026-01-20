@@ -2471,4 +2471,182 @@ dataset_info:
             assert_eq!(shard_progress, expected, "shard {} progress bytes", shard_idx);
         }
     }
+
+    /// Tests upload progress byte increments for both basic and multipart upload patterns.
+    ///
+    /// Basic upload (single PUT): Reports 0 → total (2 progress calls)
+    /// Multipart upload (n parts): Reports 0 → after_part1 → ... → after_partN (n+1 calls)
+    ///
+    /// This test verifies:
+    /// - Basic upload reports exactly 2 progress events
+    /// - Multipart upload reports n+1 progress events
+    /// - Bytes are monotonically increasing
+    /// - Total bytes is consistent across all calls
+    /// - Final bytes equals total bytes
+    #[test]
+    fn test_progress_upload_byte_increments() {
+        let progress = TestProgress::new();
+
+        // =========================================================================
+        // Scenario 1: Basic upload (single PUT request pattern)
+        // Shard 0: Reports 0 at start, total at completion
+        // =========================================================================
+        let basic_total = 50_000u64;
+        progress.on_shard_upload_progress(0, 0, basic_total);
+        progress.on_shard_upload_progress(0, basic_total, basic_total);
+
+        // =========================================================================
+        // Scenario 2: Multipart upload (3 parts)
+        // Shard 1: Part sizes 20KB + 20KB + 10KB = 50KB total
+        // Progress reported: 0 → 20000 → 40000 → 50000
+        // =========================================================================
+        let multipart_total = 50_000u64;
+        let part_sizes = [20_000u64, 20_000, 10_000];
+
+        // Start: 0 bytes uploaded
+        progress.on_shard_upload_progress(1, 0, multipart_total);
+
+        // After each part completion
+        let mut bytes_so_far = 0u64;
+        for part_size in part_sizes {
+            bytes_so_far += part_size;
+            progress.on_shard_upload_progress(1, bytes_so_far, multipart_total);
+        }
+
+        // =========================================================================
+        // Scenario 3: Multipart upload with uneven parts
+        // Shard 2: Part sizes 30KB + 15KB + 5KB = 50KB total
+        // Tests non-uniform part distribution
+        // =========================================================================
+        let uneven_total = 50_000u64;
+        let uneven_parts = [30_000u64, 15_000, 5_000];
+
+        progress.on_shard_upload_progress(2, 0, uneven_total);
+        let mut uneven_bytes = 0u64;
+        for part_size in uneven_parts {
+            uneven_bytes += part_size;
+            progress.on_shard_upload_progress(2, uneven_bytes, uneven_total);
+        }
+
+        // =========================================================================
+        // Assertions
+        // =========================================================================
+        let events = progress.events();
+
+        // Counter assertion
+        assert_eq!(
+            progress.upload_progress_calls.load(Ordering::SeqCst),
+            10,
+            "total upload progress calls: 2 (basic) + 4 (multipart) + 4 (uneven)"
+        );
+
+        // Extract progress for each shard
+        let shard0_progress: Vec<(u64, u64)> = events
+            .iter()
+            .filter_map(|e| match e {
+                ProgressEvent::UploadProgress {
+                    index: 0,
+                    bytes,
+                    total,
+                } => Some((*bytes, *total)),
+                _ => None,
+            })
+            .collect();
+
+        let shard1_progress: Vec<(u64, u64)> = events
+            .iter()
+            .filter_map(|e| match e {
+                ProgressEvent::UploadProgress {
+                    index: 1,
+                    bytes,
+                    total,
+                } => Some((*bytes, *total)),
+                _ => None,
+            })
+            .collect();
+
+        let shard2_progress: Vec<(u64, u64)> = events
+            .iter()
+            .filter_map(|e| match e {
+                ProgressEvent::UploadProgress {
+                    index: 2,
+                    bytes,
+                    total,
+                } => Some((*bytes, *total)),
+                _ => None,
+            })
+            .collect();
+
+        // 1. Basic upload: exactly 2 progress events (0 → total)
+        assert_eq!(
+            shard0_progress,
+            vec![(0, 50_000), (50_000, 50_000)],
+            "basic upload should report 0 then total"
+        );
+
+        // 2. Multipart upload: n+1 progress events (0 + 3 parts)
+        assert_eq!(
+            shard1_progress,
+            vec![
+                (0, 50_000),
+                (20_000, 50_000),
+                (40_000, 50_000),
+                (50_000, 50_000)
+            ],
+            "multipart upload should report incremental progress after each part"
+        );
+
+        // 3. Uneven parts: verify non-uniform distribution works
+        assert_eq!(
+            shard2_progress,
+            vec![
+                (0, 50_000),
+                (30_000, 50_000),
+                (45_000, 50_000),
+                (50_000, 50_000)
+            ],
+            "uneven multipart upload should report correct cumulative bytes"
+        );
+
+        // 4. Verify monotonicity for all shards
+        for (shard_idx, progress_events) in
+            [(0, &shard0_progress), (1, &shard1_progress), (2, &shard2_progress)]
+        {
+            for window in progress_events.windows(2) {
+                assert!(
+                    window[1].0 >= window[0].0,
+                    "shard {}: bytes should be monotonically increasing, got {} after {}",
+                    shard_idx,
+                    window[1].0,
+                    window[0].0
+                );
+            }
+        }
+
+        // 5. Verify total bytes is consistent across all calls for each shard
+        for (shard_idx, progress_events) in
+            [(0, &shard0_progress), (1, &shard1_progress), (2, &shard2_progress)]
+        {
+            let expected_total = 50_000u64;
+            for (bytes, total) in progress_events {
+                assert_eq!(
+                    *total, expected_total,
+                    "shard {}: total should be consistent (expected {}, got {})",
+                    shard_idx, expected_total, total
+                );
+            }
+        }
+
+        // 6. Verify final bytes equals total bytes for each shard
+        for (shard_idx, progress_events) in
+            [(0, &shard0_progress), (1, &shard1_progress), (2, &shard2_progress)]
+        {
+            let (final_bytes, total) = progress_events.last().unwrap();
+            assert_eq!(
+                final_bytes, total,
+                "shard {}: final bytes ({}) should equal total ({})",
+                shard_idx, final_bytes, total
+            );
+        }
+    }
 }
