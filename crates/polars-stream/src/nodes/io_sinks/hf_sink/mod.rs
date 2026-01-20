@@ -115,6 +115,48 @@ impl ShardCompletion {
     }
 }
 
+/// Message sent through channel from buffer_and_write_task to upload_shard_task.
+///
+/// Contains the finished shard data plus pre-computed metadata needed for upload.
+/// This allows the upload task to work identically for partitioned and non-partitioned writes.
+pub struct ShardToUpload {
+    /// The finished shard data (sha256, size, num_rows, buffer).
+    pub shard: FinishedShard,
+    /// Pre-computed shard index (partition-aware for partitioned writes, global otherwise).
+    pub shard_index: usize,
+    /// Pre-computed path in repository (e.g., "data/split=train/train-00000.parquet").
+    pub path_in_repo: String,
+    /// Partition value for partitioned writes (None for non-partitioned).
+    pub partition_value: Option<String>,
+}
+
+impl ShardToUpload {
+    /// Create a new shard message for non-partitioned writes.
+    pub fn new(shard: FinishedShard, shard_index: usize, path_in_repo: String) -> Self {
+        Self {
+            shard,
+            shard_index,
+            path_in_repo,
+            partition_value: None,
+        }
+    }
+
+    /// Create a new shard message for partitioned writes.
+    pub fn with_partition(
+        shard: FinishedShard,
+        shard_index: usize,
+        path_in_repo: String,
+        partition_value: String,
+    ) -> Self {
+        Self {
+            shard,
+            shard_index,
+            path_in_repo,
+            partition_value: Some(partition_value),
+        }
+    }
+}
+
 /// Internal state for tracking shard writer progress.
 ///
 /// Used by the writer task to track completed shards and maintain
@@ -726,7 +768,7 @@ fn load_checkpoint_state(
 #[allow(dead_code)]
 fn buffer_and_write_task(
     recv_port_rx: Receiver<(PhaseOutcome, SinkInputPort)>,
-    mut shard_tx: Sender<FinishedShard>,
+    mut shard_tx: Sender<ShardToUpload>,
     options: Arc<HfSinkOptions>,
     schema: SchemaRef,
     resumed_shards: Arc<HashSet<usize>>,
@@ -792,11 +834,11 @@ fn buffer_and_write_task(
 
                         // Record completion for tracking
                         state.record_completion(ShardCompletion::from_finished(
-                            shard_idx, path, &finished,
+                            shard_idx, path.clone(), &finished,
                         ));
 
                         // Send for upload (fail-fast if channel closed)
-                        shard_tx.send(finished).await.map_err(
+                        shard_tx.send(ShardToUpload::new(finished, shard_idx, path)).await.map_err(
                             |_| polars_err!(ComputeError: "upload channel closed unexpectedly"),
                         )?;
 
@@ -846,11 +888,11 @@ fn buffer_and_write_task(
                     }
                 } else {
                     state.record_completion(ShardCompletion::from_finished(
-                        shard_idx, path, &finished,
+                        shard_idx, path.clone(), &finished,
                     ));
 
                     // Send final shard for upload
-                    let _ = shard_tx.send(finished).await;
+                    let _ = shard_tx.send(ShardToUpload::new(finished, shard_idx, path)).await;
                 }
             }
         }
@@ -882,79 +924,82 @@ fn buffer_and_write_task(
 /// - Completion channel is closed
 #[allow(dead_code)]
 fn upload_shard_task(
-    shard_rx: Receiver<FinishedShard>,
+    shard_rx: Receiver<ShardToUpload>,
     mut completion_tx: Sender<ShardCompletion>,
-    path_in_repo: String,
-    split: String,
     lfs_client: LfsClient,
     upload_executor: UploadExecutor,
     #[allow(unused_variables)] resumed_shards: Arc<HashSet<usize>>,
     repo_id: String,
+    base_path_in_repo: String,
     checkpoint_path: Option<std::path::PathBuf>,
     options: Arc<HfSinkOptions>,
 ) -> JoinHandle<PolarsResult<()>> {
     spawn(TaskPriority::Low, async move {
         let mut shard_rx = shard_rx;
-        let mut shard_index = 0usize;
 
-        while let Ok(finished_shard) = shard_rx.recv().await {
+        while let Ok(shard_to_upload) = shard_rx.recv().await {
+            // Extract pre-computed values from the message
+            let ShardToUpload {
+                shard,
+                shard_index,
+                path_in_repo,
+                partition_value: _,
+            } = shard_to_upload;
+
             // Log upload start if verbose
             if config::verbose() {
                 eprintln!(
                     "HF sink: uploading shard {} ({} bytes, {} rows)",
-                    shard_index, finished_shard.size, finished_shard.num_rows
+                    shard_index, shard.size, shard.num_rows
                 );
             }
 
-            // 1. Generate path for this shard
-            let path = shard_path(&path_in_repo, &split, shard_index);
-
-            // 2. Request upload URL from LFS
+            // 1. Request upload URL from LFS
             let transfer = lfs_client
-                .request_upload(&finished_shard.sha256, finished_shard.size)
+                .request_upload(&shard.sha256, shard.size)
                 .await?;
 
-            // 3. Upload data (handles AlreadyExists, Basic, Multipart)
+            // 2. Upload data (handles AlreadyExists, Basic, Multipart)
             let maybe_completions = upload_executor
                 .upload(
-                    finished_shard.buffer,
+                    shard.buffer,
                     transfer,
-                    &finished_shard.sha256,
+                    &shard.sha256,
                     shard_index,
                     options.progress.clone(),
                 )
                 .await?;
 
-            // 4. Complete multipart if needed
+            // 3. Complete multipart if needed
             if let Some(completions) = maybe_completions {
                 lfs_client
-                    .complete_multipart(&finished_shard.sha256, completions)
+                    .complete_multipart(&shard.sha256, completions)
                     .await?;
             }
 
-            // 4a. Save checkpoint if path configured
+            // 3a. Save checkpoint if path configured
             if let Some(ref ckpt_path) = checkpoint_path {
                 // Load existing or create new checkpoint
                 let mut checkpoint = match CheckpointState::load(ckpt_path) {
                     Ok(Some(cp)) => cp,
-                    Ok(None) => CheckpointState::new(&repo_id, &path_in_repo),
+                    Ok(None) => CheckpointState::new(&repo_id, &base_path_in_repo),
                     Err(e) => {
                         // Log warning but don't fail - upload already succeeded
                         if config::verbose() {
                             eprintln!("HF sink: warning - failed to load checkpoint: {}", e);
                         }
                         // Continue without checkpoint save
-                        CheckpointState::new(&repo_id, &path_in_repo)
+                        CheckpointState::new(&repo_id, &base_path_in_repo)
                     },
                 };
 
                 // Add this shard
                 checkpoint.add_shard(ShardCheckpoint {
                     index: shard_index,
-                    path_in_repo: path.clone(),
-                    sha256: finished_shard.sha256.clone(),
-                    size: finished_shard.size,
-                    num_rows: finished_shard.num_rows,
+                    path_in_repo: path_in_repo.clone(),
+                    sha256: shard.sha256.clone(),
+                    size: shard.size,
+                    num_rows: shard.num_rows,
                 });
 
                 // Save atomically
@@ -967,13 +1012,13 @@ fn upload_shard_task(
                 }
             }
 
-            // 5. Create and send completion
+            // 4. Create and send completion
             let completion = ShardCompletion {
                 index: shard_index,
-                path_in_repo: path,
-                sha256: finished_shard.sha256,
-                size: finished_shard.size,
-                num_rows: finished_shard.num_rows,
+                path_in_repo,
+                sha256: shard.sha256,
+                size: shard.size,
+                num_rows: shard.num_rows,
             };
 
             // Notify progress callback of shard completion
@@ -994,8 +1039,6 @@ fn upload_shard_task(
             if config::verbose() {
                 eprintln!("HF sink: shard {} uploaded successfully", shard_index);
             }
-
-            shard_index += 1;
         }
 
         PolarsResult::Ok(())
@@ -1027,7 +1070,7 @@ pub struct HfSinkNode {
     #[allow(dead_code)]
     io_task: Option<AbortOnDropHandle<PolarsResult<()>>>,
     /// Channel sender for finished shards (buffer_and_write_task → upload_shard_task)
-    shard_tx: Option<Sender<FinishedShard>>,
+    shard_tx: Option<Sender<ShardToUpload>>,
     /// Channel receiver for shard completions (for finalize/commit)
     completion_rx: Option<Receiver<ShardCompletion>>,
     /// Handle to await upload task completion
@@ -1121,21 +1164,18 @@ impl SinkNode for HfSinkNode {
 
         // 4. Create channels for shard pipeline:
         //    buffer_and_write_task → shard_tx/shard_rx → upload_shard_task → completion_tx/rx
-        let (shard_tx, shard_rx) = connector::<FinishedShard>();
+        let (shard_tx, shard_rx) = connector::<ShardToUpload>();
         let (completion_tx, completion_rx) = connector::<ShardCompletion>();
 
         // 5. Spawn upload task (background) - receives finished shards and uploads to HF Hub
-        let path_in_repo = self.options.path_in_repo.clone();
-        let split = self.options.split.clone();
         let upload_task = upload_shard_task(
             shard_rx,
             completion_tx,
-            path_in_repo,
-            split,
             lfs_client,
             upload_executor,
             Arc::clone(&self.resumed_shards),
             self.options.repo_id.clone(),
+            self.options.path_in_repo.clone(),
             self.options.checkpoint_path.clone(),
             Arc::clone(&self.options),
         );
@@ -1897,26 +1937,24 @@ mod tests {
         // and that upload_shard_task signature compiles correctly.
         // This is a compile-time check - the function exists and types align.
         fn _assert_types_compile(
-            shard_rx: Receiver<FinishedShard>,
+            shard_rx: Receiver<ShardToUpload>,
             completion_tx: Sender<ShardCompletion>,
-            path_in_repo: String,
-            split: String,
             lfs_client: LfsClient,
             upload_executor: UploadExecutor,
             resumed_shards: Arc<HashSet<usize>>,
             repo_id: String,
+            base_path_in_repo: String,
             checkpoint_path: Option<std::path::PathBuf>,
             options: Arc<HfSinkOptions>,
         ) -> JoinHandle<PolarsResult<()>> {
             upload_shard_task(
                 shard_rx,
                 completion_tx,
-                path_in_repo,
-                split,
                 lfs_client,
                 upload_executor,
                 resumed_shards,
                 repo_id,
+                base_path_in_repo,
                 checkpoint_path,
                 options,
             )
