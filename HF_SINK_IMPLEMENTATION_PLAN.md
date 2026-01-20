@@ -11,7 +11,8 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ```
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
-✅ Task 6.3 (Progress Reporting) complete - all subtasks done (6.3.6e checkpoint resume test)
+✅ Task 6.3 (Progress Reporting) complete - all subtasks done
+🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.1 complete (partition_col field added)
 ```
 
 **Build Status:**
@@ -21,7 +22,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink  # 37 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (118 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (119 commits ahead of main, local only)
 
 ---
 
@@ -33,10 +34,10 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 - **File:** `cloud/hf/checkpoint.rs` ✅
 - All 10 subtasks complete including integration tests
 
-**Task 6.2: Partitioned Write Support**
-- Hive-style paths: `data/{col}={val}/train-00000.parquet`
-- Per-partition shard limits
-- Atomic commit across partitions
+**Task 6.2: Partitioned Write Support** 🔄 In Progress
+- Subtask 6.2.1 complete: `partition_col` field added to `HfSinkOptions`
+- Next: 6.2.2 - Create `partitioned_shard_path()` helper function
+- Hive-style paths: `data/{partition_col}={value}/train-00000.parquet`
 
 **Task 6.3: Progress Reporting** ✅ Complete
 - `get_metrics()` returning WriteMetrics
@@ -349,26 +350,47 @@ if let Some(ref checkpoint_path) = options.checkpoint_path {
 }
 ```
 
-### Task 6.2: Partitioned Write Support [ ]
+### Task 6.2: Partitioned Write Support [IN PROGRESS]
 
 #### Overview
-Support Hive-style partitioned writes: `data/{col}={val}/train-00000.parquet`
+Support Hive-style partitioned writes: `data/{partition_col}={value}/train-00000.parquet`
+
+**Scope:** Simple single-column partitioning only (covers most HF dataset use cases).
+
+#### Subtasks
+| Subtask | Description | Status |
+|---------|-------------|--------|
+| **6.2.1** | Add `partition_col` field to `HfSinkOptions` | ✅ Complete |
+| **6.2.2** | Create `partitioned_shard_path()` helper function | Pending |
+| **6.2.3** | Create `PartitionWriterState` struct | Pending |
+| **6.2.4** | Implement partition extraction from DataFrame | Pending |
+| **6.2.5** | Implement partitioned `buffer_and_write_task` | Pending |
+| **6.2.6** | Update `upload_shard_task` for partitioned paths | Pending |
+| **6.2.7** | Update `finalize()` for partitioned commits | Pending |
+| **6.2.8** | Update checkpoint for partitioned writes | Pending |
+| **6.2.9** | Wire partitioned path in `HfSinkNode::spawn_sink()` | Pending |
+| **6.2.10** | Unit tests for partitioned paths and state | Pending |
+| **6.2.11** | Integration tests for partitioned writes | Pending |
 
 #### Key Design Points
-- **Partition detection**: Parse partition columns from path template
-- **Per-partition sharding**: Each partition gets its own shard counter
+- **Single-column partitioning**: `partition_col: Option<String>` in options
+- **Per-partition sharding**: Each partition value gets its own shard counter
 - **Atomic commit**: All partitions committed together in single commit
-- **Integration**: Extend `HfSinkOptions` with `partition_cols: Vec<String>`
+- **Standalone implementation**: Logic contained in HfSinkNode, not io_sinks2
 
 #### Files to Modify
 | File | Change |
 |------|--------|
-| `options.rs` | Add `partition_cols` field |
-| `hf_sink/mod.rs` | Route rows to partition-specific writers |
-| `shard_writer.rs` | Support dynamic path based on partition values |
+| `cloud/hf/options.rs` | Add `partition_col` field ✅ |
+| `hf_sink/mod.rs` | `PartitionWriterState`, partitioned buffer task, finalize updates |
+| `cloud/hf/checkpoint.rs` | Add partition awareness |
 
-#### Complexity Note
-This is the most complex Phase 6 task. Consider implementing after 6.1 and 6.3.
+#### Path Format
+```
+Non-partitioned: data/train-00000.parquet
+Partitioned:     data/split=train/train-00000.parquet
+                 data/split=test/test-00000.parquet
+```
 
 ---
 
@@ -500,16 +522,16 @@ def test_streaming_upload(hf_test_repo):
 ## Progress Checklist
 
 - [x] **Phases 0-5:** Foundation through Commit Coordination ✅
-- [ ] **Phase 6:** Advanced Features (2/3) ← Current Priority
+- [ ] **Phase 6:** Advanced Features (2.1/3) ← Current Priority
   - [x] Task 6.1: Checkpoint System ✅
-  - [ ] Task 6.2: Partitioned Write Support
+  - [ ] Task 6.2: Partitioned Write Support (1/11 subtasks) 🔄
   - [x] Task 6.3: Progress Reporting ✅
 - [ ] **Phase 7:** Python Bindings (0/3) ← After Phase 6
 - [ ] **Phase 8:** Testing (0/4)
 - [ ] **Phase 9:** Documentation (0/4)
 
 **Status:** 6/9 phases complete. Rust implementation functional with checkpoint and progress support.
-**Next:** Phase 6.2 (Partitioned Write Support) or Phase 7 (Python Bindings).
+**Next:** Task 6.2.2 - Create `partitioned_shard_path()` helper function.
 
 ---
 

@@ -133,6 +133,11 @@ pub struct HfSinkOptions {
     /// This field is excluded from serialization and equality comparisons.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub progress: Option<SinkProgressRef>,
+    /// Optional column name for Hive-style partitioning.
+    ///
+    /// When set, data is written to paths like `data/{partition_col}={value}/train-00000.parquet`.
+    /// Only single-column partitioning is supported.
+    pub partition_col: Option<String>,
 }
 
 impl Default for HfSinkOptions {
@@ -154,6 +159,7 @@ impl Default for HfSinkOptions {
             upload_concurrency: DEFAULT_UPLOAD_CONCURRENCY,
             update_card: true,
             progress: None,
+            partition_col: None,
         }
     }
 }
@@ -178,6 +184,7 @@ impl PartialEq for HfSinkOptions {
             && self.checkpoint_path == other.checkpoint_path
             && self.upload_concurrency == other.upload_concurrency
             && self.update_card == other.update_card
+            && self.partition_col == other.partition_col
         // Note: progress is intentionally excluded from equality comparison
     }
 }
@@ -201,6 +208,7 @@ impl std::hash::Hash for HfSinkOptions {
         self.checkpoint_path.hash(state);
         self.upload_concurrency.hash(state);
         self.update_card.hash(state);
+        self.partition_col.hash(state);
         // Note: progress is intentionally excluded from hash computation
     }
 }
@@ -224,6 +232,7 @@ impl std::fmt::Debug for HfSinkOptions {
             .field("upload_concurrency", &self.upload_concurrency)
             .field("update_card", &self.update_card)
             .field("progress", &self.progress.as_ref().map(|_| "<callback>"))
+            .field("partition_col", &self.partition_col)
             .finish()
     }
 }
@@ -274,6 +283,13 @@ impl HfSinkOptions {
 
         if self.upload_concurrency == 0 {
             polars_bail!(InvalidOperation: "upload_concurrency must be greater than 0");
+        }
+
+        // Validate partition_col if provided
+        if let Some(ref col) = self.partition_col {
+            if col.is_empty() {
+                polars_bail!(InvalidOperation: "partition_col cannot be empty");
+            }
         }
 
         Ok(())
@@ -426,6 +442,26 @@ impl HfSinkOptionsBuilder {
     /// ```
     pub fn with_progress(mut self, progress: SinkProgressRef) -> Self {
         self.options.progress = Some(progress);
+        self
+    }
+
+    /// Set the partition column for Hive-style partitioned writes.
+    ///
+    /// When set, data will be written to paths like:
+    /// `{path_in_repo}/{partition_col}={value}/{split}-00000.parquet`
+    ///
+    /// Only single-column partitioning is supported.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let options = HfSinkOptions::builder("user/repo")
+    ///     .with_path_in_repo("data")
+    ///     .with_partition_col("split")
+    ///     .build()?;
+    /// // Writes to: data/split=train/train-00000.parquet
+    /// ```
+    pub fn with_partition_col(mut self, col: impl Into<String>) -> Self {
+        self.options.partition_col = Some(col.into());
         self
     }
 
