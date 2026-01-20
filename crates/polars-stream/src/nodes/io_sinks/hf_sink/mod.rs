@@ -184,6 +184,31 @@ pub fn shard_path(path_in_repo: &str, split: &str, index: usize) -> String {
     format!("{}/{}-{:05}.parquet", path, split, index)
 }
 
+/// Generate a partitioned shard file path for Hive-style partitioning.
+///
+/// Format: `{path_in_repo}/{partition_col}={partition_value}/{split}-{index:05}.parquet`
+///
+/// # Examples
+/// ```ignore
+/// assert_eq!(
+///     partitioned_shard_path("data", "split", "train", "train", 0),
+///     "data/split=train/train-00000.parquet"
+/// );
+/// ```
+pub fn partitioned_shard_path(
+    path_in_repo: &str,
+    partition_col: &str,
+    partition_value: &str,
+    split: &str,
+    index: usize,
+) -> String {
+    let path = path_in_repo.trim_end_matches('/');
+    format!(
+        "{}/{}={}/{}-{:05}.parquet",
+        path, partition_col, partition_value, split, index
+    )
+}
+
 /// Extract the shard index from a path like "data/train-00042.parquet".
 ///
 /// Returns None if the path doesn't match the expected format for the given split.
@@ -1450,6 +1475,38 @@ mod tests {
         assert_eq!(
             shard_path("data", "train", 99999),
             "data/train-99999.parquet"
+        );
+    }
+
+    #[test]
+    fn test_partitioned_shard_path_basic() {
+        assert_eq!(
+            partitioned_shard_path("data", "split", "train", "train", 0),
+            "data/split=train/train-00000.parquet"
+        );
+    }
+
+    #[test]
+    fn test_partitioned_shard_path_with_index() {
+        assert_eq!(
+            partitioned_shard_path("data", "split", "test", "test", 42),
+            "data/split=test/test-00042.parquet"
+        );
+    }
+
+    #[test]
+    fn test_partitioned_shard_path_nested_base() {
+        assert_eq!(
+            partitioned_shard_path("output/processed", "date", "2024-01-20", "train", 5),
+            "output/processed/date=2024-01-20/train-00005.parquet"
+        );
+    }
+
+    #[test]
+    fn test_partitioned_shard_path_trailing_slash() {
+        assert_eq!(
+            partitioned_shard_path("data/", "split", "train", "train", 0),
+            "data/split=train/train-00000.parquet"
         );
     }
 
