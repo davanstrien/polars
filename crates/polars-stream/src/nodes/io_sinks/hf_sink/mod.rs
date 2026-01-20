@@ -204,6 +204,8 @@ pub struct PartitionWriterState {
     pub total_rows: usize,
     /// Total bytes written across all partitions.
     pub total_bytes: u64,
+    /// Global shard counter for progress reporting (increments across all partitions).
+    pub global_shard_count: usize,
 }
 
 impl PartitionWriterState {
@@ -233,6 +235,18 @@ impl PartitionWriterState {
             .get(partition_value)
             .map(|s| s.shard_index)
             .unwrap_or(0)
+    }
+
+    /// Get the next global shard index for progress callbacks and increment it.
+    pub fn next_global_index(&mut self) -> usize {
+        let idx = self.global_shard_count;
+        self.global_shard_count += 1;
+        idx
+    }
+
+    /// Peek the next global shard index without incrementing.
+    pub fn peek_global_index(&self) -> usize {
+        self.global_shard_count
     }
 
     /// Record a completed shard for a partition.
@@ -3214,6 +3228,27 @@ dataset_info:
         assert!(values.contains("train"));
         assert!(values.contains("test"));
         assert!(values.contains("validation"));
+    }
+
+    #[test]
+    fn test_partition_writer_state_global_index() {
+        let mut state = PartitionWriterState::new();
+
+        // Initial peek should be 0
+        assert_eq!(state.peek_global_index(), 0);
+
+        // next_global_index increments
+        assert_eq!(state.next_global_index(), 0);
+        assert_eq!(state.next_global_index(), 1);
+        assert_eq!(state.next_global_index(), 2);
+
+        // Peek reflects current value
+        assert_eq!(state.peek_global_index(), 3);
+
+        // Global index is independent of partition indices
+        assert_eq!(state.next_shard_index("train"), 0);
+        assert_eq!(state.next_shard_index("test"), 0);
+        assert_eq!(state.peek_global_index(), 3); // unchanged
     }
 
     // =========================================================================
