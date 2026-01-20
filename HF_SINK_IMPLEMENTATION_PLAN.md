@@ -22,7 +22,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink  # 56 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (126 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (129 commits ahead of main, local only)
 
 ---
 
