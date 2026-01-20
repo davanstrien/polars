@@ -12,17 +12,17 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
 ✅ Task 6.3 (Progress Reporting) complete - all subtasks done
-🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.2 complete (partitioned_shard_path helper)
+🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.3 complete (PartitionWriterState struct)
 ```
 
 **Build Status:**
 ```bash
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
-✅ cargo test -p polars-stream --features hf_sink hf_sink  # 41 tests pass
+✅ cargo test -p polars-stream --features hf_sink hf_sink  # 46 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (122 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (123 commits ahead of main, local only)
 
 ---
 
@@ -37,7 +37,8 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 **Task 6.2: Partitioned Write Support** 🔄 In Progress
 - Subtask 6.2.1 complete: `partition_col` field added to `HfSinkOptions`
 - Subtask 6.2.2 complete: `partitioned_shard_path()` helper function added
-- Next: 6.2.3 - Create `PartitionWriterState` struct
+- Subtask 6.2.3 complete: `PartitionWriterState` struct added
+- Next: 6.2.4 - Implement partition extraction from DataFrame
 - Hive-style paths: `data/{partition_col}={value}/train-00000.parquet`
 
 **Task 6.3: Progress Reporting** ✅ Complete
@@ -363,7 +364,7 @@ Support Hive-style partitioned writes: `data/{partition_col}={value}/train-00000
 |---------|-------------|--------|
 | **6.2.1** | Add `partition_col` field to `HfSinkOptions` | ✅ Complete |
 | **6.2.2** | Create `partitioned_shard_path()` helper function | ✅ Complete |
-| **6.2.3** | Create `PartitionWriterState` struct | Pending |
+| **6.2.3** | Create `PartitionWriterState` struct | ✅ Complete |
 | **6.2.4** | Implement partition extraction from DataFrame | Pending |
 | **6.2.5** | Implement partitioned `buffer_and_write_task` | Pending |
 | **6.2.6** | Update `upload_shard_task` for partitioned paths | Pending |
@@ -525,14 +526,14 @@ def test_streaming_upload(hf_test_repo):
 - [x] **Phases 0-5:** Foundation through Commit Coordination ✅
 - [ ] **Phase 6:** Advanced Features (2.1/3) ← Current Priority
   - [x] Task 6.1: Checkpoint System ✅
-  - [ ] Task 6.2: Partitioned Write Support (2/11 subtasks) 🔄
+  - [ ] Task 6.2: Partitioned Write Support (3/11 subtasks) 🔄
   - [x] Task 6.3: Progress Reporting ✅
 - [ ] **Phase 7:** Python Bindings (0/3) ← After Phase 6
 - [ ] **Phase 8:** Testing (0/4)
 - [ ] **Phase 9:** Documentation (0/4)
 
 **Status:** 6/9 phases complete. Rust implementation functional with checkpoint and progress support.
-**Next:** Task 6.2.3 - Create `PartitionWriterState` struct.
+**Next:** Task 6.2.4 - Implement partition extraction from DataFrame.
 
 ---
 

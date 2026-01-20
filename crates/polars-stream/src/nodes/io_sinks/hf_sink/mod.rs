@@ -11,7 +11,7 @@
 //! lf.sink_parquet("hf://datasets/user/repo/data/train.parquet", options)
 //! ```
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -163,6 +163,100 @@ impl WriterState {
     /// Get the number of completed shards.
     pub fn num_completed(&self) -> usize {
         self.completed.len()
+    }
+}
+
+/// Per-partition state for tracking partitioned shard writes.
+#[derive(Debug, Clone)]
+pub struct PartitionShardState {
+    /// Current shard index for this partition (increments on each flush).
+    pub shard_index: usize,
+    /// Completed shards for this partition.
+    pub completed: VecDeque<ShardCompletion>,
+}
+
+impl PartitionShardState {
+    /// Create a new empty partition state.
+    pub fn new() -> Self {
+        Self {
+            shard_index: 0,
+            completed: VecDeque::new(),
+        }
+    }
+}
+
+impl Default for PartitionShardState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// State tracker for partitioned writes.
+///
+/// Tracks multiple partitions, each with its own shard counter and completions.
+#[derive(Debug, Default)]
+pub struct PartitionWriterState {
+    /// Per-partition state keyed by partition value (e.g., "train", "test").
+    pub partitions: HashMap<String, PartitionShardState>,
+    /// Total rows written across all partitions.
+    pub total_rows: usize,
+    /// Total bytes written across all partitions.
+    pub total_bytes: u64,
+}
+
+impl PartitionWriterState {
+    /// Create a new empty state.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get or create state for a partition value.
+    pub fn partition_mut(&mut self, partition_value: &str) -> &mut PartitionShardState {
+        self.partitions
+            .entry(partition_value.to_string())
+            .or_default()
+    }
+
+    /// Get the next shard index for a partition and increment it.
+    pub fn next_shard_index(&mut self, partition_value: &str) -> usize {
+        let state = self.partition_mut(partition_value);
+        let index = state.shard_index;
+        state.shard_index += 1;
+        index
+    }
+
+    /// Peek the next shard index for a partition without incrementing.
+    pub fn peek_next_index(&self, partition_value: &str) -> usize {
+        self.partitions
+            .get(partition_value)
+            .map(|s| s.shard_index)
+            .unwrap_or(0)
+    }
+
+    /// Record a completed shard for a partition.
+    pub fn record_completion(&mut self, partition_value: &str, completion: ShardCompletion) {
+        self.total_rows += completion.num_rows;
+        self.total_bytes += completion.size;
+        let state = self.partition_mut(partition_value);
+        state.completed.push_back(completion);
+    }
+
+    /// Get all completed shards across all partitions.
+    pub fn all_completions(&self) -> Vec<&ShardCompletion> {
+        self.partitions
+            .values()
+            .flat_map(|s| s.completed.iter())
+            .collect()
+    }
+
+    /// Get the total number of completed shards across all partitions.
+    pub fn num_completed(&self) -> usize {
+        self.partitions.values().map(|s| s.completed.len()).sum()
+    }
+
+    /// Get partition values that have been written to.
+    pub fn partition_values(&self) -> impl Iterator<Item = &str> {
+        self.partitions.keys().map(|s| s.as_str())
     }
 }
 
@@ -2909,5 +3003,121 @@ dataset_info:
                 );
             }
         }
+    }
+
+    // =========================================================================
+    // PartitionWriterState Tests
+    // =========================================================================
+
+    #[test]
+    fn test_partition_writer_state_new_partition() {
+        let mut state = PartitionWriterState::new();
+
+        // First access to "train" partition
+        assert_eq!(state.next_shard_index("train"), 0);
+        assert_eq!(state.next_shard_index("train"), 1);
+
+        // First access to "test" partition
+        assert_eq!(state.next_shard_index("test"), 0);
+        assert_eq!(state.next_shard_index("test"), 1);
+
+        // Back to "train"
+        assert_eq!(state.next_shard_index("train"), 2);
+    }
+
+    #[test]
+    fn test_partition_writer_state_peek_index() {
+        let mut state = PartitionWriterState::new();
+
+        // Peek should not increment
+        assert_eq!(state.peek_next_index("train"), 0);
+        assert_eq!(state.peek_next_index("train"), 0);
+
+        // After increment
+        state.next_shard_index("train");
+        assert_eq!(state.peek_next_index("train"), 1);
+
+        // Unknown partition returns 0
+        assert_eq!(state.peek_next_index("unknown"), 0);
+    }
+
+    #[test]
+    fn test_partition_writer_state_record_completion() {
+        let mut state = PartitionWriterState::new();
+
+        let comp1 = ShardCompletion {
+            index: 0,
+            path_in_repo: "data/split=train/train-00000.parquet".to_string(),
+            sha256: "abc".to_string(),
+            size: 1000,
+            num_rows: 100,
+        };
+        let comp2 = ShardCompletion {
+            index: 0,
+            path_in_repo: "data/split=test/test-00000.parquet".to_string(),
+            sha256: "def".to_string(),
+            size: 500,
+            num_rows: 50,
+        };
+
+        state.record_completion("train", comp1);
+        state.record_completion("test", comp2);
+
+        assert_eq!(state.total_rows, 150);
+        assert_eq!(state.total_bytes, 1500);
+        assert_eq!(state.num_completed(), 2);
+    }
+
+    #[test]
+    fn test_partition_writer_state_all_completions() {
+        let mut state = PartitionWriterState::new();
+
+        state.record_completion(
+            "train",
+            ShardCompletion {
+                index: 0,
+                path_in_repo: "train-0".to_string(),
+                sha256: "a".to_string(),
+                size: 100,
+                num_rows: 10,
+            },
+        );
+        state.record_completion(
+            "test",
+            ShardCompletion {
+                index: 0,
+                path_in_repo: "test-0".to_string(),
+                sha256: "b".to_string(),
+                size: 200,
+                num_rows: 20,
+            },
+        );
+        state.record_completion(
+            "train",
+            ShardCompletion {
+                index: 1,
+                path_in_repo: "train-1".to_string(),
+                sha256: "c".to_string(),
+                size: 150,
+                num_rows: 15,
+            },
+        );
+
+        let all = state.all_completions();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_partition_writer_state_partition_values() {
+        let mut state = PartitionWriterState::new();
+        state.next_shard_index("train");
+        state.next_shard_index("test");
+        state.next_shard_index("validation");
+
+        let values: HashSet<&str> = state.partition_values().collect();
+        assert_eq!(values.len(), 3);
+        assert!(values.contains("train"));
+        assert!(values.contains("test"));
+        assert!(values.contains("validation"));
     }
 }
