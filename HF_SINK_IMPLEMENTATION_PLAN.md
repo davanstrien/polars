@@ -6,19 +6,19 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ---
 
-## Current Status (2026-01-19)
+## Current Status (2026-01-20)
 
 ```
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
-🔄 Task 6.3 (Progress Reporting) in progress - subtask 6.3.6b complete (single shard test)
+🔄 Task 6.3 (Progress Reporting) in progress - subtask 6.3.6c complete (multi-shard test)
 ```
 
 **Build Status:**
 ```bash
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
-✅ cargo test -p polars-stream --features hf_sink hf_sink  # 34 tests pass
+✅ cargo test -p polars-stream --features hf_sink hf_sink  # 35 tests pass
 ```
 
 **Branch:** `feature/hf-hub-sink` (113 commits ahead of main, local only)
@@ -38,10 +38,10 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 - Per-partition shard limits
 - Atomic commit across partitions
 
-**Task 6.3: Progress Reporting** ← In Progress (6.3.6c-6.3.6e remaining)
+**Task 6.3: Progress Reporting** ← In Progress (6.3.6d-6.3.6e remaining)
 - `get_metrics()` returning WriteMetrics
 - `UploadProgress` callbacks for real-time progress
-- TestProgress helper + single shard test added (6.3.6a-b complete)
+- TestProgress helper + multi-shard test added (6.3.6a-c complete)
 
 ### Phase 7: Python Bindings (After Phase 6)
 
@@ -387,7 +387,7 @@ This is the most complex Phase 6 task. Consider implementing after 6.1 and 6.3.
 | **6.3.4e** | Implement byte-level upload progress (ProgressBody + UploadExecutor) | ✅ Complete |
 | **6.3.6a** | Create TestProgress helper struct for tests | ✅ Complete |
 | **6.3.6b** | Test basic callback sequence (single shard) | ✅ Complete |
-| **6.3.6c** | Test multiple shard progress tracking | Pending |
+| **6.3.6c** | Test multiple shard progress tracking | ✅ Complete |
 | **6.3.6d** | Test upload progress byte increments | Pending |
 | **6.3.6e** | Test progress with checkpoint resume | Pending |
 

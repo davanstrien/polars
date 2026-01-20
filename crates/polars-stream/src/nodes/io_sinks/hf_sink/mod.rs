@@ -2337,4 +2337,138 @@ dataset_info:
             .collect();
         assert_eq!(upload_events, vec![2_500, 5_000, 7_500, 10_000]);
     }
+
+    #[test]
+    fn test_progress_multi_shard_callback_sequence() {
+        use std::sync::Arc;
+
+        let progress = Arc::new(TestProgress::new());
+
+        // Simulate 3 shard upload sequence
+        let shard_sizes = [10_000u64, 15_000, 8_000];
+
+        for shard_idx in 0..3 {
+            let path = format!("data/train-{:05}.parquet", shard_idx);
+            let total_bytes = shard_sizes[shard_idx];
+
+            // 1. Shard starts
+            progress.on_shard_start(shard_idx, &path);
+
+            // 2. Upload progress (simulate 4 increments per shard)
+            for i in 1..=4 {
+                let bytes = (total_bytes / 4) * i as u64;
+                progress.on_shard_upload_progress(shard_idx, bytes, total_bytes);
+            }
+
+            // 3. Shard completes
+            progress.on_shard_complete(shard_idx, &path, total_bytes);
+        }
+
+        // 4. Commit starts with total shard count
+        progress.on_commit_start(3);
+
+        // 5. Commit completes
+        progress.on_commit_complete(Some(
+            "https://huggingface.co/datasets/user/repo/commit/abc123",
+        ));
+
+        // ===== ASSERTIONS =====
+
+        // Counter assertions
+        assert_eq!(
+            progress.shard_starts.load(Ordering::SeqCst),
+            3,
+            "3 shard starts"
+        );
+        assert_eq!(
+            progress.shard_completes.load(Ordering::SeqCst),
+            3,
+            "3 shard completes"
+        );
+        assert_eq!(
+            progress.upload_progress_calls.load(Ordering::SeqCst),
+            12,
+            "4 progress × 3 shards"
+        );
+        assert_eq!(
+            progress.commit_starts.load(Ordering::SeqCst),
+            1,
+            "1 commit start"
+        );
+        assert_eq!(
+            progress.commit_completes.load(Ordering::SeqCst),
+            1,
+            "1 commit complete"
+        );
+
+        // Event sequence assertions
+        let events = progress.events();
+        assert_eq!(
+            events.len(),
+            20,
+            "3×(1 start + 4 progress + 1 complete) + 2 commit = 20"
+        );
+
+        // Verify each shard's events are grouped (start → progress × 4 → complete)
+        for shard_idx in 0..3usize {
+            let base = shard_idx * 6; // Each shard has 6 events
+
+            assert!(
+                matches!(
+                    &events[base],
+                    ProgressEvent::ShardStart { index, .. } if *index == shard_idx
+                ),
+                "shard {} should start at position {}",
+                shard_idx,
+                base
+            );
+
+            // 4 upload progress events
+            for i in 1..=4 {
+                assert!(
+                    matches!(
+                        &events[base + i],
+                        ProgressEvent::UploadProgress { index, .. } if *index == shard_idx
+                    ),
+                    "shard {} progress at position {}",
+                    shard_idx,
+                    base + i
+                );
+            }
+
+            assert!(
+                matches!(
+                    &events[base + 5],
+                    ProgressEvent::ShardComplete { index, .. } if *index == shard_idx
+                ),
+                "shard {} should complete at position {}",
+                shard_idx,
+                base + 5
+            );
+        }
+
+        // Final commit events
+        assert!(matches!(
+            &events[18],
+            ProgressEvent::CommitStart { num_shards: 3 }
+        ));
+        assert!(matches!(&events[19], ProgressEvent::CommitComplete { .. }));
+
+        // Verify upload progress for each shard is monotonically increasing
+        for shard_idx in 0..3usize {
+            let shard_progress: Vec<u64> = events
+                .iter()
+                .filter_map(|e| match e {
+                    ProgressEvent::UploadProgress { index, bytes, .. } if *index == shard_idx => {
+                        Some(*bytes)
+                    },
+                    _ => None,
+                })
+                .collect();
+
+            let expected_total = shard_sizes[shard_idx];
+            let expected: Vec<u64> = (1..=4).map(|i| (expected_total / 4) * i).collect();
+            assert_eq!(shard_progress, expected, "shard {} progress bytes", shard_idx);
+        }
+    }
 }
