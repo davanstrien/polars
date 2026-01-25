@@ -901,6 +901,70 @@ fn buffer_and_write_task(
     })
 }
 
+/// Partitioned version of buffer_and_write_task.
+///
+/// Receives morsels, partitions by partition_col, accumulates per-partition buffers,
+/// writes to per-partition shards, and sends ShardToUpload messages for upload.
+///
+/// Unlike `buffer_and_write_task()`, this function maintains separate state per partition:
+/// - Per-partition buffers (accumulated DataFrames)
+/// - Per-partition shard writers (HfShardWriter instances)
+/// - Per-partition shard row counts (for rotation decisions)
+///
+/// Paths follow Hive-style format: `data/{partition_col}={value}/train-00000.parquet`
+#[allow(dead_code)]
+fn partitioned_buffer_and_write_task(
+    recv_port_rx: Receiver<(PhaseOutcome, SinkInputPort)>,
+    mut shard_tx: Sender<ShardToUpload>,
+    options: Arc<HfSinkOptions>,
+    schema: SchemaRef,
+    resumed_shards: Arc<HashSet<usize>>,
+) -> JoinHandle<PolarsResult<()>> {
+    spawn(TaskPriority::High, async move {
+        // Extract partition column (required for this function)
+        let partition_col = options
+            .partition_col
+            .as_ref()
+            .ok_or_else(|| polars_err!(InvalidOperation: "partition_col required for partitioned writes"))?;
+
+        // Per-partition state tracker
+        let mut state = PartitionWriterState::new();
+
+        // Per-partition buffers: partition_value -> accumulated DataFrame
+        let mut buffers: HashMap<String, DataFrame> = HashMap::new();
+
+        // Per-partition writers: partition_value -> current HfShardWriter
+        let mut writers: HashMap<String, HfShardWriter> = HashMap::new();
+
+        // Per-partition shard row counts: partition_value -> rows in current shard
+        let mut shard_rows: HashMap<String, usize> = HashMap::new();
+
+        // Configuration
+        let chunk_size = DEFAULT_CHUNK_SIZE;
+        let _max_shard_rows = options.max_shard_rows.unwrap_or(DEFAULT_SHARD_ROWS);
+
+        // Mutable receiver for the main loop
+        let mut recv_port_rx = recv_port_rx;
+
+        // TODO(6.2.5c.2): Main loop - receive morsels, partition, accumulate
+        // TODO(6.2.5c.3): Per-partition batch writing
+        // TODO(6.2.5c.4): Per-partition shard rotation
+        // TODO(6.2.5c.5): Final flush for all partitions
+
+        // Suppress unused warnings for now
+        let _ = (
+            &partition_col,
+            &mut state,
+            &mut buffers,
+            &mut writers,
+            &mut shard_rows,
+        );
+        let _ = (chunk_size, &mut recv_port_rx, &mut shard_tx, &resumed_shards);
+
+        PolarsResult::Ok(())
+    })
+}
+
 /// Spawn a task that receives finished shards and uploads them to HF Hub.
 ///
 /// This task:
