@@ -12,17 +12,17 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
 ✅ Task 6.3 (Progress Reporting) complete - all subtasks done
-🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.8a in progress
+🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.8a complete, 6.2.8b next
 ```
 
 **Build Status:**
 ```bash
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
-✅ cargo test -p polars-stream --features hf_sink hf_sink  # 60 tests pass (verified 2026-01-26)
+✅ cargo test -p polars-io checkpoint --features hf_sink  # 9 checkpoint tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (143 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (145 commits ahead of main, local only)
 
 ---
 
