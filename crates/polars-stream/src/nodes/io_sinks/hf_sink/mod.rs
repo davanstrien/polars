@@ -1002,9 +1002,55 @@ fn partitioned_buffer_and_write_task(
 
                         // 4. Update row count for this partition's shard
                         *shard_rows.get_mut(&partition_value).unwrap() += chunk_size;
-                    }
 
-                    // TODO(6.2.5c.4): Per-partition shard rotation when shard >= max_rows
+                        // 5. Per-partition shard rotation when shard >= max_rows
+                        let partition_shard_rows = *shard_rows.get(&partition_value).unwrap();
+                        if should_rotate_shard(partition_shard_rows, &options) {
+                            // Finish current writer for this partition
+                            let finished = writers.remove(&partition_value).unwrap().finish()?;
+
+                            // Get partition-specific shard index
+                            let shard_idx = state.next_shard_index(&partition_value);
+
+                            // Compute Hive-style path
+                            let path = partitioned_shard_path(
+                                &options.path_in_repo,
+                                partition_col,
+                                &partition_value,
+                                &options.split,
+                                shard_idx,
+                            );
+
+                            // TODO(6.2.8): Add partition-aware checkpoint check
+                            // The current resumed_shards uses global indices; partition checkpoint
+                            // support will be added in task 6.2.8
+
+                            // Record completion for this partition
+                            state.record_completion(
+                                &partition_value,
+                                ShardCompletion::from_finished(shard_idx, path.clone(), &finished),
+                            );
+
+                            // Increment global index for progress tracking
+                            let _global_idx = state.next_global_index();
+
+                            // Send for upload (on_shard_complete is called in upload_shard_task)
+                            shard_tx
+                                .send(ShardToUpload::with_partition(
+                                    finished,
+                                    shard_idx,
+                                    path,
+                                    partition_value.clone(),
+                                ))
+                                .await
+                                .map_err(|_| {
+                                    polars_err!(ComputeError: "upload channel closed unexpectedly")
+                                })?;
+
+                            // Reset row count for this partition
+                            *shard_rows.get_mut(&partition_value).unwrap() = 0;
+                        }
+                    }
                 }
 
                 drop(consume_token); // Signal backpressure complete

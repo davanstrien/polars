@@ -12,7 +12,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
 ✅ Task 6.3 (Progress Reporting) complete - all subtasks done
-🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.5c.3 complete (batch writing)
+🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.5c.4 complete (shard rotation)
 ```
 
 **Build Status:**
@@ -43,7 +43,8 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 - Subtask 6.2.5b complete: `ShardToUpload` struct for channel messages
 - Subtask 6.2.5c.2 complete: Main loop with morsel partitioning and buffer accumulation
 - Subtask 6.2.5c.3 complete: Per-partition batch writing to shards
-- Next: 6.2.5c.4 - Per-partition shard rotation (finish, upload, reset)
+- Subtask 6.2.5c.4 complete: Per-partition shard rotation (finish, upload, reset)
+- Next: 6.2.5c.5 - Final flush for all partitions at end of stream
 - Hive-style paths: `data/{partition_col}={value}/train-00000.parquet`
 
 **Task 6.3: Progress Reporting** ✅ Complete
@@ -371,14 +372,14 @@ Support Hive-style partitioned writes: `data/{partition_col}={value}/train-00000
 | **6.2.2** | Create `partitioned_shard_path()` helper function | ✅ Complete |
 | **6.2.3** | Create `PartitionWriterState` struct | ✅ Complete |
 | **6.2.4** | Implement partition extraction from DataFrame | ✅ Complete |
-| **6.2.5** | Implement partitioned `buffer_and_write_task` | 🔄 In Progress (5/9 sub-tasks) |
+| **6.2.5** | Implement partitioned `buffer_and_write_task` | 🔄 In Progress (6/9 sub-tasks) |
 |   6.2.5a | Extend `PartitionWriterState` with global shard counter | ✅ Complete |
 |   6.2.5b | Add `ShardToUpload` struct for channel messages | ✅ Complete |
 |   6.2.5c | Implement `partitioned_buffer_and_write_task()` function | 🔄 In Progress |
 |   6.2.5c.1 | Function signature and initialization | ✅ Complete |
 |   6.2.5c.2 | Main loop: morsel partitioning and buffer accumulation | ✅ Complete |
 |   6.2.5c.3 | Per-partition batch writing to shards | ✅ Complete |
-|   6.2.5c.4 | Per-partition shard rotation (finish, upload, reset) | Pending |
+|   6.2.5c.4 | Per-partition shard rotation (finish, upload, reset) | ✅ Complete |
 |   6.2.5c.5 | Final flush for all partitions at end of stream | Pending |
 |   6.2.5d | Modify `spawn_sink()` to dispatch based on `partition_col` | Pending |
 | **6.2.6** | Update `upload_shard_task` for partitioned paths | Pending |
@@ -547,7 +548,7 @@ def test_streaming_upload(hf_test_repo):
 - [ ] **Phase 9:** Documentation (0/4)
 
 **Status:** 6/9 phases complete. Rust implementation functional with checkpoint and progress support.
-**Next:** Task 6.2.5c.4 - Per-partition shard rotation (finish, upload, reset).
+**Next:** Task 6.2.5c.5 - Final flush for all partitions at end of stream.
 
 ---
 
