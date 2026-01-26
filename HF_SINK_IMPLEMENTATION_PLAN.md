@@ -6,23 +6,23 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ---
 
-## Current Status (2026-01-21)
+## Current Status (2026-01-26)
 
 ```
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
 ✅ Task 6.3 (Progress Reporting) complete - all subtasks done
-🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.5c.1 complete (function skeleton)
+🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.5c.2 complete (main loop)
 ```
 
 **Build Status:**
 ```bash
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
-✅ cargo test -p polars-stream --features hf_sink hf_sink  # 56 tests pass
+✅ cargo test -p polars-stream --features hf_sink hf_sink  # 56 tests pass (verified 2026-01-26)
 ```
 
-**Branch:** `feature/hf-hub-sink` (129 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (133 commits ahead of main, local only)
 
 ---
 
@@ -41,7 +41,8 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 - Subtask 6.2.4 complete: `extract_partition_value()` and `partition_dataframe()` helpers
 - Subtask 6.2.5a complete: `global_shard_count` added to `PartitionWriterState`
 - Subtask 6.2.5b complete: `ShardToUpload` struct for channel messages
-- Next: 6.2.5c.2 - Main loop: morsel partitioning and buffer accumulation
+- Subtask 6.2.5c.2 complete: Main loop with morsel partitioning and buffer accumulation
+- Next: 6.2.5c.3 - Per-partition batch writing to shards
 - Hive-style paths: `data/{partition_col}={value}/train-00000.parquet`
 
 **Task 6.3: Progress Reporting** ✅ Complete
@@ -369,12 +370,12 @@ Support Hive-style partitioned writes: `data/{partition_col}={value}/train-00000
 | **6.2.2** | Create `partitioned_shard_path()` helper function | ✅ Complete |
 | **6.2.3** | Create `PartitionWriterState` struct | ✅ Complete |
 | **6.2.4** | Implement partition extraction from DataFrame | ✅ Complete |
-| **6.2.5** | Implement partitioned `buffer_and_write_task` | 🔄 In Progress (3/9 sub-tasks) |
+| **6.2.5** | Implement partitioned `buffer_and_write_task` | 🔄 In Progress (4/9 sub-tasks) |
 |   6.2.5a | Extend `PartitionWriterState` with global shard counter | ✅ Complete |
 |   6.2.5b | Add `ShardToUpload` struct for channel messages | ✅ Complete |
 |   6.2.5c | Implement `partitioned_buffer_and_write_task()` function | 🔄 In Progress |
 |   6.2.5c.1 | Function signature and initialization | ✅ Complete |
-|   6.2.5c.2 | Main loop: morsel partitioning and buffer accumulation | Pending |
+|   6.2.5c.2 | Main loop: morsel partitioning and buffer accumulation | ✅ Complete |
 |   6.2.5c.3 | Per-partition batch writing to shards | Pending |
 |   6.2.5c.4 | Per-partition shard rotation (finish, upload, reset) | Pending |
 |   6.2.5c.5 | Final flush for all partitions at end of stream | Pending |
@@ -538,14 +539,14 @@ def test_streaming_upload(hf_test_repo):
 - [x] **Phases 0-5:** Foundation through Commit Coordination ✅
 - [ ] **Phase 6:** Advanced Features (2.1/3) ← Current Priority
   - [x] Task 6.1: Checkpoint System ✅
-  - [ ] Task 6.2: Partitioned Write Support (6/14 subtasks) 🔄
+  - [ ] Task 6.2: Partitioned Write Support (7/14 subtasks) 🔄
   - [x] Task 6.3: Progress Reporting ✅
 - [ ] **Phase 7:** Python Bindings (0/3) ← After Phase 6
 - [ ] **Phase 8:** Testing (0/4)
 - [ ] **Phase 9:** Documentation (0/4)
 
 **Status:** 6/9 phases complete. Rust implementation functional with checkpoint and progress support.
-**Next:** Task 6.2.5c.2 - Main loop: morsel partitioning and buffer accumulation.
+**Next:** Task 6.2.5c.3 - Per-partition batch writing to shards.
 
 ---
 
