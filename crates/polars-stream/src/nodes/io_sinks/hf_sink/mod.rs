@@ -946,20 +946,50 @@ fn partitioned_buffer_and_write_task(
         // Mutable receiver for the main loop
         let mut recv_port_rx = recv_port_rx;
 
-        // TODO(6.2.5c.2): Main loop - receive morsels, partition, accumulate
-        // TODO(6.2.5c.3): Per-partition batch writing
-        // TODO(6.2.5c.4): Per-partition shard rotation
+        // Main loop - receive morsels, partition, accumulate
+        while let Ok((outcome, rx)) = recv_port_rx.recv().await {
+            let mut rx = rx.serial();
+
+            while let Ok(morsel) = rx.recv().await {
+                let (df, _, _, consume_token) = morsel.into_inner();
+
+                // Partition the morsel by the partition column
+                let partitions = partition_dataframe(df, partition_col)?;
+
+                // Accumulate each sub-DataFrame into its partition's buffer
+                for (partition_value, sub_df) in partitions {
+                    match buffers.entry(partition_value.clone()) {
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            e.get_mut().vstack_mut_owned(sub_df)?;
+                        },
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(sub_df);
+                        },
+                    }
+
+                    // TODO(6.2.5c.3): Per-partition batch writing when buffer >= chunk_size
+                    // TODO(6.2.5c.4): Per-partition shard rotation when shard >= max_rows
+                }
+
+                drop(consume_token); // Signal backpressure complete
+            }
+
+            outcome.stopped();
+        }
+
         // TODO(6.2.5c.5): Final flush for all partitions
 
-        // Suppress unused warnings for now
+        // Suppress unused warnings for now (variables will be used in subsequent tasks)
         let _ = (
-            &partition_col,
-            &mut state,
-            &mut buffers,
+            &state,
             &mut writers,
             &mut shard_rows,
+            chunk_size,
+            &mut shard_tx,
+            &resumed_shards,
+            &schema,
+            &options,
         );
-        let _ = (chunk_size, &mut recv_port_rx, &mut shard_tx, &resumed_shards);
 
         PolarsResult::Ok(())
     })
