@@ -13,8 +13,9 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
 ✅ Task 6.3 (Progress Reporting) complete - all subtasks done
 ✅ Task 6.2.S (Smoke Test) complete - real HF Hub Parquet push validated
-🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.8i complete
-🔥 Task 6.2.8j - NEXT: Integration tests for partitioned checkpoint
+✅ Task 6.2.8 (Checkpoint partition support) complete - all 10 subtasks done
+🔄 Task 6.2 (Partitioned Writes) in progress - 17/19 subtasks done
+🔥 Task 6.2.9 - NEXT: Wire partitioned path in HfSinkNode::spawn_sink()
 ```
 
 **Build Status:**
@@ -22,7 +23,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
 ✅ cargo test -p polars-io checkpoint --features hf_sink  # 10 checkpoint tests pass
-✅ cargo test -p polars-stream --features hf_sink hf_sink # 60 tests pass
+✅ cargo test -p polars-stream --features hf_sink hf_sink # 63 tests pass
 ```
 
 **Branch:** `feature/hf-hub-sink` (156 commits ahead of main)
@@ -431,7 +432,7 @@ Support Hive-style partitioned writes: `data/{partition_col}={value}/train-00000
 |   6.2.5d | Modify `spawn_sink()` to dispatch based on `partition_col` | ✅ Complete |
 | **6.2.6** | Update `upload_shard_task` for partitioned paths | ✅ Complete (uses pre-computed paths) |
 | **6.2.7** | Update `finalize()` for partitioned commits | ✅ Complete |
-| **6.2.8** | Update checkpoint for partitioned writes | 🔄 In Progress |
+| **6.2.8** | Update checkpoint for partitioned writes | ✅ Complete |
 |   6.2.8a | Add `partition_value` to `ShardCheckpoint` | ✅ Complete |
 |   6.2.8b | Add `partition_col` to `CheckpointState` | ✅ Complete |
 |   6.2.8c | Add `resumed_indices_for_partition()` API | ✅ Complete |
@@ -441,7 +442,7 @@ Support Hive-style partitioned writes: `data/{partition_col}={value}/train-00000
 |   6.2.8g | Update `upload_shard_task()` to save partition info | ✅ Complete |
 |   6.2.8h | Add partition_col mismatch validation | ✅ Complete |
 |   6.2.8i | Unit tests for partition-aware checkpoint | ✅ Complete |
-|   6.2.8j | Integration tests for partitioned checkpoint | Pending |
+|   6.2.8j | Integration tests for partitioned checkpoint | ✅ Complete |
 | **6.2.9** | Wire partitioned path in `HfSinkNode::spawn_sink()` | Pending |
 | **6.2.10** | Unit tests for partitioned paths and state | Pending |
 | **6.2.11** | Integration tests for partitioned writes | Pending |
@@ -599,7 +600,7 @@ def test_streaming_upload(hf_test_repo):
 - [ ] **Phase 6:** Advanced Features (2.5/3) ← Current Priority
   - [x] Task 6.1: Checkpoint System ✅
   - [x] Task 6.2.S: Smoke Test (Real HF Hub Push) ✅
-  - [ ] Task 6.2: Partitioned Write Support (16/19 subtasks) 🔄
+  - [ ] Task 6.2: Partitioned Write Support (17/19 subtasks) 🔄
   - [x] Task 6.3: Progress Reporting ✅
 - [ ] **Phase 7:** Python Bindings (0/3) ← After Phase 6
 - [ ] **Phase 8:** Testing (0/4)
@@ -612,9 +613,11 @@ def test_streaming_upload(hf_test_repo):
 2. ✅ **Task 6.2.8f** - Partitioned buffer task resume check
 3. ✅ **Task 6.2.8h** - Add partition_col mismatch validation (already implemented)
 4. ✅ **Task 6.2.8i** - Unit tests for partition-aware checkpoint
-5. 🔥 **Task 6.2.8j** - Integration tests for partitioned checkpoint
-5. **Task 6.2.11** - Partitioned write integration tests
-6. **Phase 7** - Python bindings
+5. ✅ **Task 6.2.8j** - Integration tests for partitioned checkpoint
+6. 🔥 **Task 6.2.9** - Wire partitioned path in HfSinkNode::spawn_sink()
+7. **Task 6.2.10** - Unit tests for partitioned paths and state
+8. **Task 6.2.11** - Integration tests for partitioned writes
+9. **Phase 7** - Python bindings
 
 ---
 

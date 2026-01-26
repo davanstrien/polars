@@ -2982,6 +2982,126 @@ dataset_info:
         assert!(!potential_path.exists());
     }
 
+    #[test]
+    fn test_partition_checkpoint_col_mismatch_error() {
+        use polars_io::cloud::hf::checkpoint::{CheckpointState, ShardCheckpoint};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let ckpt_path = dir.path().join("checkpoint.json");
+
+        // Create checkpoint with partition_col=Some("split")
+        let mut checkpoint =
+            CheckpointState::new("user/repo", "data/train", Some("split".to_string()));
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 0,
+            partition_value: Some("train".to_string()),
+            path_in_repo: "data/split=train/train-00000.parquet".to_string(),
+            sha256: "abc123".to_string(),
+            size: 1024,
+            num_rows: 100,
+        });
+        checkpoint.save(&ckpt_path).unwrap();
+
+        // Load checkpoint and verify partition_col
+        let loaded = CheckpointState::load(&ckpt_path).unwrap().unwrap();
+        assert_eq!(loaded.partition_col, Some("split".to_string()));
+
+        // Verify mismatch detected when current operation uses different partition_col
+        let current_partition_col = Some("date".to_string());
+        assert_ne!(loaded.partition_col, current_partition_col);
+
+        // In actual code (load_checkpoint_state), this triggers:
+        // polars_bail!(ComputeError: "Checkpoint mismatch: ... partition_col=Some("split") ... partition_col=Some("date")")
+    }
+
+    #[test]
+    fn test_partition_checkpoint_none_vs_some_mismatch() {
+        use polars_io::cloud::hf::checkpoint::CheckpointState;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let ckpt_path = dir.path().join("checkpoint.json");
+
+        // Create checkpoint with partition_col=None (non-partitioned write)
+        let checkpoint = CheckpointState::new("user/repo", "data/train", None);
+        checkpoint.save(&ckpt_path).unwrap();
+
+        // Load and verify partition_col is None
+        let loaded = CheckpointState::load(&ckpt_path).unwrap().unwrap();
+        assert!(loaded.partition_col.is_none());
+
+        // Verify mismatch: checkpoint None vs options Some("split")
+        let current_partition_col = Some("split".to_string());
+        assert_ne!(loaded.partition_col, current_partition_col);
+
+        // In actual code (load_checkpoint_state), this triggers:
+        // polars_bail!(ComputeError: "Checkpoint mismatch: ... partition_col=None ... partition_col=Some("split")")
+    }
+
+    #[test]
+    fn test_partition_checkpoint_resume_multi_partition() {
+        use polars_io::cloud::hf::checkpoint::{CheckpointState, ShardCheckpoint};
+        use std::collections::HashSet;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let ckpt_path = dir.path().join("checkpoint.json");
+
+        // Create checkpoint with partition_col="split", multiple partitions
+        let mut checkpoint =
+            CheckpointState::new("user/repo", "data/train", Some("split".to_string()));
+
+        // Train partition: shards 0, 2 completed (simulating resume after partial upload)
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 0,
+            partition_value: Some("train".to_string()),
+            path_in_repo: "data/split=train/train-00000.parquet".to_string(),
+            sha256: "hash_train_0".to_string(),
+            size: 1000,
+            num_rows: 100,
+        });
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 2,
+            partition_value: Some("train".to_string()),
+            path_in_repo: "data/split=train/train-00002.parquet".to_string(),
+            sha256: "hash_train_2".to_string(),
+            size: 2000,
+            num_rows: 200,
+        });
+
+        // Test partition: shard 0 completed
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 0,
+            partition_value: Some("test".to_string()),
+            path_in_repo: "data/split=test/test-00000.parquet".to_string(),
+            sha256: "hash_test_0".to_string(),
+            size: 500,
+            num_rows: 50,
+        });
+
+        checkpoint.save(&ckpt_path).unwrap();
+
+        // Load and verify partition-specific resume indices
+        let loaded = CheckpointState::load(&ckpt_path).unwrap().unwrap();
+
+        // Train partition should have indices 0 and 2 completed
+        let train_indices = loaded.resumed_indices_for_partition(Some("train"));
+        assert_eq!(train_indices, HashSet::from([0, 2]));
+
+        // Test partition should have index 0 completed
+        let test_indices = loaded.resumed_indices_for_partition(Some("test"));
+        assert_eq!(test_indices, HashSet::from([0]));
+
+        // Validation partition (new, never seen) should have no indices
+        let validation_indices = loaded.resumed_indices_for_partition(Some("validation"));
+        assert!(validation_indices.is_empty());
+
+        // Non-partitioned query (None) should also be empty for this partitioned checkpoint
+        let none_indices = loaded.resumed_indices_for_partition(None);
+        assert!(none_indices.is_empty());
+    }
+
     // =========================================================================
     // Progress Callback Tests
     // =========================================================================
