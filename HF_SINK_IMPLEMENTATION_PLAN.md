@@ -12,17 +12,18 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
 ✅ Task 6.3 (Progress Reporting) complete - all subtasks done
-🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.8c complete, 6.2.8d next
+🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.8e complete, 6.2.8f next
 ```
 
 **Build Status:**
 ```bash
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
-✅ cargo test -p polars-io checkpoint --features hf_sink  # 9 checkpoint tests pass
+✅ cargo test -p polars-io checkpoint --features hf_sink  # 10 checkpoint tests pass
+✅ cargo test -p polars-stream --features hf_sink hf_sink # 60 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (150 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (152 commits ahead of main, local only)
 
 ---
 
@@ -43,7 +44,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 - Subtask 6.2.6 complete: `upload_shard_task` already uses pre-computed paths from `ShardToUpload`
 - Subtask 6.2.7 complete: `renumber_for_append()` now handles partitioned paths correctly
 - Current: 6.2.8 - Update checkpoint for partitioned writes (10 subtasks)
-- Next: 6.2.8d - Update `load_checkpoint_state()` return type
+- Next: 6.2.8f - Update partitioned buffer task resume check
 - Hive-style paths: `data/{partition_col}={value}/train-00000.parquet`
 
 **Task 6.3: Progress Reporting** ✅ Complete
@@ -387,8 +388,8 @@ Support Hive-style partitioned writes: `data/{partition_col}={value}/train-00000
 |   6.2.8a | Add `partition_value` to `ShardCheckpoint` | ✅ Complete |
 |   6.2.8b | Add `partition_col` to `CheckpointState` | ✅ Complete |
 |   6.2.8c | Add `resumed_indices_for_partition()` API | ✅ Complete |
-|   6.2.8d | Update `load_checkpoint_state()` return type | Pending |
-|   6.2.8e | Update non-partitioned buffer task resume check | Pending |
+|   6.2.8d | Update `load_checkpoint_state()` return type | ✅ Complete |
+|   6.2.8e | Update non-partitioned buffer task resume check | ✅ Complete |
 |   6.2.8f | Update partitioned buffer task resume check | Pending |
 |   6.2.8g | Update `upload_shard_task()` to save partition info | ✅ Complete |
 |   6.2.8h | Add partition_col mismatch validation | Pending |
@@ -550,14 +551,14 @@ def test_streaming_upload(hf_test_repo):
 - [x] **Phases 0-5:** Foundation through Commit Coordination ✅
 - [ ] **Phase 6:** Advanced Features (2.1/3) ← Current Priority
   - [x] Task 6.1: Checkpoint System ✅
-  - [ ] Task 6.2: Partitioned Write Support (11/17 subtasks, 6.2.8d next) 🔄
+  - [ ] Task 6.2: Partitioned Write Support (13/17 subtasks, 6.2.8f next) 🔄
   - [x] Task 6.3: Progress Reporting ✅
 - [ ] **Phase 7:** Python Bindings (0/3) ← After Phase 6
 - [ ] **Phase 8:** Testing (0/4)
 - [ ] **Phase 9:** Documentation (0/4)
 
 **Status:** 6/9 phases complete. Rust implementation functional with checkpoint and progress support.
-**Next:** Task 6.2.8d - Update `load_checkpoint_state()` return type.
+**Next:** Task 6.2.8f - Update partitioned buffer task resume check.
 
 ---
 
