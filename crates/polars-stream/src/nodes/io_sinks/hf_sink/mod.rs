@@ -1059,10 +1059,75 @@ fn partitioned_buffer_and_write_task(
             outcome.stopped();
         }
 
-        // TODO(6.2.5c.5): Final flush for all partitions
+        // Final flush: write remaining buffered data to writers
+        for (partition_value, buf) in buffers.iter_mut() {
+            if buf.height() > 0 {
+                // Get or create writer for this partition
+                if !writers.contains_key(partition_value) {
+                    let writer = create_shard_writer(&schema, &options)?;
 
-        // Suppress unused warnings for now (variables will be used in subsequent tasks)
-        let _ = (&mut shard_tx, &resumed_shards);
+                    // Notify progress callback of shard start
+                    if let Some(ref progress) = options.progress {
+                        let shard_idx = state.peek_next_index(partition_value);
+                        let path = partitioned_shard_path(
+                            &options.path_in_repo,
+                            partition_col,
+                            partition_value,
+                            &options.split,
+                            shard_idx,
+                        );
+                        progress.on_shard_start(state.peek_global_index(), &path);
+                    }
+
+                    writers.insert(partition_value.clone(), writer);
+                }
+
+                let writer = writers.get_mut(partition_value).unwrap();
+                let batch = df_to_record_batch(std::mem::take(buf), &schema)?;
+                writer.write_batch(batch)?;
+            }
+        }
+
+        // Final flush: finish and upload all active writers
+        for (partition_value, writer) in writers.drain() {
+            if writer.rows_written() > 0 {
+                let finished = writer.finish()?;
+                let shard_idx = state.next_shard_index(&partition_value);
+                let path = partitioned_shard_path(
+                    &options.path_in_repo,
+                    partition_col,
+                    &partition_value,
+                    &options.split,
+                    shard_idx,
+                );
+
+                // TODO(6.2.8): Add partition-aware checkpoint check
+                // For now, resumed_shards uses global indices which won't match
+                // partition-specific indices. Full support added in task 6.2.8.
+
+                state.record_completion(
+                    &partition_value,
+                    ShardCompletion::from_finished(shard_idx, path.clone(), &finished),
+                );
+
+                let _global_idx = state.next_global_index();
+
+                shard_tx
+                    .send(ShardToUpload::with_partition(
+                        finished,
+                        shard_idx,
+                        path,
+                        partition_value,
+                    ))
+                    .await
+                    .map_err(|_| {
+                        polars_err!(ComputeError: "upload channel closed unexpectedly")
+                    })?;
+            }
+        }
+
+        // Suppress unused warning (partition checkpoint support in task 6.2.8)
+        let _ = &resumed_shards;
 
         PolarsResult::Ok(())
     })
