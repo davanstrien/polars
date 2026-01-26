@@ -1105,9 +1105,24 @@ fn partitioned_buffer_and_write_task(
                                 shard_idx,
                             );
 
-                            // TODO(6.2.8f): Add partition-aware checkpoint check
-                            // Use resumed_checkpoint.resumed_indices_for_partition(Some(&partition_value))
-                            // to get per-partition indices for skip logic
+                            // Skip if already in checkpoint (resumed shard)
+                            let skip = resumed_checkpoint
+                                .as_ref()
+                                .map(|c| {
+                                    c.resumed_indices_for_partition(Some(&partition_value))
+                                        .contains(&shard_idx)
+                                })
+                                .unwrap_or(false);
+                            if skip {
+                                if config::verbose() {
+                                    eprintln!(
+                                        "HF sink: skipping shard {} for partition {} (already uploaded)",
+                                        shard_idx, partition_value
+                                    );
+                                }
+                                *shard_rows.get_mut(&partition_value).unwrap() = 0;
+                                continue;
+                            }
 
                             // Record completion for this partition
                             state.record_completion(
@@ -1185,33 +1200,43 @@ fn partitioned_buffer_and_write_task(
                     shard_idx,
                 );
 
-                // TODO(6.2.8f): Add partition-aware checkpoint check
-                // Use resumed_checkpoint.resumed_indices_for_partition(Some(&partition_value))
-                // to get per-partition indices for skip logic
+                // Skip if already in checkpoint (resumed shard)
+                let skip = resumed_checkpoint
+                    .as_ref()
+                    .map(|c| {
+                        c.resumed_indices_for_partition(Some(&partition_value))
+                            .contains(&shard_idx)
+                    })
+                    .unwrap_or(false);
+                if skip {
+                    if config::verbose() {
+                        eprintln!(
+                            "HF sink: skipping final shard {} for partition {} (already uploaded)",
+                            shard_idx, partition_value
+                        );
+                    }
+                } else {
+                    state.record_completion(
+                        &partition_value,
+                        ShardCompletion::from_finished(shard_idx, path.clone(), &finished),
+                    );
 
-                state.record_completion(
-                    &partition_value,
-                    ShardCompletion::from_finished(shard_idx, path.clone(), &finished),
-                );
+                    let _global_idx = state.next_global_index();
 
-                let _global_idx = state.next_global_index();
-
-                shard_tx
-                    .send(ShardToUpload::with_partition(
-                        finished,
-                        shard_idx,
-                        path,
-                        partition_value,
-                    ))
-                    .await
-                    .map_err(|_| {
-                        polars_err!(ComputeError: "upload channel closed unexpectedly")
-                    })?;
+                    shard_tx
+                        .send(ShardToUpload::with_partition(
+                            finished,
+                            shard_idx,
+                            path,
+                            partition_value,
+                        ))
+                        .await
+                        .map_err(|_| {
+                            polars_err!(ComputeError: "upload channel closed unexpectedly")
+                        })?;
+                }
             }
         }
-
-        // Suppress unused warning (partition checkpoint support in task 6.2.8f)
-        let _ = &resumed_checkpoint;
 
         PolarsResult::Ok(())
     })
