@@ -777,12 +777,15 @@ fn load_checkpoint_state(
     };
 
     // Validate checkpoint matches current operation
-    if checkpoint.repo_id != options.repo_id || checkpoint.path_in_repo != options.path_in_repo {
+    if checkpoint.repo_id != options.repo_id
+        || checkpoint.path_in_repo != options.path_in_repo
+        || checkpoint.partition_col != options.partition_col
+    {
         polars_bail!(ComputeError:
-            "Checkpoint mismatch: checkpoint is for {}/{} but operation is {}/{}. \
-             Delete {} to start fresh.",
-            checkpoint.repo_id, checkpoint.path_in_repo,
-            options.repo_id, options.path_in_repo,
+            "Checkpoint mismatch: checkpoint is for {}/{} (partition_col={:?}) \
+             but operation is {}/{} (partition_col={:?}). Delete {} to start fresh.",
+            checkpoint.repo_id, checkpoint.path_in_repo, checkpoint.partition_col,
+            options.repo_id, options.path_in_repo, options.partition_col,
             checkpoint_path.display()
         );
     }
@@ -1243,7 +1246,7 @@ fn upload_shard_task(
                 shard,
                 shard_index,
                 path_in_repo,
-                partition_value: _,
+                partition_value,
             } = shard_to_upload;
 
             // Log upload start if verbose
@@ -1282,20 +1285,21 @@ fn upload_shard_task(
                 // Load existing or create new checkpoint
                 let mut checkpoint = match CheckpointState::load(ckpt_path) {
                     Ok(Some(cp)) => cp,
-                    Ok(None) => CheckpointState::new(&repo_id, &base_path_in_repo),
+                    Ok(None) => CheckpointState::new(&repo_id, &base_path_in_repo, options.partition_col.clone()),
                     Err(e) => {
                         // Log warning but don't fail - upload already succeeded
                         if config::verbose() {
                             eprintln!("HF sink: warning - failed to load checkpoint: {}", e);
                         }
                         // Continue without checkpoint save
-                        CheckpointState::new(&repo_id, &base_path_in_repo)
+                        CheckpointState::new(&repo_id, &base_path_in_repo, options.partition_col.clone())
                     },
                 };
 
                 // Add this shard
                 checkpoint.add_shard(ShardCheckpoint {
                     index: shard_index,
+                    partition_value: partition_value.clone(),
                     path_in_repo: path_in_repo.clone(),
                     sha256: shard.sha256.clone(),
                     size: shard.size,
@@ -2807,7 +2811,7 @@ dataset_info:
         assert!(!ckpt_path.exists());
 
         // Simulate what upload_shard_task does after successful upload
-        let mut checkpoint = CheckpointState::new("user/test-repo", "data/train");
+        let mut checkpoint = CheckpointState::new("user/test-repo", "data/train", None);
         checkpoint.add_shard(ShardCheckpoint {
             index: 0,
             path_in_repo: "data/train-00000.parquet".into(),
@@ -2839,7 +2843,7 @@ dataset_info:
         let ckpt_path = dir.path().join("checkpoint.json");
 
         // Create checkpoint
-        let checkpoint = CheckpointState::new("user/test-repo", "data/train");
+        let checkpoint = CheckpointState::new("user/test-repo", "data/train", None);
         checkpoint.save(&ckpt_path).unwrap();
         assert!(ckpt_path.exists());
 
@@ -2860,7 +2864,7 @@ dataset_info:
         let ckpt_path = dir.path().join("checkpoint.json");
 
         // Create checkpoint with shards 0, 2, 5 completed (non-contiguous)
-        let mut checkpoint = CheckpointState::new("user/test-repo", "data/train");
+        let mut checkpoint = CheckpointState::new("user/test-repo", "data/train", None);
         for idx in [0, 2, 5] {
             checkpoint.add_shard(ShardCheckpoint {
                 index: idx,
@@ -2894,7 +2898,7 @@ dataset_info:
         let ckpt_path = dir.path().join("checkpoint.json");
 
         // Create checkpoint for repo-A
-        let checkpoint = CheckpointState::new("user/repo-A", "data/train");
+        let checkpoint = CheckpointState::new("user/repo-A", "data/train", None);
         checkpoint.save(&ckpt_path).unwrap();
 
         // Load checkpoint

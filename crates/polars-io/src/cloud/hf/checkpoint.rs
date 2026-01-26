@@ -43,17 +43,22 @@ pub struct CheckpointState {
     pub repo_id: String,
     /// Path in repo being written to (e.g., "data/train")
     pub path_in_repo: String,
+    /// Partition column for partitioned writes (e.g., "split").
+    /// None for non-partitioned writes.
+    #[serde(default)]
+    pub partition_col: Option<String>,
     /// Shards that have been successfully uploaded to LFS
     pub completed_shards: Vec<ShardCheckpoint>,
 }
 
 impl CheckpointState {
     /// Create a new empty checkpoint for the given repository and path.
-    pub fn new(repo_id: &str, path_in_repo: &str) -> Self {
+    pub fn new(repo_id: &str, path_in_repo: &str, partition_col: Option<String>) -> Self {
         Self {
             version: CHECKPOINT_VERSION,
             repo_id: repo_id.to_string(),
             path_in_repo: path_in_repo.to_string(),
+            partition_col,
             completed_shards: Vec::new(),
         }
     }
@@ -159,7 +164,7 @@ mod tests {
         let path = dir.path().join("checkpoint.json");
 
         // Create checkpoint with some shards
-        let mut checkpoint = CheckpointState::new("user/test-repo", "data/train");
+        let mut checkpoint = CheckpointState::new("user/test-repo", "data/train", None);
         checkpoint.add_shard(ShardCheckpoint {
             index: 0,
             partition_value: None,
@@ -194,7 +199,7 @@ mod tests {
 
     #[test]
     fn test_checkpoint_add_shard() {
-        let mut checkpoint = CheckpointState::new("user/repo", "data");
+        let mut checkpoint = CheckpointState::new("user/repo", "data", None);
         assert!(checkpoint.completed_shards.is_empty());
 
         checkpoint.add_shard(ShardCheckpoint {
@@ -212,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_checkpoint_completed_indices() {
-        let mut checkpoint = CheckpointState::new("user/repo", "data");
+        let mut checkpoint = CheckpointState::new("user/repo", "data", None);
         checkpoint.add_shard(ShardCheckpoint {
             index: 0,
             partition_value: None,
@@ -261,7 +266,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("checkpoint.json");
 
-        let checkpoint = CheckpointState::new("user/repo", "data");
+        let checkpoint = CheckpointState::new("user/repo", "data", None);
         checkpoint.save(&path).unwrap();
 
         // Read raw JSON and verify version field
@@ -275,7 +280,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("checkpoint.json");
 
-        let checkpoint = CheckpointState::new("user/repo", "data");
+        let checkpoint = CheckpointState::new("user/repo", "data", None);
         checkpoint.save(&path).unwrap();
 
         // Verify main file exists
@@ -326,7 +331,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("checkpoint.json");
 
-        let mut checkpoint = CheckpointState::new("user/dataset", "data");
+        let mut checkpoint = CheckpointState::new("user/dataset", "data", None);
 
         // Add a non-partitioned shard
         checkpoint.add_shard(ShardCheckpoint {
