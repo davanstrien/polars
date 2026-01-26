@@ -756,10 +756,10 @@ fn build_readme_operation(
 /// Loads checkpoint state from disk and validates it matches the current operation.
 ///
 /// Returns a tuple of:
-/// - Set of completed shard indices (for skip logic)
+/// - Option<CheckpointState> for partition-aware resume logic (None if no checkpoint)
 /// - Vec of ShardCompletion (for including in final commit)
 ///
-/// Returns empty collections if no checkpoint is found.
+/// Returns (None, empty vec) if no checkpoint is found.
 ///
 /// # Errors
 /// Returns an error if:
@@ -767,13 +767,13 @@ fn build_readme_operation(
 /// - The checkpoint repo_id or path_in_repo doesn't match current operation
 fn load_checkpoint_state(
     options: &HfSinkOptions,
-) -> PolarsResult<(HashSet<usize>, Vec<ShardCompletion>)> {
+) -> PolarsResult<(Option<CheckpointState>, Vec<ShardCompletion>)> {
     let Some(ref checkpoint_path) = options.checkpoint_path else {
-        return Ok((HashSet::new(), Vec::new()));
+        return Ok((None, Vec::new()));
     };
 
     let Some(checkpoint) = CheckpointState::load(checkpoint_path)? else {
-        return Ok((HashSet::new(), Vec::new()));
+        return Ok((None, Vec::new()));
     };
 
     // Validate checkpoint matches current operation
@@ -790,25 +790,28 @@ fn load_checkpoint_state(
         );
     }
 
-    let indices = checkpoint.completed_indices();
-    if config::verbose() && !indices.is_empty() {
-        eprintln!("HF sink: resuming with {} completed shards", indices.len());
+    if config::verbose() && !checkpoint.completed_shards.is_empty() {
+        eprintln!(
+            "HF sink: resuming with {} completed shards",
+            checkpoint.completed_shards.len()
+        );
     }
 
     // Convert ShardCheckpoint to ShardCompletion for commit tracking
+    // (use iter + clone because we keep checkpoint for resume logic)
     let completions: Vec<ShardCompletion> = checkpoint
         .completed_shards
-        .into_iter()
+        .iter()
         .map(|sc| ShardCompletion {
             index: sc.index,
-            path_in_repo: sc.path_in_repo,
-            sha256: sc.sha256,
+            path_in_repo: sc.path_in_repo.clone(),
+            sha256: sc.sha256.clone(),
             size: sc.size,
             num_rows: sc.num_rows,
         })
         .collect();
 
-    Ok((indices, completions))
+    Ok((Some(checkpoint), completions))
 }
 
 // ============================================================================
@@ -842,7 +845,7 @@ fn buffer_and_write_task(
     mut shard_tx: Sender<ShardToUpload>,
     options: Arc<HfSinkOptions>,
     schema: SchemaRef,
-    resumed_shards: Arc<HashSet<usize>>,
+    resumed_checkpoint: Option<Arc<CheckpointState>>,
 ) -> JoinHandle<PolarsResult<()>> {
     spawn(TaskPriority::High, async move {
         let chunk_size = DEFAULT_CHUNK_SIZE;
@@ -892,7 +895,12 @@ fn buffer_and_write_task(
                         let path = shard_path(&options.path_in_repo, &options.split, shard_idx);
 
                         // Skip if already in checkpoint (resumed shard)
-                        if resumed_shards.contains(&shard_idx) {
+                        // Use resumed_indices_for_partition(None) for non-partitioned writes
+                        let skip = resumed_checkpoint
+                            .as_ref()
+                            .map(|c| c.resumed_indices_for_partition(None).contains(&shard_idx))
+                            .unwrap_or(false);
+                        if skip {
                             if config::verbose() {
                                 eprintln!(
                                     "HF sink: skipping shard {} (already uploaded)",
@@ -950,7 +958,12 @@ fn buffer_and_write_task(
                 let path = shard_path(&options.path_in_repo, &options.split, shard_idx);
 
                 // Skip if already in checkpoint (resumed shard)
-                if resumed_shards.contains(&shard_idx) {
+                // Use resumed_indices_for_partition(None) for non-partitioned writes
+                let skip = resumed_checkpoint
+                    .as_ref()
+                    .map(|c| c.resumed_indices_for_partition(None).contains(&shard_idx))
+                    .unwrap_or(false);
+                if skip {
                     if config::verbose() {
                         eprintln!(
                             "HF sink: skipping final shard {} (already uploaded)",
@@ -989,7 +1002,7 @@ fn partitioned_buffer_and_write_task(
     mut shard_tx: Sender<ShardToUpload>,
     options: Arc<HfSinkOptions>,
     schema: SchemaRef,
-    resumed_shards: Arc<HashSet<usize>>,
+    resumed_checkpoint: Option<Arc<CheckpointState>>,
 ) -> JoinHandle<PolarsResult<()>> {
     spawn(TaskPriority::High, async move {
         // Extract partition column (required for this function)
@@ -1092,9 +1105,9 @@ fn partitioned_buffer_and_write_task(
                                 shard_idx,
                             );
 
-                            // TODO(6.2.8): Add partition-aware checkpoint check
-                            // The current resumed_shards uses global indices; partition checkpoint
-                            // support will be added in task 6.2.8
+                            // TODO(6.2.8f): Add partition-aware checkpoint check
+                            // Use resumed_checkpoint.resumed_indices_for_partition(Some(&partition_value))
+                            // to get per-partition indices for skip logic
 
                             // Record completion for this partition
                             state.record_completion(
@@ -1172,9 +1185,9 @@ fn partitioned_buffer_and_write_task(
                     shard_idx,
                 );
 
-                // TODO(6.2.8): Add partition-aware checkpoint check
-                // For now, resumed_shards uses global indices which won't match
-                // partition-specific indices. Full support added in task 6.2.8.
+                // TODO(6.2.8f): Add partition-aware checkpoint check
+                // Use resumed_checkpoint.resumed_indices_for_partition(Some(&partition_value))
+                // to get per-partition indices for skip logic
 
                 state.record_completion(
                     &partition_value,
@@ -1197,8 +1210,8 @@ fn partitioned_buffer_and_write_task(
             }
         }
 
-        // Suppress unused warning (partition checkpoint support in task 6.2.8)
-        let _ = &resumed_shards;
+        // Suppress unused warning (partition checkpoint support in task 6.2.8f)
+        let _ = &resumed_checkpoint;
 
         PolarsResult::Ok(())
     })
@@ -1231,7 +1244,7 @@ fn upload_shard_task(
     mut completion_tx: Sender<ShardCompletion>,
     lfs_client: LfsClient,
     upload_executor: UploadExecutor,
-    #[allow(unused_variables)] resumed_shards: Arc<HashSet<usize>>,
+    #[allow(unused_variables)] resumed_checkpoint: Option<Arc<CheckpointState>>,
     repo_id: String,
     base_path_in_repo: String,
     checkpoint_path: Option<std::path::PathBuf>,
@@ -1379,8 +1392,8 @@ pub struct HfSinkNode {
     completion_rx: Option<Receiver<ShardCompletion>>,
     /// Handle to await upload task completion
     upload_task: Option<JoinHandle<PolarsResult<()>>>,
-    /// Shard indices already uploaded (from checkpoint), wrapped in Arc for cheap cloning
-    resumed_shards: Arc<HashSet<usize>>,
+    /// Checkpoint state for partition-aware resume logic (wrapped in Arc for cheap cloning)
+    resumed_checkpoint: Option<Arc<CheckpointState>>,
     /// Shard completions from checkpoint, for including in final commit
     resumed_completions: Vec<ShardCompletion>,
     /// Collected shard completions for metrics (populated in finalize)
@@ -1413,7 +1426,7 @@ impl HfSinkNode {
             shard_tx: None,
             completion_rx: None,
             upload_task: None,
-            resumed_shards: Arc::new(HashSet::new()),
+            resumed_checkpoint: None,
             resumed_completions: Vec::new(),
             shard_completions: Arc::new(Mutex::new(Vec::new())),
         })
@@ -1450,8 +1463,8 @@ impl SinkNode for HfSinkNode {
 
     fn initialize(&mut self, _state: &StreamingExecutionState) -> PolarsResult<()> {
         // 0. Load checkpoint state (if any) for resumable uploads
-        let (resumed_shards, resumed_completions) = load_checkpoint_state(&self.options)?;
-        self.resumed_shards = Arc::new(resumed_shards);
+        let (resumed_checkpoint, resumed_completions) = load_checkpoint_state(&self.options)?;
+        self.resumed_checkpoint = resumed_checkpoint.map(Arc::new);
         self.resumed_completions = resumed_completions;
 
         // 1. Resolve HF token (required for writes)
@@ -1477,7 +1490,7 @@ impl SinkNode for HfSinkNode {
             completion_tx,
             lfs_client,
             upload_executor,
-            Arc::clone(&self.resumed_shards),
+            self.resumed_checkpoint.clone(),
             self.options.repo_id.clone(),
             self.options.path_in_repo.clone(),
             self.options.checkpoint_path.clone(),
@@ -1512,7 +1525,7 @@ impl SinkNode for HfSinkNode {
                 shard_tx,
                 Arc::clone(&self.options),
                 self.input_schema.clone(),
-                Arc::clone(&self.resumed_shards),
+                self.resumed_checkpoint.clone(),
             )
         } else {
             buffer_and_write_task(
@@ -1520,7 +1533,7 @@ impl SinkNode for HfSinkNode {
                 shard_tx,
                 Arc::clone(&self.options),
                 self.input_schema.clone(),
-                Arc::clone(&self.resumed_shards),
+                self.resumed_checkpoint.clone(),
             )
         };
 
@@ -2262,7 +2275,7 @@ mod tests {
             completion_tx: Sender<ShardCompletion>,
             lfs_client: LfsClient,
             upload_executor: UploadExecutor,
-            resumed_shards: Arc<HashSet<usize>>,
+            resumed_checkpoint: Option<Arc<CheckpointState>>,
             repo_id: String,
             base_path_in_repo: String,
             checkpoint_path: Option<std::path::PathBuf>,
@@ -2273,7 +2286,7 @@ mod tests {
                 completion_tx,
                 lfs_client,
                 upload_executor,
-                resumed_shards,
+                resumed_checkpoint,
                 repo_id,
                 base_path_in_repo,
                 checkpoint_path,
@@ -2814,6 +2827,7 @@ dataset_info:
         let mut checkpoint = CheckpointState::new("user/test-repo", "data/train", None);
         checkpoint.add_shard(ShardCheckpoint {
             index: 0,
+            partition_value: None,
             path_in_repo: "data/train-00000.parquet".into(),
             sha256: "abc123def456".into(),
             size: 1000,
@@ -2868,6 +2882,7 @@ dataset_info:
         for idx in [0, 2, 5] {
             checkpoint.add_shard(ShardCheckpoint {
                 index: idx,
+                partition_value: None,
                 path_in_repo: format!("data/train-{:05}.parquet", idx),
                 sha256: format!("hash{}", idx),
                 size: 1000,
