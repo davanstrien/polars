@@ -967,7 +967,43 @@ fn partitioned_buffer_and_write_task(
                         },
                     }
 
-                    // TODO(6.2.5c.3): Per-partition batch writing when buffer >= chunk_size
+                    // Per-partition batch writing when buffer >= chunk_size
+                    let buf = buffers.get_mut(&partition_value).unwrap();
+                    while buf.height() >= chunk_size {
+                        // 1. Split off chunk_size rows
+                        let (batch_df, remainder) = buf.split_at(chunk_size as i64);
+                        *buf = remainder;
+
+                        // 2. Get or create writer for this partition
+                        if !writers.contains_key(&partition_value) {
+                            let writer = create_shard_writer(&schema, &options)?;
+
+                            // Notify progress callback of shard start
+                            if let Some(ref progress) = options.progress {
+                                let shard_idx = state.peek_next_index(&partition_value);
+                                let path = partitioned_shard_path(
+                                    &options.path_in_repo,
+                                    partition_col,
+                                    &partition_value,
+                                    &options.split,
+                                    shard_idx,
+                                );
+                                progress.on_shard_start(state.peek_global_index(), &path);
+                            }
+
+                            writers.insert(partition_value.clone(), writer);
+                            shard_rows.insert(partition_value.clone(), 0);
+                        }
+                        let writer = writers.get_mut(&partition_value).unwrap();
+
+                        // 3. Convert DataFrame to RecordBatch and write
+                        let batch = df_to_record_batch(batch_df, &schema)?;
+                        writer.write_batch(batch)?;
+
+                        // 4. Update row count for this partition's shard
+                        *shard_rows.get_mut(&partition_value).unwrap() += chunk_size;
+                    }
+
                     // TODO(6.2.5c.4): Per-partition shard rotation when shard >= max_rows
                 }
 
@@ -980,16 +1016,7 @@ fn partitioned_buffer_and_write_task(
         // TODO(6.2.5c.5): Final flush for all partitions
 
         // Suppress unused warnings for now (variables will be used in subsequent tasks)
-        let _ = (
-            &state,
-            &mut writers,
-            &mut shard_rows,
-            chunk_size,
-            &mut shard_tx,
-            &resumed_shards,
-            &schema,
-            &options,
-        );
+        let _ = (&mut shard_tx, &resumed_shards);
 
         PolarsResult::Ok(())
     })
