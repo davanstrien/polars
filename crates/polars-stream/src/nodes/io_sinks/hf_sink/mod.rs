@@ -361,6 +361,36 @@ pub fn partitioned_shard_path(
     )
 }
 
+/// Extract partition value from a Hive-style path.
+///
+/// Looks for a path segment matching `{partition_col}={value}` and returns the value.
+///
+/// # Arguments
+/// * `path` - Full path like "data/split=train/train-00000.parquet"
+/// * `partition_col` - Column name to look for (e.g., "split")
+///
+/// # Returns
+/// * `Some(value)` if found (e.g., "train")
+/// * `None` if no matching segment found
+///
+/// # Examples
+/// ```ignore
+/// assert_eq!(
+///     extract_partition_from_path("data/split=train/train-00000.parquet", "split"),
+///     Some("train".to_string())
+/// );
+/// assert_eq!(
+///     extract_partition_from_path("data/train-00000.parquet", "split"),
+///     None
+/// );
+/// ```
+fn extract_partition_from_path(path: &str, partition_col: &str) -> Option<String> {
+    let pattern = format!("{}=", partition_col);
+    path.split('/')
+        .find_map(|segment| segment.strip_prefix(&pattern))
+        .map(String::from)
+}
+
 /// Hive default partition value for null partition keys.
 ///
 /// Used when a partition column contains null values, following the Hive convention.
@@ -605,22 +635,60 @@ fn renumber_for_append(
     existing: &[ExistingFile],
     split: &str,
     path_in_repo: &str,
+    partition_col: Option<&str>,
 ) {
-    // Find max existing shard index from files matching our split pattern
-    let max_existing_idx = existing
-        .iter()
-        .filter_map(|f| parse_shard_index(&f.path, split))
-        .max();
+    match partition_col {
+        None => {
+            // Non-partitioned: existing behavior
+            let max_existing_idx = existing
+                .iter()
+                .filter_map(|f| parse_shard_index(&f.path, split))
+                .max();
 
-    // If there are existing shards, renumber new shards to start after the max
-    if let Some(max_idx) = max_existing_idx {
-        let start_idx = max_idx + 1;
-        for (i, c) in completions.iter_mut().enumerate() {
-            c.index = start_idx + i;
-            c.path_in_repo = shard_path(path_in_repo, split, c.index);
-        }
+            if let Some(max_idx) = max_existing_idx {
+                let start_idx = max_idx + 1;
+                for (i, c) in completions.iter_mut().enumerate() {
+                    c.index = start_idx + i;
+                    c.path_in_repo = shard_path(path_in_repo, split, c.index);
+                }
+            }
+        },
+        Some(col) => {
+            // Partitioned: renumber per-partition independently
+            use std::collections::HashMap;
+
+            // Build map of partition_value -> max existing index
+            let mut max_by_partition: HashMap<String, usize> = HashMap::new();
+            for f in existing {
+                if let Some(pv) = extract_partition_from_path(&f.path, col) {
+                    if let Some(idx) = parse_shard_index(&f.path, split) {
+                        max_by_partition
+                            .entry(pv)
+                            .and_modify(|m| *m = (*m).max(idx))
+                            .or_insert(idx);
+                    }
+                }
+            }
+
+            // Build map of partition_value -> next index to assign
+            let mut next_by_partition: HashMap<String, usize> = max_by_partition
+                .into_iter()
+                .map(|(pv, max)| (pv, max + 1))
+                .collect();
+
+            // Renumber each completion based on its partition
+            for c in completions.iter_mut() {
+                if let Some(pv) = extract_partition_from_path(&c.path_in_repo, col) {
+                    // Get next index for this partition (or 0 if no existing)
+                    let next_idx = next_by_partition.entry(pv.clone()).or_insert(0);
+                    c.index = *next_idx;
+                    c.path_in_repo = partitioned_shard_path(path_in_repo, col, &pv, split, c.index);
+                    *next_idx += 1;
+                }
+                // If partition can't be extracted, leave unchanged (shouldn't happen)
+            }
+        },
     }
-    // If no existing shards match the pattern, keep original numbering (starting at 0)
 }
 
 /// Builds the README.md commit operation for dataset card updates.
@@ -1561,7 +1629,13 @@ impl SinkNode for HfSinkNode {
                 let first_idx_before = completions.first().map(|c| c.index);
 
                 // Use extracted helper function
-                renumber_for_append(&mut completions, &existing, &options.split, &options.path_in_repo);
+                renumber_for_append(
+                    &mut completions,
+                    &existing,
+                    &options.split,
+                    &options.path_in_repo,
+                    options.partition_col.as_deref(),
+                );
 
                 // Log if renumbering occurred
                 if config::verbose() {
@@ -2294,7 +2368,7 @@ mod tests {
             },
         ];
 
-        renumber_for_append(&mut completions, &existing, "train", "data");
+        renumber_for_append(&mut completions, &existing, "train", "data", None);
 
         // Should start from index 2 (max existing is 1)
         assert_eq!(completions[0].index, 2);
@@ -2313,7 +2387,7 @@ mod tests {
             num_rows: 100,
         }];
 
-        renumber_for_append(&mut completions, &[], "train", "data");
+        renumber_for_append(&mut completions, &[], "train", "data", None);
 
         // No existing files: indices stay the same
         assert_eq!(completions[0].index, 0);
@@ -2341,7 +2415,7 @@ mod tests {
             num_rows: 100,
         }];
 
-        renumber_for_append(&mut completions, &existing, "train", "data");
+        renumber_for_append(&mut completions, &existing, "train", "data", None);
 
         // "train" split doesn't match "test" files, so no renumbering
         assert_eq!(completions[0].index, 0);
@@ -2373,11 +2447,155 @@ mod tests {
             num_rows: 100,
         }];
 
-        renumber_for_append(&mut completions, &existing, "train", "data");
+        renumber_for_append(&mut completions, &existing, "train", "data", None);
 
         // Should start from 6 (max existing is 5)
         assert_eq!(completions[0].index, 6);
         assert_eq!(completions[0].path_in_repo, "data/train-00006.parquet");
+    }
+
+    // ========================================================================
+    // Tests for Task 6.2.7: Partitioned renumber_for_append
+    // ========================================================================
+
+    #[test]
+    fn test_extract_partition_from_path() {
+        // Standard case
+        assert_eq!(
+            extract_partition_from_path("data/split=train/train-00000.parquet", "split"),
+            Some("train".to_string())
+        );
+
+        // Different partition column
+        assert_eq!(
+            extract_partition_from_path("output/date=2024-01-20/train-00005.parquet", "date"),
+            Some("2024-01-20".to_string())
+        );
+
+        // No partition in path
+        assert_eq!(
+            extract_partition_from_path("data/train-00000.parquet", "split"),
+            None
+        );
+
+        // Wrong partition column name
+        assert_eq!(
+            extract_partition_from_path("data/split=train/train-00000.parquet", "date"),
+            None
+        );
+
+        // Nested paths
+        assert_eq!(
+            extract_partition_from_path("deep/nested/path/lang=en/train-00000.parquet", "lang"),
+            Some("en".to_string())
+        );
+    }
+
+    #[test]
+    fn test_renumber_for_append_partitioned_single_partition() {
+        // Existing files for one partition
+        let existing = vec![
+            ExistingFile {
+                path: "data/split=train/train-00000.parquet".to_string(),
+                size: 1000,
+            },
+            ExistingFile {
+                path: "data/split=train/train-00001.parquet".to_string(),
+                size: 2000,
+            },
+        ];
+        let mut completions = vec![ShardCompletion {
+            index: 0,
+            path_in_repo: "data/split=train/train-00000.parquet".to_string(),
+            sha256: "a".repeat(64),
+            size: 500,
+            num_rows: 100,
+        }];
+
+        renumber_for_append(&mut completions, &existing, "train", "data", Some("split"));
+
+        // Should start from index 2 (max existing is 1)
+        assert_eq!(completions[0].index, 2);
+        assert_eq!(
+            completions[0].path_in_repo,
+            "data/split=train/train-00002.parquet"
+        );
+    }
+
+    #[test]
+    fn test_renumber_for_append_partitioned_multiple_partitions() {
+        // Existing files for multiple partitions
+        let existing = vec![
+            ExistingFile {
+                path: "data/split=train/train-00000.parquet".to_string(),
+                size: 1000,
+            },
+            ExistingFile {
+                path: "data/split=train/train-00002.parquet".to_string(),
+                size: 1000,
+            },
+            ExistingFile {
+                path: "data/split=test/train-00000.parquet".to_string(),
+                size: 1000,
+            },
+        ];
+        let mut completions = vec![
+            ShardCompletion {
+                index: 0,
+                path_in_repo: "data/split=train/train-00000.parquet".to_string(),
+                sha256: "a".repeat(64),
+                size: 500,
+                num_rows: 100,
+            },
+            ShardCompletion {
+                index: 0,
+                path_in_repo: "data/split=test/train-00000.parquet".to_string(),
+                sha256: "b".repeat(64),
+                size: 600,
+                num_rows: 200,
+            },
+        ];
+
+        renumber_for_append(&mut completions, &existing, "train", "data", Some("split"));
+
+        // Train partition: max existing is 2, so starts at 3
+        assert_eq!(completions[0].index, 3);
+        assert_eq!(
+            completions[0].path_in_repo,
+            "data/split=train/train-00003.parquet"
+        );
+
+        // Test partition: max existing is 0, so starts at 1
+        assert_eq!(completions[1].index, 1);
+        assert_eq!(
+            completions[1].path_in_repo,
+            "data/split=test/train-00001.parquet"
+        );
+    }
+
+    #[test]
+    fn test_renumber_for_append_partitioned_new_partition() {
+        // Existing files for one partition, new completion for different partition
+        let existing = vec![ExistingFile {
+            path: "data/split=train/train-00005.parquet".to_string(),
+            size: 1000,
+        }];
+        let mut completions = vec![ShardCompletion {
+            index: 0,
+            path_in_repo: "data/split=validation/train-00000.parquet".to_string(),
+            sha256: "a".repeat(64),
+            size: 500,
+            num_rows: 100,
+        }];
+
+        renumber_for_append(&mut completions, &existing, "train", "data", Some("split"));
+
+        // validation partition has no existing files, starts at 0
+        assert_eq!(completions[0].index, 0);
+        assert_eq!(
+            completions[0].path_in_repo,
+            "data/split=validation/train-00000.parquet"
+        );
     }
 
     // ========================================================================
