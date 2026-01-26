@@ -12,7 +12,9 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
 ✅ Task 6.3 (Progress Reporting) complete - all subtasks done
-🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.8e complete, 6.2.8f next
+✅ Task 6.2.S (Smoke Test) complete - real HF Hub Parquet push validated
+🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.8e complete
+🔥 Task 6.2.8f - NEXT: Update partitioned buffer task resume check
 ```
 
 **Build Status:**
@@ -23,7 +25,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink # 60 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (152 commits ahead of main, local only)
+**Branch:** `feature/hf-hub-sink` (153 commits ahead of main, local only)
 
 ---
 
@@ -35,16 +37,27 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 - **File:** `cloud/hf/checkpoint.rs` ✅
 - All 10 subtasks complete including integration tests
 
-**Task 6.2: Partitioned Write Support** 🔄 In Progress
-- Subtask 6.2.1 complete: `partition_col` field added to `HfSinkOptions`
-- Subtask 6.2.2 complete: `partitioned_shard_path()` helper function added
-- Subtask 6.2.3 complete: `PartitionWriterState` struct added
-- Subtask 6.2.4 complete: `extract_partition_value()` and `partition_dataframe()` helpers
-- Subtask 6.2.5 complete: `partitioned_buffer_and_write_task()` with dispatch in `spawn_sink()`
-- Subtask 6.2.6 complete: `upload_shard_task` already uses pre-computed paths from `ShardToUpload`
-- Subtask 6.2.7 complete: `renumber_for_append()` now handles partitioned paths correctly
-- Current: 6.2.8 - Update checkpoint for partitioned writes (10 subtasks)
-- Next: 6.2.8f - Update partitioned buffer task resume check
+**Task 6.2.S: Smoke Test (Real HF Hub Push)** ✅ Complete
+- **Goal:** Validate core streaming pipeline works end-to-end with real HF Hub
+- **Test repo:** `davanstrien/test-polars-streaming`
+- **Result:** Successfully pushed 100-row Parquet file via LFS + atomic commit
+- **Bug found & fixed:** `CommitInfo.oid` needed `#[serde(rename = "commitOid")]` - HF Hub API returns `commitOid` not `oid`
+- **Validated components:**
+  - ✅ Token resolution (`get_hf_token`)
+  - ✅ DataFrame → Parquet encoding (`ParquetWriter` + `MmapBuffer`)
+  - ✅ SHA256 hashing (`sha256_to_hex`)
+  - ✅ LFS batch API (`LfsClient::request_upload`)
+  - ✅ S3 presigned upload (`UploadExecutor::upload`)
+  - ✅ Atomic commit (`CommitClient::create_commit`)
+
+**Task 6.2: Partitioned Write Support** 🔄 In Progress (15/19 subtasks done)
+- Subtasks 6.2.1-6.2.7 complete: Core partitioned write infrastructure
+- Subtask 6.2.8a-e, 6.2.8g-h complete: Checkpoint partition awareness
+- **After smoke test:**
+  - 6.2.8f - Update partitioned buffer task resume check (~30 LOC)
+  - 6.2.8i - Unit tests for partition-aware checkpoint
+  - 6.2.8j - Integration tests for partitioned checkpoint
+  - 6.2.11 - Integration tests for partitioned writes
 - Hive-style paths: `data/{partition_col}={value}/train-00000.parquet`
 
 **Task 6.3: Progress Reporting** ✅ Complete
@@ -358,6 +371,39 @@ if let Some(ref checkpoint_path) = options.checkpoint_path {
 }
 ```
 
+### Task 6.2.S: Smoke Test (Real HF Hub Push) ✅ COMPLETE
+
+#### Overview
+Validated the core write pipeline works end-to-end by pushing real Parquet data to HF Hub.
+
+#### Test Repository
+- **Repo:** `davanstrien/test-polars-streaming`
+- **URL:** https://huggingface.co/datasets/davanstrien/test-polars-streaming
+
+#### What Was Tested
+- Created 100-row DataFrame with 3 columns (id, text, timestamp)
+- Wrote to Parquet format using `ParquetWriter` + `MmapBuffer`
+- Computed SHA256 hash of Parquet bytes
+- Requested LFS upload URL via `LfsClient::request_upload()`
+- Uploaded to S3 presigned URL via `UploadExecutor::upload()`
+- Created atomic commit via `CommitClient::create_commit()`
+
+#### Results
+- **Parquet size:** 1,607 bytes
+- **Transfer type:** Basic (small file, single PUT)
+- **Commit:** https://huggingface.co/datasets/davanstrien/test-polars-streaming/commit/867df2b12bd19a81fa2b7aba861bf92726283cf0
+
+#### Bug Found & Fixed
+`CommitInfo.oid` field needed `#[serde(rename = "commitOid")]` - HF Hub API returns `commitOid` not `oid` in the JSON response.
+
+#### Success Criteria (All Met)
+- [x] No panics during execution
+- [x] LFS upload succeeds (presigned URL works)
+- [x] Commit API returns success
+- [x] File appears on HF Hub with correct content
+
+---
+
 ### Task 6.2: Partitioned Write Support [IN PROGRESS]
 
 #### Overview
@@ -549,16 +595,24 @@ def test_streaming_upload(hf_test_repo):
 ## Progress Checklist
 
 - [x] **Phases 0-5:** Foundation through Commit Coordination ✅
-- [ ] **Phase 6:** Advanced Features (2.1/3) ← Current Priority
+- [ ] **Phase 6:** Advanced Features (2.5/3) ← Current Priority
   - [x] Task 6.1: Checkpoint System ✅
-  - [ ] Task 6.2: Partitioned Write Support (13/17 subtasks, 6.2.8f next) 🔄
+  - [x] Task 6.2.S: Smoke Test (Real HF Hub Push) ✅
+  - [ ] Task 6.2: Partitioned Write Support (15/19 subtasks) 🔄
   - [x] Task 6.3: Progress Reporting ✅
 - [ ] **Phase 7:** Python Bindings (0/3) ← After Phase 6
 - [ ] **Phase 8:** Testing (0/4)
 - [ ] **Phase 9:** Documentation (0/4)
 
-**Status:** 6/9 phases complete. Rust implementation functional with checkpoint and progress support.
-**Next:** Task 6.2.8f - Update partitioned buffer task resume check.
+**Status:** 6/9 phases complete. Rust implementation functional with checkpoint, progress, and validated HF Hub integration.
+
+**Task Order:**
+1. ✅ **Task 6.2.S** - Smoke test real HF Hub push (validated, bug fixed)
+2. 🔥 **Task 6.2.8f** - Partitioned buffer task resume check
+3. **Task 6.2.8h** - Add partition_col mismatch validation
+4. **Task 6.2.8i-j** - Partition checkpoint tests
+5. **Task 6.2.11** - Partitioned write integration tests
+6. **Phase 7** - Python bindings
 
 ---
 

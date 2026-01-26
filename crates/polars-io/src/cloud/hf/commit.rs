@@ -164,6 +164,7 @@ pub struct CommitInfo {
     pub commit_url: String,
 
     /// Git commit SHA (40-character hex string)
+    #[serde(rename = "commitOid")]
     pub oid: String,
 
     /// PR URL if `create_pr=true` was used
@@ -1142,3 +1143,4 @@ mod tests_disabled {
         assert!(url_with_pr.ends_with("?create_pr=1"));
     }
 }
+
