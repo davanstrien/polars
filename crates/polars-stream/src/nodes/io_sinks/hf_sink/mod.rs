@@ -1433,13 +1433,24 @@ impl SinkNode for HfSinkNode {
             .expect("initialize() must be called before spawn_sink()");
 
         // Spawn the buffer-and-write task that processes morsels and writes to shards
-        let task = buffer_and_write_task(
-            recv_port_rx,
-            shard_tx,
-            Arc::clone(&self.options),
-            self.input_schema.clone(),
-            Arc::clone(&self.resumed_shards),
-        );
+        // Dispatch to partitioned or non-partitioned implementation based on options
+        let task = if self.options.partition_col.is_some() {
+            partitioned_buffer_and_write_task(
+                recv_port_rx,
+                shard_tx,
+                Arc::clone(&self.options),
+                self.input_schema.clone(),
+                Arc::clone(&self.resumed_shards),
+            )
+        } else {
+            buffer_and_write_task(
+                recv_port_rx,
+                shard_tx,
+                Arc::clone(&self.options),
+                self.input_schema.clone(),
+                Arc::clone(&self.resumed_shards),
+            )
+        };
 
         join_handles.push(task);
     }
