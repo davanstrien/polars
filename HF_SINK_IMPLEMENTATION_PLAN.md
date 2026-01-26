@@ -13,8 +13,8 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
 ✅ Task 6.3 (Progress Reporting) complete - all subtasks done
 ✅ Task 6.2.S (Smoke Test) complete - real HF Hub Parquet push validated
-🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.8f complete
-🔥 Task 6.2.8h - NEXT: Add partition_col mismatch validation
+🔄 Task 6.2 (Partitioned Writes) in progress - 6.2.8i complete
+🔥 Task 6.2.8j - NEXT: Integration tests for partitioned checkpoint
 ```
 
 **Build Status:**
@@ -50,12 +50,12 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
   - ✅ S3 presigned upload (`UploadExecutor::upload`)
   - ✅ Atomic commit (`CommitClient::create_commit`)
 
-**Task 6.2: Partitioned Write Support** 🔄 In Progress (16/19 subtasks done)
+**Task 6.2: Partitioned Write Support** 🔄 In Progress (18/19 subtasks done)
 - Subtasks 6.2.1-6.2.7 complete: Core partitioned write infrastructure
 - Subtask 6.2.8a-f, 6.2.8g complete: Checkpoint partition awareness
 - **After smoke test:**
   - ✅ 6.2.8f - Update partitioned buffer task resume check (~30 LOC)
-  - 6.2.8h - Add partition_col mismatch validation
+  - ✅ 6.2.8h - Add partition_col mismatch validation (already implemented in load_checkpoint_state)
   - 6.2.8i - Unit tests for partition-aware checkpoint
   - 6.2.8j - Integration tests for partitioned checkpoint
   - 6.2.11 - Integration tests for partitioned writes
@@ -439,8 +439,8 @@ Support Hive-style partitioned writes: `data/{partition_col}={value}/train-00000
 |   6.2.8e | Update non-partitioned buffer task resume check | ✅ Complete |
 |   6.2.8f | Update partitioned buffer task resume check | ✅ Complete |
 |   6.2.8g | Update `upload_shard_task()` to save partition info | ✅ Complete |
-|   6.2.8h | Add partition_col mismatch validation | Pending |
-|   6.2.8i | Unit tests for partition-aware checkpoint | Pending |
+|   6.2.8h | Add partition_col mismatch validation | ✅ Complete |
+|   6.2.8i | Unit tests for partition-aware checkpoint | ✅ Complete |
 |   6.2.8j | Integration tests for partitioned checkpoint | Pending |
 | **6.2.9** | Wire partitioned path in `HfSinkNode::spawn_sink()` | Pending |
 | **6.2.10** | Unit tests for partitioned paths and state | Pending |
@@ -610,8 +610,9 @@ def test_streaming_upload(hf_test_repo):
 **Task Order:**
 1. ✅ **Task 6.2.S** - Smoke test real HF Hub push (validated, bug fixed)
 2. ✅ **Task 6.2.8f** - Partitioned buffer task resume check
-3. 🔥 **Task 6.2.8h** - Add partition_col mismatch validation
-4. **Task 6.2.8i-j** - Partition checkpoint tests
+3. ✅ **Task 6.2.8h** - Add partition_col mismatch validation (already implemented)
+4. ✅ **Task 6.2.8i** - Unit tests for partition-aware checkpoint
+5. 🔥 **Task 6.2.8j** - Integration tests for partitioned checkpoint
 5. **Task 6.2.11** - Partitioned write integration tests
 6. **Phase 7** - Python bindings
 

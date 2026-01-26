@@ -441,4 +441,34 @@ mod tests {
         let none_indices = state.resumed_indices_for_partition(None);
         assert!(none_indices.is_empty());
     }
+
+    #[test]
+    fn test_checkpoint_partition_col_backward_compat() {
+        // Test that old JSON without partition_col still deserializes (backward compat)
+        let json = r#"{
+            "version": 1,
+            "repo_id": "user/dataset",
+            "path_in_repo": "data/train",
+            "completed_shards": []
+        }"#;
+        let state: CheckpointState = serde_json::from_str(json).unwrap();
+        assert!(state.partition_col.is_none());
+        assert_eq!(state.repo_id, "user/dataset");
+        assert_eq!(state.path_in_repo, "data/train");
+    }
+
+    #[test]
+    fn test_checkpoint_partition_col_roundtrip() {
+        // Test that partition_col is preserved through save/load
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("checkpoint.json");
+
+        let checkpoint = CheckpointState::new("user/dataset", "data", Some("split".to_string()));
+        checkpoint.save(&path).unwrap();
+
+        let loaded = CheckpointState::load(&path).unwrap().unwrap();
+        assert_eq!(loaded.partition_col, Some("split".to_string()));
+        assert_eq!(loaded.repo_id, "user/dataset");
+        assert_eq!(loaded.path_in_repo, "data");
+    }
 }
