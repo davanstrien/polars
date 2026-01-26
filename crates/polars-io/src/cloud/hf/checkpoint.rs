@@ -73,6 +73,21 @@ impl CheckpointState {
         self.completed_shards.iter().map(|s| s.index).collect()
     }
 
+    /// Returns indices of completed shards for a specific partition.
+    ///
+    /// - For partitioned writes: pass `Some("train")`, `Some("test")`, etc.
+    /// - For non-partitioned writes: pass `None`
+    ///
+    /// This enables partition-aware resume logic where each partition
+    /// maintains its own shard index sequence (0, 1, 2, ...).
+    pub fn resumed_indices_for_partition(&self, partition_value: Option<&str>) -> HashSet<usize> {
+        self.completed_shards
+            .iter()
+            .filter(|s| s.partition_value.as_deref() == partition_value)
+            .map(|s| s.index)
+            .collect()
+    }
+
     /// Save checkpoint to disk atomically (write .tmp, then rename).
     pub fn save(&self, path: &Path) -> PolarsResult<()> {
         use std::fs;
@@ -376,5 +391,54 @@ mod tests {
             loaded.completed_shards[2].partition_value,
             Some("test".to_string())
         );
+    }
+
+    #[test]
+    fn test_resumed_indices_for_partition() {
+        let mut state = CheckpointState::new("user/repo", "data/train", Some("split".to_string()));
+
+        // Add shards for "train" partition
+        state.completed_shards.push(ShardCheckpoint {
+            index: 0,
+            partition_value: Some("train".to_string()),
+            path_in_repo: "data/split=train/train-00000.parquet".to_string(),
+            sha256: "aaa".to_string(),
+            size: 100,
+            num_rows: 10,
+        });
+        state.completed_shards.push(ShardCheckpoint {
+            index: 1,
+            partition_value: Some("train".to_string()),
+            path_in_repo: "data/split=train/train-00001.parquet".to_string(),
+            sha256: "bbb".to_string(),
+            size: 100,
+            num_rows: 10,
+        });
+
+        // Add shards for "test" partition
+        state.completed_shards.push(ShardCheckpoint {
+            index: 0,
+            partition_value: Some("test".to_string()),
+            path_in_repo: "data/split=test/test-00000.parquet".to_string(),
+            sha256: "ccc".to_string(),
+            size: 50,
+            num_rows: 5,
+        });
+
+        // Test: "train" partition has indices 0, 1
+        let train_indices = state.resumed_indices_for_partition(Some("train"));
+        assert_eq!(train_indices, HashSet::from([0, 1]));
+
+        // Test: "test" partition has index 0
+        let test_indices = state.resumed_indices_for_partition(Some("test"));
+        assert_eq!(test_indices, HashSet::from([0]));
+
+        // Test: non-existent partition has no indices
+        let other_indices = state.resumed_indices_for_partition(Some("validation"));
+        assert!(other_indices.is_empty());
+
+        // Test: None (non-partitioned) has no matches
+        let none_indices = state.resumed_indices_for_partition(None);
+        assert!(none_indices.is_empty());
     }
 }
