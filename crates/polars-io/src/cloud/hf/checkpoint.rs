@@ -16,8 +16,12 @@ pub const CHECKPOINT_VERSION: u32 = 1;
 /// Mirrors `ShardCompletion` from hf_sink but is serde-enabled for persistence.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShardCheckpoint {
-    /// Shard index (0, 1, 2, ...)
+    /// Shard index (0, 1, 2, ...) - per-partition for partitioned writes
     pub index: usize,
+    /// Partition value for partitioned writes (e.g., "train" for split=train).
+    /// None for non-partitioned writes.
+    #[serde(default)]
+    pub partition_value: Option<String>,
     /// Path in the repository (e.g., "data/train-00000.parquet")
     pub path_in_repo: String,
     /// SHA256 hash of the file (lowercase hex, 64 characters)
@@ -158,6 +162,7 @@ mod tests {
         let mut checkpoint = CheckpointState::new("user/test-repo", "data/train");
         checkpoint.add_shard(ShardCheckpoint {
             index: 0,
+            partition_value: None,
             path_in_repo: "data/train-00000.parquet".to_string(),
             sha256: "abc123".to_string(),
             size: 1024,
@@ -165,6 +170,7 @@ mod tests {
         });
         checkpoint.add_shard(ShardCheckpoint {
             index: 1,
+            partition_value: None,
             path_in_repo: "data/train-00001.parquet".to_string(),
             sha256: "def456".to_string(),
             size: 2048,
@@ -193,6 +199,7 @@ mod tests {
 
         checkpoint.add_shard(ShardCheckpoint {
             index: 5,
+            partition_value: None,
             path_in_repo: "data/train-00005.parquet".to_string(),
             sha256: "abc".to_string(),
             size: 100,
@@ -208,6 +215,7 @@ mod tests {
         let mut checkpoint = CheckpointState::new("user/repo", "data");
         checkpoint.add_shard(ShardCheckpoint {
             index: 0,
+            partition_value: None,
             path_in_repo: "p0".to_string(),
             sha256: "a".to_string(),
             size: 1,
@@ -215,6 +223,7 @@ mod tests {
         });
         checkpoint.add_shard(ShardCheckpoint {
             index: 2,
+            partition_value: None,
             path_in_repo: "p2".to_string(),
             sha256: "b".to_string(),
             size: 2,
@@ -222,6 +231,7 @@ mod tests {
         });
         checkpoint.add_shard(ShardCheckpoint {
             index: 5,
+            partition_value: None,
             path_in_repo: "p5".to_string(),
             sha256: "c".to_string(),
             size: 3,
@@ -274,5 +284,92 @@ mod tests {
         // Verify no .tmp file left behind
         let tmp_path = path.with_extension("tmp");
         assert!(!tmp_path.exists());
+    }
+
+    #[test]
+    fn test_checkpoint_partition_value_backward_compat() {
+        // Test that old JSON without partition_value still deserializes (backward compat)
+        let json = r#"{
+            "index": 0,
+            "path_in_repo": "data/train-00000.parquet",
+            "sha256": "abc123",
+            "size": 1024,
+            "num_rows": 100
+        }"#;
+        let shard: ShardCheckpoint = serde_json::from_str(json).unwrap();
+        assert!(shard.partition_value.is_none());
+        assert_eq!(shard.index, 0);
+        assert_eq!(shard.path_in_repo, "data/train-00000.parquet");
+    }
+
+    #[test]
+    fn test_checkpoint_partition_value_roundtrip() {
+        // Test that partition_value is preserved through serialization
+        let shard = ShardCheckpoint {
+            index: 0,
+            partition_value: Some("train".to_string()),
+            path_in_repo: "data/split=train/train-00000.parquet".to_string(),
+            sha256: "abc123".to_string(),
+            size: 1024,
+            num_rows: 100,
+        };
+        let json = serde_json::to_string(&shard).unwrap();
+        let loaded: ShardCheckpoint = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.partition_value, Some("train".to_string()));
+        assert_eq!(loaded.index, 0);
+        assert_eq!(loaded.path_in_repo, "data/split=train/train-00000.parquet");
+    }
+
+    #[test]
+    fn test_checkpoint_full_roundtrip_with_partition() {
+        // Test full checkpoint save/load with partitioned shards
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("checkpoint.json");
+
+        let mut checkpoint = CheckpointState::new("user/dataset", "data");
+
+        // Add a non-partitioned shard
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 0,
+            partition_value: None,
+            path_in_repo: "data/train-00000.parquet".to_string(),
+            sha256: "aaa".to_string(),
+            size: 100,
+            num_rows: 10,
+        });
+
+        // Add partitioned shards
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 0,
+            partition_value: Some("train".to_string()),
+            path_in_repo: "data/split=train/train-00000.parquet".to_string(),
+            sha256: "bbb".to_string(),
+            size: 200,
+            num_rows: 20,
+        });
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 0,
+            partition_value: Some("test".to_string()),
+            path_in_repo: "data/split=test/test-00000.parquet".to_string(),
+            sha256: "ccc".to_string(),
+            size: 300,
+            num_rows: 30,
+        });
+
+        // Save and reload
+        checkpoint.save(&path).unwrap();
+        let loaded = CheckpointState::load(&path).unwrap().unwrap();
+
+        // Verify all shards preserved with correct partition values
+        assert_eq!(loaded.completed_shards.len(), 3);
+        assert_eq!(loaded.completed_shards[0].partition_value, None);
+        assert_eq!(
+            loaded.completed_shards[1].partition_value,
+            Some("train".to_string())
+        );
+        assert_eq!(
+            loaded.completed_shards[2].partition_value,
+            Some("test".to_string())
+        );
     }
 }
