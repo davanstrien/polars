@@ -2598,6 +2598,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         data_page_size: int | None = None,
         maintain_order: bool = True,
         storage_options: dict[str, Any] | None = None,
+        hf_options: dict[str, str] | None = None,
         credential_provider: CredentialProviderFunction
         | Literal["auto"]
         | None = "auto",
@@ -2626,6 +2627,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         data_page_size: int | None = None,
         maintain_order: bool = True,
         storage_options: dict[str, Any] | None = None,
+        hf_options: dict[str, str] | None = None,
         credential_provider: CredentialProviderFunction
         | Literal["auto"]
         | None = "auto",
@@ -2653,6 +2655,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         data_page_size: int | None = None,
         maintain_order: bool = True,
         storage_options: dict[str, Any] | None = None,
+        hf_options: dict[str, str] | None = None,
         credential_provider: CredentialProviderFunction
         | Literal["auto"]
         | None = "auto",
@@ -2733,6 +2736,21 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
 
             If `storage_options` is not provided, Polars will try to infer the
             information from environment variables.
+        hf_options
+            Options specific to HuggingFace Hub when writing to `hf://` URLs.
+            Supported options:
+
+            * ``split``: Dataset split name (default: derived from filename)
+            * ``mode``: Write mode - ``"error_if_exists"``, ``"overwrite"``, ``"append"``
+            * ``max_shard_size``: Maximum shard size in bytes (default: 500MB)
+            * ``commit_message``: Custom commit message
+            * ``create_pr``: ``"true"`` to create a pull request instead of direct commit
+            * ``partition_col``: Column name for Hive-style partitioning
+            * ``update_card``: ``"true"`` to auto-generate/update dataset README
+
+            .. warning::
+                This functionality is considered **unstable**. It may be changed at any
+                point without it being considered a breaking change.
         credential_provider
             Provide a function that can be called to provide cloud storage
             credentials. The function is expected to return a dictionary of
@@ -2904,6 +2922,9 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
             ),
             credential_provider=credential_provider_builder,
             retries=retries,
+            hf_options=(
+                list(hf_options.items()) if hf_options is not None else None
+            ),
         )
 
         ldf_py = self._ldf.sink_parquet(
