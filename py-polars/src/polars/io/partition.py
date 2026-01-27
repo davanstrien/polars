@@ -178,6 +178,9 @@ class _SinkOptions:
     credential_provider: CredentialProviderBuilder | None = None
     retries: int = 2
 
+    # HF Hub specific
+    hf_options: list[tuple[str, str]] | None = None
+
 
 def _parse_to_pyexpr_list(
     exprs_or_columns: str | Expr | Sequence[str | Expr] | Mapping[str, Expr],
