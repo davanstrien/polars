@@ -3102,6 +3102,49 @@ dataset_info:
         assert!(none_indices.is_empty());
     }
 
+    #[test]
+    fn test_partitioned_checkpoint_deleted_on_success() {
+        use polars_io::cloud::hf::checkpoint::{CheckpointState, ShardCheckpoint};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let ckpt_path = dir.path().join("checkpoint.json");
+
+        // Create partitioned checkpoint with partition_col="split"
+        let mut checkpoint = CheckpointState::new(
+            "user/test-repo",
+            "data/train",
+            Some("split".to_string()),
+        );
+
+        // Add shards from multiple partitions (simulating in-progress write)
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 0,
+            partition_value: Some("train".to_string()),
+            path_in_repo: "data/split=train/train-00000.parquet".to_string(),
+            sha256: "abc123".to_string(),
+            size: 1024,
+            num_rows: 100,
+        });
+        checkpoint.add_shard(ShardCheckpoint {
+            index: 0,
+            partition_value: Some("test".to_string()),
+            path_in_repo: "data/split=test/test-00000.parquet".to_string(),
+            sha256: "def456".to_string(),
+            size: 512,
+            num_rows: 50,
+        });
+
+        checkpoint.save(&ckpt_path).unwrap();
+        assert!(ckpt_path.exists());
+
+        // Delete (as finalize() does after successful commit)
+        CheckpointState::delete(&ckpt_path).unwrap();
+
+        // Verify removed
+        assert!(!ckpt_path.exists());
+    }
+
     // =========================================================================
     // Progress Callback Tests
     // =========================================================================
