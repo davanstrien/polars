@@ -367,6 +367,7 @@ pub fn lower_ir(
                     maintain_order,
                     sync_on_close,
                     cloud_options,
+                    hf_options: _,
                 } = unified_sink_args.clone();
 
                 let sink_options = SinkOptions {

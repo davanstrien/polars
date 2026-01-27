@@ -44,6 +44,7 @@ pub fn start_partition_sink_pipeline(
                 maintain_order: _,
                 sync_on_close,
                 cloud_options,
+                hf_options: _,
             },
         input_schema: _,
     } = config

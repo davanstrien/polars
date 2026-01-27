@@ -38,6 +38,7 @@ pub fn start_single_file_sink_pipeline(
                 maintain_order: _,
                 sync_on_close,
                 cloud_options,
+                hf_options: _,
             },
         input_schema,
     } = config

@@ -52,6 +52,7 @@ impl PySinkOptions<'_> {
             maintain_order,
             sync_on_close,
             cloud_options: cloud_options.map(Arc::new),
+            hf_options: None,
         };
 
         Ok(unified_sink_args)

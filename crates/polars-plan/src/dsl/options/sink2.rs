@@ -49,6 +49,9 @@ pub struct UnifiedSinkArgs {
     pub maintain_order: bool,
     pub sync_on_close: SyncOnCloseType,
     pub cloud_options: Option<Arc<CloudOptions>>,
+    /// HF-specific sink options (split, mode, max_shard_size, etc.)
+    /// Passed from Python as list of (key, value) string pairs.
+    pub hf_options: Option<Vec<(String, String)>>,
 }
 
 impl Default for UnifiedSinkArgs {
@@ -58,6 +61,7 @@ impl Default for UnifiedSinkArgs {
             maintain_order: true,
             sync_on_close: SyncOnCloseType::None,
             cloud_options: None,
+            hf_options: None,
         }
     }
 }
