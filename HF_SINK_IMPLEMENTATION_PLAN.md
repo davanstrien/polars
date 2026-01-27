@@ -9,17 +9,9 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ## Current Status (2026-01-27)
 
 ```
-✅ Phases 0-5 complete (Foundation, Core Writer, LFS Protocol, Streaming, Coordination)
-✅ Task 6.1 (Checkpoint System) complete - all 10 subtasks done
-✅ Task 6.3 (Progress Reporting) complete - all subtasks done
-✅ Task 6.2.S (Smoke Test) complete - real HF Hub Parquet push validated
-✅ Task 6.2.8 (Checkpoint partition support) complete - all 10 subtasks done
-✅ Task 6.2.9 (Wire partitioned path) complete - spawn_sink() dispatch implemented
-✅ Task 6.2.10 (Unit tests) complete - 20+ tests for partitioned paths/state
-✅ Task 6.2 (Partitioned Writes) complete - all 24 subtasks done
-✅ Task 6.2.11a - Multi-partition progress callback integration test
-✅ Task 6.2.11b - PartitionWriterState finalize test (3 tests)
-✅ Task 6.2.11c - Checkpoint with partition_col deletion test
+✅ Phases 0-6 complete (Foundation → Advanced Features)
+✅ Phase 6 complete - Checkpoint, Partitioned Writes, Progress Reporting
+✅ Task 7.1.1 complete - Wire HF token from storage_options to HfSinkOptions
 ```
 
 **Build Status:**
@@ -36,46 +28,19 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ## What's Next
 
-### Phase 6: Advanced Features (Current Priority)
+### Phase 7: Python Bindings (Current Priority)
+
+**Task 7.1.1: Wire HF Token** ✅ Complete
+- Added `CloudOptions::hf_token()` helper method in `cloud/options.rs`
+- Updated `to_graph.rs` to extract token from `cloud_options` and pass to `HfSinkOptions`
+- 4 unit tests for token extraction, 68 HF sink tests pass
+
+### Phase 6: Advanced Features ✅ Complete
 
 **Task 6.1: Checkpoint System** ✅ Complete
-- **File:** `cloud/hf/checkpoint.rs` ✅
-- All 10 subtasks complete including integration tests
-
-**Task 6.2.S: Smoke Test (Real HF Hub Push)** ✅ Complete
-- **Goal:** Validate core streaming pipeline works end-to-end with real HF Hub
-- **Test repo:** `davanstrien/test-polars-streaming`
-- **Result:** Successfully pushed 100-row Parquet file via LFS + atomic commit
-- **Bug found & fixed:** `CommitInfo.oid` needed `#[serde(rename = "commitOid")]` - HF Hub API returns `commitOid` not `oid`
-- **Validated components:**
-  - ✅ Token resolution (`get_hf_token`)
-  - ✅ DataFrame → Parquet encoding (`ParquetWriter` + `MmapBuffer`)
-  - ✅ SHA256 hashing (`sha256_to_hex`)
-  - ✅ LFS batch API (`LfsClient::request_upload`)
-  - ✅ S3 presigned upload (`UploadExecutor::upload`)
-  - ✅ Atomic commit (`CommitClient::create_commit`)
-
-**Task 6.2: Partitioned Write Support** ✅ Complete (24/24 subtasks done)
-- Subtasks 6.2.1-6.2.10 complete: Core partitioned write infrastructure + tests
-- Subtask 6.2.8a-j complete: Checkpoint partition awareness + tests
-- Subtask 6.2.11a complete: Multi-partition progress callbacks integration test
-- **Remaining:**
-  - 🔥 6.2.11b - PartitionWriterState finalize test
-  - 6.2.11c - Checkpoint with partition_col deletion test
-- Hive-style paths: `data/{partition_col}={value}/train-00000.parquet`
-
+**Task 6.2: Partitioned Write Support** ✅ Complete (24/24 subtasks)
+**Task 6.2.S: Smoke Test** ✅ Complete (real HF Hub push validated)
 **Task 6.3: Progress Reporting** ✅ Complete
-- `get_metrics()` returning WriteMetrics
-- `UploadProgress` callbacks for real-time progress
-- TestProgress helper + multi-shard test added (6.3.6a-c complete)
-
-### Phase 7: Python Bindings (After Phase 6)
-
-Expose `sink_parquet("hf://...")` to users:
-- **File:** `py-polars/src/cloud/hf.rs` (new)
-- PyO3 bindings for HfSinkOptions
-- Detect `hf://` prefix in sink_parquet
-- Pass storage_options for auth
 
 ---
 
@@ -544,20 +509,30 @@ pub trait SinkProgress: Send + Sync {
 
 ## Phase 7: Python Bindings
 
-### Task 7.1: PyO3 Bindings [ ]
-**File:** `py-polars/src/cloud/hf.rs`
+### Task 7.1: Wire Python Options to HfSinkOptions [IN PROGRESS]
 
-```python
-lf.sink_parquet(
-    "hf://datasets/user/repo/data/train.parquet",
-    hf_options={"split": "train", "max_shard_size": "500MB"},
-    storage_options={"token": "hf_xxx"},
-)
-```
+#### Overview
+Enable `storage_options` and HF-specific options to flow from Python through to `HfSinkOptions`.
+
+#### Subtasks
+| Subtask | Description | Status |
+|---------|-------------|--------|
+| **7.1.1** | Wire HF token from CloudOptions to HfSinkOptions in to_graph.rs | ✅ Complete |
+| **7.1.2** | Add `hf_options` parameter for HF-specific options (future) | [ ] |
+| **7.1.3** | Update sink_parquet docstrings to document HF support | [ ] |
+
+#### Task 7.1.1: Wire HF Token
+**Goal:** Enable `storage_options={"token": "hf_xxx"}` to work with `sink_parquet("hf://...")`
+
+**Files to Modify:**
+- `crates/polars-io/src/cloud/options.rs` - Add `CloudOptions::hf_token()` helper
+- `crates/polars-stream/src/physical_plan/to_graph.rs` - Extract token and pass to HfSinkOptions
+
+**Current Gap:** `unified_sink_args.cloud_options` contains the token but isn't being passed to `HfSinkOptions`.
 
 ### Task 7.2: sink_parquet Integration [ ]
-- Detect `hf://` prefix
-- Pass options to HfSinkNode
+- Detect `hf://` prefix (already done in lower_ir.rs)
+- Pass options to HfSinkNode (7.1.1 handles token, 7.1.2 handles other options)
 
 ### Task 7.3: write_parquet Integration [ ]
 - `df.write_parquet("hf://...")` convenience

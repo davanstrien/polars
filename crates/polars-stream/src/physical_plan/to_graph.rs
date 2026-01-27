@@ -367,7 +367,14 @@ fn to_graph_rec<'a>(
             };
 
             // Build HfSinkOptions from URL
-            let hf_options = HfSinkOptions::from_url(url)?;
+            let mut hf_options = HfSinkOptions::from_url(url)?;
+
+            // Extract HF token from cloud_options if present (from storage_options={"token": "..."})
+            if let Some(ref cloud_opts) = unified_sink_args.cloud_options {
+                if let Some(token) = cloud_opts.hf_token() {
+                    hf_options.token = Some(token);
+                }
+            }
 
             // Extract SinkOptions from UnifiedSinkArgs
             let sink_options = SinkOptions {

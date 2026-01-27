@@ -259,6 +259,22 @@ impl CloudOptions {
         self
     }
 
+    /// Extract HF token from HTTP Authorization header if present.
+    ///
+    /// Used by HF sink to get the token from `storage_options`.
+    /// Returns the raw token without the "Bearer " prefix.
+    #[cfg(feature = "http")]
+    pub fn hf_token(&self) -> Option<String> {
+        if let Some(CloudConfig::Http { headers }) = &self.config {
+            for (key, value) in headers {
+                if key == "Authorization" {
+                    return value.strip_prefix("Bearer ").map(String::from);
+                }
+            }
+        }
+        None
+    }
+
     #[cfg(feature = "cloud")]
     pub fn with_credential_provider(
         mut self,
@@ -732,5 +748,51 @@ mod tests {
             AmazonS3ConfigKey::SecretAccessKey
         );
         assert_eq!(aws_keys.len(), 1);
+    }
+}
+
+#[cfg(feature = "http")]
+#[cfg(test)]
+mod hf_token_tests {
+    use super::{CloudConfig, CloudOptions};
+
+    #[test]
+    fn test_hf_token_extraction() {
+        let opts = CloudOptions {
+            config: Some(CloudConfig::Http {
+                headers: vec![("Authorization".into(), "Bearer hf_test123".into())],
+            }),
+            ..Default::default()
+        };
+        assert_eq!(opts.hf_token(), Some("hf_test123".to_string()));
+    }
+
+    #[test]
+    fn test_hf_token_extraction_no_auth() {
+        let opts = CloudOptions::default();
+        assert_eq!(opts.hf_token(), None);
+    }
+
+    #[test]
+    fn test_hf_token_extraction_wrong_header() {
+        let opts = CloudOptions {
+            config: Some(CloudConfig::Http {
+                headers: vec![("X-Custom-Header".into(), "some_value".into())],
+            }),
+            ..Default::default()
+        };
+        assert_eq!(opts.hf_token(), None);
+    }
+
+    #[test]
+    fn test_hf_token_extraction_no_bearer_prefix() {
+        let opts = CloudOptions {
+            config: Some(CloudConfig::Http {
+                headers: vec![("Authorization".into(), "Basic abc123".into())],
+            }),
+            ..Default::default()
+        };
+        // Should return None because it's not a Bearer token
+        assert_eq!(opts.hf_token(), None);
     }
 }
