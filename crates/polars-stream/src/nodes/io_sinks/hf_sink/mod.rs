@@ -3984,6 +3984,151 @@ dataset_info:
     }
 
     // =========================================================================
+    // Tests for Task 6.2.11b: PartitionWriterState finalize integration
+    // =========================================================================
+
+    /// Task 6.2.11b: Test that partitioned completions convert to commit operations correctly
+    #[test]
+    fn test_partitioned_completions_to_commit_ops() {
+        let mut state = PartitionWriterState::new();
+
+        // Record completions for train partition (2 shards)
+        state.record_completion(
+            "train",
+            ShardCompletion {
+                index: 0,
+                path_in_repo: "data/split=train/train-00000.parquet".to_string(),
+                sha256: "a".repeat(64),
+                size: 1000,
+                num_rows: 100,
+            },
+        );
+        state.record_completion(
+            "train",
+            ShardCompletion {
+                index: 1,
+                path_in_repo: "data/split=train/train-00001.parquet".to_string(),
+                sha256: "b".repeat(64),
+                size: 1500,
+                num_rows: 150,
+            },
+        );
+
+        // Record completion for test partition (1 shard)
+        state.record_completion(
+            "test",
+            ShardCompletion {
+                index: 0,
+                path_in_repo: "data/split=test/test-00000.parquet".to_string(),
+                sha256: "c".repeat(64),
+                size: 800,
+                num_rows: 80,
+            },
+        );
+
+        // Convert completions to commit ops (like finalize does at line 1716)
+        let completions = state.all_completions();
+        let add_ops: Vec<CommitOperation> = completions
+            .iter()
+            .map(|c| {
+                CommitOperation::Add(CommitOperationAdd::lfs(&c.path_in_repo, &c.sha256, c.size))
+            })
+            .collect();
+
+        // Verify all 3 shards become commit operations
+        assert_eq!(add_ops.len(), 3);
+
+        // Verify paths contain partition structure
+        let paths: Vec<String> = completions.iter().map(|c| c.path_in_repo.clone()).collect();
+        assert!(paths.iter().filter(|p| p.contains("split=train")).count() == 2);
+        assert!(paths.iter().filter(|p| p.contains("split=test")).count() == 1);
+
+        // Verify totals for commit message
+        let total_rows: usize = completions.iter().map(|c| c.num_rows).sum();
+        let total_bytes: u64 = completions.iter().map(|c| c.size).sum();
+        assert_eq!(total_rows, 330);
+        assert_eq!(total_bytes, 3300);
+    }
+
+    /// Task 6.2.11b: Test delete operations for Overwrite mode with partitioned files
+    #[test]
+    fn test_partitioned_overwrite_delete_ops() {
+        // Existing partitioned files to delete
+        let existing = vec![
+            ExistingFile {
+                path: "data/split=train/train-00000.parquet".to_string(),
+                size: 1000,
+            },
+            ExistingFile {
+                path: "data/split=train/train-00001.parquet".to_string(),
+                size: 1000,
+            },
+            ExistingFile {
+                path: "data/split=test/test-00000.parquet".to_string(),
+                size: 500,
+            },
+        ];
+
+        let delete_ops = create_delete_operations(existing);
+
+        assert_eq!(delete_ops.len(), 3);
+        assert!(delete_ops
+            .iter()
+            .any(|op| op.path_in_repo.contains("split=train/train-00000")));
+        assert!(delete_ops
+            .iter()
+            .any(|op| op.path_in_repo.contains("split=train/train-00001")));
+        assert!(delete_ops
+            .iter()
+            .any(|op| op.path_in_repo.contains("split=test/test-00000")));
+    }
+
+    /// Task 6.2.11b: Test commit message generation reflects correct totals across partitions
+    #[test]
+    fn test_partitioned_finalize_commit_message() {
+        let mut state = PartitionWriterState::new();
+
+        // Record completions for multiple partitions
+        state.record_completion(
+            "train",
+            ShardCompletion {
+                index: 0,
+                path_in_repo: "data/split=train/train-00000.parquet".to_string(),
+                sha256: "a".repeat(64),
+                size: 1_000_000, // 1MB
+                num_rows: 10_000,
+            },
+        );
+        state.record_completion(
+            "test",
+            ShardCompletion {
+                index: 0,
+                path_in_repo: "data/split=test/test-00000.parquet".to_string(),
+                sha256: "b".repeat(64),
+                size: 500_000, // 0.5MB
+                num_rows: 5_000,
+            },
+        );
+
+        let completions = state.all_completions();
+        let total_rows: usize = completions.iter().map(|c| c.num_rows).sum();
+        let total_bytes: u64 = completions.iter().map(|c| c.size).sum();
+
+        // Simulate commit message generation (like finalize at line 1755)
+        let description = format!(
+            "Uploaded {} shard(s) with {} rows ({:.2} MB)",
+            completions.len(),
+            total_rows,
+            total_bytes as f64 / (1024.0 * 1024.0)
+        );
+
+        // Verify message includes totals from BOTH partitions
+        assert!(description.contains("2 shard(s)"));
+        assert!(description.contains("15000 rows"));
+        assert!(description.contains("1.43 MB")); // (1_000_000 + 500_000) / 1024 / 1024
+    }
+
+    // =========================================================================
     // Tests for Partition Extraction (Task 6.2.4)
     // =========================================================================
 
