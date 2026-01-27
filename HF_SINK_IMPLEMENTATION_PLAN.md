@@ -19,10 +19,11 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
 ✅ cargo test -p polars-io checkpoint --features hf_sink  # 10 checkpoint tests pass
+✅ cargo test -p polars-io hf_token --features hf_sink,http  # 4 token extraction tests pass
 ✅ cargo test -p polars-stream --features hf_sink hf_sink # 68 tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (231 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (232 commits ahead of main)
 
 ---
 
@@ -600,7 +601,10 @@ def test_streaming_upload(hf_test_repo):
 9. ✅ **Task 6.2.11b** - PartitionWriterState finalize test (3 tests)
 10. ✅ **Task 6.2.11c** - Checkpoint with partition_col deletion test
 
-**Next:** Phase 7 - Python bindings
+**Completed Task Order (Phase 7):**
+1. ✅ **Task 7.1.1** - Wire HF token from storage_options to HfSinkOptions (4 unit tests)
+
+**Next:** Task 7.1.2 - Add hf_options parameter for HF-specific options
 
 ---
 
