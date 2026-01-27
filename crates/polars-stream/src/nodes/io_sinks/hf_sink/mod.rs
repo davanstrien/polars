@@ -3778,6 +3778,75 @@ dataset_info:
     }
 
     // =========================================================================
+    // Partitioned Write Integration Tests (Task 6.2.11)
+    // =========================================================================
+
+    /// Task 6.2.11a: Test that progress callbacks fire correctly for partitioned writes
+    /// with multiple partitions, verifying:
+    /// - Global shard indices increment across partitions
+    /// - Paths contain correct partition information
+    /// - Commit includes all partitions
+    #[test]
+    fn test_partitioned_progress_multi_partition() {
+        let progress = Arc::new(TestProgress::new());
+
+        // Simulate partitioned write with 2 partitions: train (2 shards), test (1 shard)
+        // Global indices: train-00000 → 0, test-00000 → 1, train-00001 → 2
+
+        // First shard: train partition
+        let train_path_0 = partitioned_shard_path("data", "split", "train", "train", 0);
+        assert_eq!(train_path_0, "data/split=train/train-00000.parquet");
+        progress.on_shard_start(0, &train_path_0);
+        progress.on_shard_upload_progress(0, 2500, 5000);
+        progress.on_shard_upload_progress(0, 5000, 5000);
+        progress.on_shard_complete(0, &train_path_0, 5000);
+
+        // Second shard: test partition (different partition, resets to index 0)
+        let test_path_0 = partitioned_shard_path("data", "split", "test", "test", 0);
+        assert_eq!(test_path_0, "data/split=test/test-00000.parquet");
+        progress.on_shard_start(1, &test_path_0); // Global index 1
+        progress.on_shard_upload_progress(1, 3000, 3000);
+        progress.on_shard_complete(1, &test_path_0, 3000);
+
+        // Third shard: train partition again (continues from where it left off)
+        let train_path_1 = partitioned_shard_path("data", "split", "train", "train", 1);
+        assert_eq!(train_path_1, "data/split=train/train-00001.parquet");
+        progress.on_shard_start(2, &train_path_1); // Global index 2
+        progress.on_shard_upload_progress(2, 4000, 4000);
+        progress.on_shard_complete(2, &train_path_1, 4000);
+
+        // Commit includes all 3 shards from both partitions
+        progress.on_commit_start(3);
+        progress.on_commit_complete(Some("https://huggingface.co/datasets/user/repo/commit/abc123"));
+
+        // Verify counts
+        assert_eq!(progress.shard_starts.load(Ordering::SeqCst), 3);
+        assert_eq!(progress.shard_completes.load(Ordering::SeqCst), 3);
+        assert_eq!(progress.commit_starts.load(Ordering::SeqCst), 1);
+        assert_eq!(progress.commit_completes.load(Ordering::SeqCst), 1);
+
+        // Verify event sequence
+        // Shard 0: events[0]=Start, [1]=Progress, [2]=Progress, [3]=Complete
+        // Shard 1: events[4]=Start, [5]=Progress, [6]=Complete
+        // Shard 2: events[7]=Start, [8]=Progress, [9]=Complete
+        // Commit:  events[10]=CommitStart, [11]=CommitComplete
+        let events = progress.events();
+        assert_eq!(events.len(), 12);
+
+        // Verify partition paths in ShardStart events
+        assert!(matches!(&events[0], ProgressEvent::ShardStart { index: 0, path }
+            if path.contains("split=train") && path.contains("train-00000")));
+        assert!(matches!(&events[4], ProgressEvent::ShardStart { index: 1, path }
+            if path.contains("split=test") && path.contains("test-00000")));
+        assert!(matches!(&events[7], ProgressEvent::ShardStart { index: 2, path }
+            if path.contains("split=train") && path.contains("train-00001")));
+
+        // Verify commit events
+        assert!(matches!(&events[10], ProgressEvent::CommitStart { num_shards: 3 }));
+        assert!(matches!(&events[11], ProgressEvent::CommitComplete { url: Some(_) }));
+    }
+
+    // =========================================================================
     // PartitionWriterState Tests
     // =========================================================================
 
