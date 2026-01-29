@@ -30,7 +30,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ❌ Python E2E test - FAILS (hf_sink feature not wired through)
 ```
 
-**Branch:** `feature/hf-hub-sink` (250 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (252 commits ahead of main)
 
 ---
 
