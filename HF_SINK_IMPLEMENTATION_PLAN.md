@@ -11,13 +11,9 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ```
 ✅ Phases 0-6 complete (Foundation → Advanced Features)
 ✅ Phase 6 complete - Checkpoint, Partitioned Writes, Progress Reporting
-✅ Task 7.1.1 complete - Wire HF token from storage_options to HfSinkOptions
-✅ Task 7.1.2d complete - Add hf_options field to UnifiedSinkArgs
-✅ Task 7.1.2a complete - Add hf_options to Python _SinkOptions dataclass
-✅ Task 7.1.2b complete - Add hf_options param to sink_parquet (+ docstring)
-✅ Task 7.1.2c complete - Extract hf_options in Rust PyO3 bridge
-✅ Task 7.1.2e complete - Wire hf_options to HfSinkOptions in to_graph.rs
-✅ Task 7.1.2f complete - Add unit tests for apply_key_value_options (12 tests)
+✅ Task 7.1 complete - Wire Python Options to HfSinkOptions
+✅ Task 7.2 complete - sink_parquet Integration (code complete, tested via 7.1)
+✅ Task 7.3 complete - write_parquet Integration (hf_options parameter added)
 ```
 
 **Build Status:**
@@ -158,12 +154,16 @@ Enable `storage_options` and HF-specific options to flow from Python through to 
 
 **Current Gap:** `unified_sink_args.cloud_options` contains the token but isn't being passed to `HfSinkOptions`.
 
-### Task 7.2: sink_parquet Integration [ ]
-- Detect `hf://` prefix (already done in lower_ir.rs)
-- Pass options to HfSinkNode (7.1.1 handles token, 7.1.2 handles other options)
+### Task 7.2: sink_parquet Integration ✅ Complete
+- Detect `hf://` prefix (done in lower_ir.rs)
+- Pass options to HfSinkNode (7.1.1 handles token, 7.1.2 handles hf_options)
+- Full flow: Python → PyO3 bridge → lower_ir.rs → to_graph.rs → HfSinkNode
 
-### Task 7.3: write_parquet Integration [ ]
-- `df.write_parquet("hf://...")` convenience
+### Task 7.3: write_parquet Integration ✅ Complete
+- Added `hf_options` parameter to `write_parquet()` in dataframe/frame.py
+- Parameter passed through to `sink_parquet()` (which already supports HF)
+- Added PyArrow + hf:// validation (raises ValueError)
+- Added docstring documentation and HF Hub example
 
 ---
 
@@ -210,13 +210,16 @@ def test_streaming_upload(hf_test_repo):
   - [x] Task 6.2.S: Smoke Test (Real HF Hub Push) ✅
   - [x] Task 6.2: Partitioned Write Support ✅
   - [x] Task 6.3: Progress Reporting ✅
-- [ ] **Phase 7:** Python Bindings (1/3 tasks: Task 7.1 ✅) ← Current Priority
-- [ ] **Phase 8:** Testing (0/4)
+- [x] **Phase 7:** Python Bindings ✅ Complete
+  - [x] Task 7.1: Wire Python Options to HfSinkOptions ✅
+  - [x] Task 7.2: sink_parquet Integration ✅
+  - [x] Task 7.3: write_parquet Integration ✅
+- [ ] **Phase 8:** Testing (0/4) ← Current Priority
 - [ ] **Phase 9:** Documentation (0/4)
 
-**Status:** 6/9 phases complete. Rust implementation fully functional. Task 7.1 (Python options wiring) complete.
+**Status:** 7/9 phases complete. Full Python API (sink_parquet + write_parquet) now supports HF Hub.
 
-**Next:** Task 7.2 - sink_parquet Integration (verify end-to-end flow)
+**Next:** Phase 8 - Testing (unit tests, integration tests, E2E tests)
 
 ---
 

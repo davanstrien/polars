@@ -3989,6 +3989,7 @@ class DataFrame:
         partition_by: str | Sequence[str] | None = None,
         partition_chunk_size_bytes: int = 4_294_967_296,
         storage_options: dict[str, Any] | None = None,
+        hf_options: dict[str, str] | None = None,
         credential_provider: (
             CredentialProviderFunction | Literal["auto"] | None
         ) = "auto",
@@ -4070,6 +4071,21 @@ class DataFrame:
 
             If `storage_options` is not provided, Polars will try to infer the
             information from environment variables.
+        hf_options
+            Options specific to HuggingFace Hub when writing to `hf://` URLs.
+            Supported options:
+
+            * ``split``: Dataset split name (default: derived from filename)
+            * ``mode``: Write mode - ``"error_if_exists"``, ``"overwrite"``, ``"append"``
+            * ``max_shard_size``: Maximum shard size in bytes (default: 500MB)
+            * ``commit_message``: Custom commit message
+            * ``create_pr``: ``"true"`` to create a pull request instead of direct commit
+            * ``partition_col``: Column name for Hive-style partitioning
+            * ``update_card``: ``"true"`` to auto-generate/update dataset README
+
+            .. warning::
+                This functionality is considered **unstable**. It may be changed at any
+                point without it being considered a breaking change.
         credential_provider
             Provide a function that can be called to provide cloud storage
             credentials. The function is expected to return a dictionary of
@@ -4120,6 +4136,14 @@ class DataFrame:
         ...     use_pyarrow=True,
         ...     pyarrow_options={"partition_cols": ["watermark"]},
         ... )
+
+        Write to Hugging Face Hub:
+
+        >>> df.write_parquet(
+        ...     "hf://datasets/username/my-dataset/data/train.parquet",
+        ...     storage_options={"token": "hf_..."},
+        ...     hf_options={"split": "train"},
+        ... )  # doctest: +SKIP
         """
         if compression is None:
             compression = "uncompressed"
@@ -4140,6 +4164,9 @@ class DataFrame:
                 raise ValueError(msg)
             if mkdir:
                 msg = "write_parquet with `use_pyarrow=True` cannot be combined with `mkdir`"
+                raise ValueError(msg)
+            if isinstance(file, str) and file.startswith("hf://"):
+                msg = "write_parquet with `use_pyarrow=True` does not support hf:// URLs"
                 raise ValueError(msg)
 
             tbl = self.to_arrow()
@@ -4207,6 +4234,7 @@ class DataFrame:
             row_group_size=row_group_size,
             data_page_size=data_page_size,
             storage_options=storage_options,
+            hf_options=hf_options,
             credential_provider=credential_provider,
             retries=retries,
             metadata=metadata,
