@@ -31,6 +31,7 @@ impl PySinkOptions<'_> {
             storage_options: Option<Vec<(String, String)>>,
             credential_provider: Option<Py<PyAny>>,
             retries: usize,
+            hf_options: Option<Vec<(String, String)>>,
         }
 
         let Extract {
@@ -40,6 +41,7 @@ impl PySinkOptions<'_> {
             storage_options,
             credential_provider,
             retries,
+            hf_options,
         } = self.0.extract()?;
 
         let cloud_options =
@@ -52,7 +54,7 @@ impl PySinkOptions<'_> {
             maintain_order,
             sync_on_close,
             cloud_options: cloud_options.map(Arc::new),
-            hf_options: None,
+            hf_options,
         };
 
         Ok(unified_sink_args)
