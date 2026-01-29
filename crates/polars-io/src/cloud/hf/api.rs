@@ -41,7 +41,10 @@ impl GetPages<'_> {
     /// Fetch the next page of results, if any.
     ///
     /// Returns `None` when all pages have been consumed.
-    pub async fn next(&mut self) -> Option<PolarsResult<bytes::Bytes>> {
+    /// Returns `Some(Ok(None))` for 404 responses (path doesn't exist).
+    /// Returns `Some(Ok(Some(bytes)))` for successful responses.
+    /// Returns `Some(Err(...))` for other errors.
+    pub async fn next(&mut self) -> Option<PolarsResult<Option<bytes::Bytes>>> {
         let uri = self.uri.take()?;
 
         Some(
@@ -51,6 +54,18 @@ impl GetPages<'_> {
                 })
                 .await?;
 
+                // Handle 404 - path doesn't exist, return empty
+                if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                    return Ok(None);
+                }
+
+                // Check for other error status codes
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    polars_bail!(ComputeError: "HF API error: {} - {}", status, body);
+                }
+
                 self.uri = resp
                     .headers()
                     .get("link")
@@ -59,7 +74,7 @@ impl GetPages<'_> {
 
                 let resp_bytes = resp.bytes().await.map_err(to_compute_err)?;
 
-                Ok(resp_bytes)
+                Ok(Some(resp_bytes))
             }
             .await,
         )
@@ -134,8 +149,11 @@ pub async fn list_existing_files(
         client,
     };
 
-    while let Some(bytes) = gp.next().await {
-        let bytes = bytes?;
+    while let Some(result) = gp.next().await {
+        let Some(bytes) = result? else {
+            // 404 - path doesn't exist, return empty
+            return Ok(Vec::new());
+        };
         let response: Vec<HFAPIResponse> = decode_json_response(bytes.as_ref())?;
 
         for entry in response {

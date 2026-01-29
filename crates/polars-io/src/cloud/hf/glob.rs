@@ -101,8 +101,11 @@ pub async fn expand_paths_hf(
             client,
         };
 
-        while let Some(bytes) = gp.next().await {
-            let bytes = bytes?;
+        while let Some(result) = gp.next().await {
+            let Some(bytes) = result? else {
+                // 404 - path doesn't exist, break out of the loop
+                break;
+            };
             let response: Vec<HFAPIResponse> = decode_json_response(bytes.as_ref())?;
 
             for entry in response {

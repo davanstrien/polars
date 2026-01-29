@@ -35,6 +35,7 @@ use polars_io::cloud::hf::lfs::client::LfsClient;
 use polars_io::cloud::hf::lfs::upload::UploadExecutor;
 use polars_io::cloud::hf::options::{HfSinkOptions, HfWriteMode};
 use polars_io::cloud::hf::shard_writer::{FinishedShard, HfShardWriter};
+use polars_io::pl_async;
 use polars_io::schema_to_arrow_checked;
 use polars_parquet::write::{
     ColumnWriteOptions, CompressionOptions, Encoding, FieldWriteOptions, StatisticsOptions,
@@ -1263,6 +1264,11 @@ fn partitioned_buffer_and_write_task(
 /// - LFS API request fails
 /// - Upload fails after retries
 /// - Completion channel is closed
+/// Upload shard task - runs HTTP operations in Tokio runtime.
+///
+/// This function spawns the upload loop in the Tokio runtime (via pl_async::get_runtime())
+/// because reqwest HTTP operations require a Tokio reactor. The polars custom async_executor
+/// doesn't provide the Tokio IO drivers needed for HTTP requests.
 #[allow(dead_code)]
 fn upload_shard_task(
     shard_rx: Receiver<ShardToUpload>,
@@ -1275,7 +1281,8 @@ fn upload_shard_task(
     checkpoint_path: Option<std::path::PathBuf>,
     options: Arc<HfSinkOptions>,
 ) -> JoinHandle<PolarsResult<()>> {
-    spawn(TaskPriority::Low, async move {
+    // Spawn the upload loop in Tokio runtime (needed for reqwest HTTP operations)
+    let io_handle = AbortOnDropHandle(pl_async::get_runtime().spawn(async move {
         let mut shard_rx = shard_rx;
 
         while let Ok(shard_to_upload) = shard_rx.recv().await {
@@ -1384,6 +1391,11 @@ fn upload_shard_task(
         }
 
         PolarsResult::Ok(())
+    }));
+
+    // Return a polars executor handle that awaits the Tokio handle
+    spawn(TaskPriority::Low, async move {
+        io_handle.await.unwrap()
     })
 }
 
