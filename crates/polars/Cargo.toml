@@ -97,6 +97,7 @@ aws = ["async", "cloud", "polars-io/aws"]
 http = ["async", "cloud", "polars-io/http"]
 azure = ["async", "cloud", "polars-io/azure"]
 gcp = ["async", "cloud", "polars-io/gcp"]
+hf_sink = ["polars-lazy?/hf_sink", "new_streaming", "cloud"]
 lazy = ["polars-core/lazy", "polars-lazy"]
 # commented out until UB is fixed
 # parallel = ["polars-core/parallel"]

@@ -186,6 +186,7 @@ rle = ["polars/rle"]
 extract_groups = ["polars/extract_groups"]
 ffi_plugin = ["polars-lazy/ffi_plugin"]
 cloud = ["polars/cloud", "polars/aws", "polars/gcp", "polars/azure", "polars/http"]
+hf_sink = ["polars/hf_sink"]
 peaks = ["polars/peaks"]
 hist = ["polars/hist"]
 find_many = ["polars/find_many"]
@@ -262,6 +263,7 @@ io = [
   "csv",
   "scan_lines",
   "cloud",
+  "hf_sink",
   "clipboard",
 ]
 

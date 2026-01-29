@@ -72,6 +72,7 @@ json = [
 ]
 csv = ["polars-io/csv", "polars-plan/csv", "polars-mem-engine/csv", "polars-stream?/csv"]
 scan_lines = ["polars-stream?/scan_lines"]
+hf_sink = ["polars-stream?/hf_sink"]
 temporal = [
   "dtype-datetime",
   "dtype-date",
