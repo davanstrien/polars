@@ -27,7 +27,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-io apply_key_value --features hf_sink  # 12 apply_key_value tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (243 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (244 commits ahead of main)
 
 ---
 
