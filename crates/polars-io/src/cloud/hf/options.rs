@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use polars_error::{PolarsResult, polars_bail};
+use polars_error::{PolarsResult, polars_bail, polars_err};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -79,6 +79,19 @@ pub enum HfWriteMode {
     Overwrite,
     /// Append new shards to existing files, renumbering as needed
     Append,
+}
+
+impl std::str::FromStr for HfWriteMode {
+    type Err = polars_error::PolarsError;
+
+    fn from_str(s: &str) -> PolarsResult<Self> {
+        match s.to_lowercase().as_str() {
+            "error_if_exists" | "errorifexists" => Ok(Self::ErrorIfExists),
+            "overwrite" => Ok(Self::Overwrite),
+            "append" => Ok(Self::Append),
+            _ => polars_bail!(InvalidOperation: "Invalid HfWriteMode: '{}'. Valid options: error_if_exists, overwrite, append", s),
+        }
+    }
 }
 
 /// Configuration options for writing to Hugging Face Hub.
@@ -316,6 +329,50 @@ impl HfSinkOptions {
             .with_revision(parts.revision)
             .with_path_in_repo(parts.path)
             .build()
+    }
+
+    /// Apply options from key-value string pairs (from Python hf_options parameter).
+    ///
+    /// Known keys: split, mode, max_shard_size, max_shard_rows, num_shards,
+    /// commit_message, create_pr, checkpoint_path, upload_concurrency, update_card, partition_col
+    ///
+    /// Unknown keys are silently ignored.
+    pub fn apply_key_value_options(&mut self, opts: &[(String, String)]) -> PolarsResult<()> {
+        for (key, value) in opts {
+            match key.to_lowercase().as_str() {
+                "split" => self.split = value.clone(),
+                "mode" => self.mode = value.parse()?,
+                "max_shard_size" => {
+                    self.max_shard_size = value.parse().map_err(|_| {
+                        polars_err!(InvalidOperation: "Invalid max_shard_size: '{}'. Expected a number in bytes.", value)
+                    })?;
+                },
+                "max_shard_rows" => {
+                    self.max_shard_rows = Some(value.parse().map_err(|_| {
+                        polars_err!(InvalidOperation: "Invalid max_shard_rows: '{}'. Expected a number.", value)
+                    })?);
+                },
+                "num_shards" => {
+                    self.num_shards = Some(value.parse().map_err(|_| {
+                        polars_err!(InvalidOperation: "Invalid num_shards: '{}'. Expected a number.", value)
+                    })?);
+                },
+                "commit_message" => self.commit_message = Some(value.clone()),
+                "create_pr" => self.create_pr = value.to_lowercase() == "true",
+                "checkpoint_path" => {
+                    self.checkpoint_path = Some(std::path::PathBuf::from(value))
+                },
+                "upload_concurrency" => {
+                    self.upload_concurrency = value.parse().map_err(|_| {
+                        polars_err!(InvalidOperation: "Invalid upload_concurrency: '{}'. Expected a number.", value)
+                    })?;
+                },
+                "update_card" => self.update_card = value.to_lowercase() == "true",
+                "partition_col" => self.partition_col = Some(value.clone()),
+                _ => { /* Silently ignore unknown keys */ },
+            }
+        }
+        Ok(())
     }
 }
 
@@ -691,5 +748,179 @@ mod tests {
         let deserialized: HfSinkOptions = serde_json::from_str(&json).unwrap();
 
         assert_eq!(original, deserialized);
+    }
+
+    // --- Tests for apply_key_value_options ---
+
+    #[test]
+    fn test_apply_key_value_options_empty() {
+        let mut opts = HfSinkOptions::default();
+        opts.apply_key_value_options(&[]).unwrap();
+        assert_eq!(opts.split, "train"); // unchanged
+    }
+
+    #[test]
+    fn test_apply_key_value_options_split() {
+        let mut opts = HfSinkOptions::default();
+        opts.apply_key_value_options(&[("split".to_string(), "validation".to_string())])
+            .unwrap();
+        assert_eq!(opts.split, "validation");
+    }
+
+    #[test]
+    fn test_apply_key_value_options_mode_variants() {
+        for (mode_str, expected) in [
+            ("error_if_exists", HfWriteMode::ErrorIfExists),
+            ("errorifexists", HfWriteMode::ErrorIfExists),
+            ("overwrite", HfWriteMode::Overwrite),
+            ("append", HfWriteMode::Append),
+            ("OVERWRITE", HfWriteMode::Overwrite), // case insensitive
+        ] {
+            let mut opts = HfSinkOptions::default();
+            opts.apply_key_value_options(&[("mode".to_string(), mode_str.to_string())])
+                .unwrap();
+            assert_eq!(opts.mode, expected, "mode string: {}", mode_str);
+        }
+    }
+
+    #[test]
+    fn test_apply_key_value_options_mode_invalid() {
+        let mut opts = HfSinkOptions::default();
+        let result =
+            opts.apply_key_value_options(&[("mode".to_string(), "invalid_mode".to_string())]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_apply_key_value_options_numeric_fields() {
+        let mut opts = HfSinkOptions::default();
+        opts.apply_key_value_options(&[
+            ("max_shard_size".to_string(), "1048576".to_string()),
+            ("max_shard_rows".to_string(), "50000".to_string()),
+            ("num_shards".to_string(), "10".to_string()),
+            ("upload_concurrency".to_string(), "8".to_string()),
+        ])
+        .unwrap();
+
+        assert_eq!(opts.max_shard_size, 1048576);
+        assert_eq!(opts.max_shard_rows, Some(50000));
+        assert_eq!(opts.num_shards, Some(10));
+        assert_eq!(opts.upload_concurrency, 8);
+    }
+
+    #[test]
+    fn test_apply_key_value_options_invalid_numeric() {
+        let mut opts = HfSinkOptions::default();
+        assert!(opts
+            .apply_key_value_options(&[(
+                "max_shard_size".to_string(),
+                "not_a_number".to_string()
+            ),])
+            .is_err());
+
+        let mut opts = HfSinkOptions::default();
+        assert!(opts
+            .apply_key_value_options(&[("max_shard_rows".to_string(), "abc".to_string()),])
+            .is_err());
+    }
+
+    #[test]
+    fn test_apply_key_value_options_boolean_fields() {
+        // Test true variations
+        for true_str in ["true", "True", "TRUE"] {
+            let mut opts = HfSinkOptions::default();
+            opts.apply_key_value_options(&[("create_pr".to_string(), true_str.to_string())])
+                .unwrap();
+            assert!(
+                opts.create_pr,
+                "create_pr should be true for '{}'",
+                true_str
+            );
+        }
+
+        // Test false variations
+        for false_str in ["false", "False", "FALSE", "anything_else"] {
+            let mut opts = HfSinkOptions::default();
+            opts.create_pr = true; // start with true
+            opts.apply_key_value_options(&[("create_pr".to_string(), false_str.to_string())])
+                .unwrap();
+            assert!(
+                !opts.create_pr,
+                "create_pr should be false for '{}'",
+                false_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_apply_key_value_options_string_fields() {
+        let mut opts = HfSinkOptions::default();
+        opts.apply_key_value_options(&[
+            ("commit_message".to_string(), "My commit".to_string()),
+            ("partition_col".to_string(), "language".to_string()),
+        ])
+        .unwrap();
+
+        assert_eq!(opts.commit_message, Some("My commit".to_string()));
+        assert_eq!(opts.partition_col, Some("language".to_string()));
+    }
+
+    #[test]
+    fn test_apply_key_value_options_checkpoint_path() {
+        let mut opts = HfSinkOptions::default();
+        opts.apply_key_value_options(&[(
+            "checkpoint_path".to_string(),
+            "/tmp/my_checkpoint.json".to_string(),
+        )])
+        .unwrap();
+
+        assert_eq!(
+            opts.checkpoint_path,
+            Some(PathBuf::from("/tmp/my_checkpoint.json"))
+        );
+    }
+
+    #[test]
+    fn test_apply_key_value_options_unknown_keys_ignored() {
+        let mut opts = HfSinkOptions::default();
+        opts.apply_key_value_options(&[
+            ("unknown_key".to_string(), "some_value".to_string()),
+            ("another_unknown".to_string(), "another_value".to_string()),
+        ])
+        .unwrap();
+        // No error, options unchanged from default
+        assert_eq!(opts.split, "train");
+    }
+
+    #[test]
+    fn test_apply_key_value_options_case_insensitive_keys() {
+        let mut opts = HfSinkOptions::default();
+        opts.apply_key_value_options(&[
+            ("SPLIT".to_string(), "test".to_string()),
+            ("Max_Shard_Size".to_string(), "1000000".to_string()),
+        ])
+        .unwrap();
+
+        assert_eq!(opts.split, "test");
+        assert_eq!(opts.max_shard_size, 1000000);
+    }
+
+    #[test]
+    fn test_apply_key_value_options_multiple_combined() {
+        let mut opts = HfSinkOptions::default();
+        opts.apply_key_value_options(&[
+            ("split".to_string(), "validation".to_string()),
+            ("mode".to_string(), "overwrite".to_string()),
+            ("max_shard_size".to_string(), "100000000".to_string()),
+            ("create_pr".to_string(), "true".to_string()),
+            ("commit_message".to_string(), "Test upload".to_string()),
+        ])
+        .unwrap();
+
+        assert_eq!(opts.split, "validation");
+        assert_eq!(opts.mode, HfWriteMode::Overwrite);
+        assert_eq!(opts.max_shard_size, 100000000);
+        assert!(opts.create_pr);
+        assert_eq!(opts.commit_message, Some("Test upload".to_string()));
     }
 }

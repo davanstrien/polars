@@ -376,6 +376,11 @@ fn to_graph_rec<'a>(
                 }
             }
 
+            // Apply HF-specific options from hf_options parameter
+            if let Some(ref opts) = unified_sink_args.hf_options {
+                hf_options.apply_key_value_options(opts)?;
+            }
+
             // Extract SinkOptions from UnifiedSinkArgs
             let sink_options = SinkOptions {
                 sync_on_close: unified_sink_args.sync_on_close,
