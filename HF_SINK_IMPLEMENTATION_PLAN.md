@@ -6,7 +6,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ---
 
-## Current Status (2026-01-27)
+## Current Status (2026-01-29)
 
 ```
 ✅ Phases 0-6 complete (Foundation → Advanced Features)
@@ -16,6 +16,8 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Task 7.1.2a complete - Add hf_options to Python _SinkOptions dataclass
 ✅ Task 7.1.2b complete - Add hf_options param to sink_parquet (+ docstring)
 ✅ Task 7.1.2c complete - Extract hf_options in Rust PyO3 bridge
+✅ Task 7.1.2e complete - Wire hf_options to HfSinkOptions in to_graph.rs
+✅ Task 7.1.2f complete - Add unit tests for apply_key_value_options (12 tests)
 ```
 
 **Build Status:**
@@ -26,9 +28,10 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-io checkpoint --features hf_sink  # 10 checkpoint tests pass
 ✅ cargo test -p polars-io hf_token --features hf_sink,http  # 4 token extraction tests pass
 ✅ cargo test -p polars-stream --features hf_sink hf_sink # 68 tests pass
+✅ cargo test -p polars-io apply_key_value --features hf_sink  # 12 apply_key_value tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (175 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (243 commits ahead of main)
 
 ---
 
@@ -127,7 +130,7 @@ See [HF_SINK_ARCHIVE.md](./HF_SINK_ARCHIVE.md) for full implementation details.
 
 ## Phase 7: Python Bindings
 
-### Task 7.1: Wire Python Options to HfSinkOptions [IN PROGRESS]
+### Task 7.1: Wire Python Options to HfSinkOptions ✅ Complete
 
 #### Overview
 Enable `storage_options` and HF-specific options to flow from Python through to `HfSinkOptions`.
@@ -136,14 +139,14 @@ Enable `storage_options` and HF-specific options to flow from Python through to 
 | Subtask | Description | Status |
 |---------|-------------|--------|
 | **7.1.1** | Wire HF token from CloudOptions to HfSinkOptions in to_graph.rs | ✅ Complete |
-| **7.1.2** | Add `hf_options` parameter for HF-specific options | 🔄 In Progress |
+| **7.1.2** | Add `hf_options` parameter for HF-specific options | ✅ Complete |
 |   7.1.2d | Add `hf_options` field to `UnifiedSinkArgs` struct | ✅ Complete |
 |   7.1.2a | Add hf_options to Python `_SinkOptions` dataclass | ✅ Complete |
 |   7.1.2b | Add hf_options param to `sink_parquet` | ✅ Complete |
 |   7.1.2c | Extract hf_options in Rust PyO3 bridge | ✅ Complete |
-|   7.1.2e | Wire hf_options to HfSinkOptions in to_graph.rs | [ ] |
-|   7.1.2f | Add unit tests | [ ] |
-|   7.1.2g | Update implementation plan | [ ] |
+|   7.1.2e | Wire hf_options to HfSinkOptions in to_graph.rs | ✅ Complete |
+|   7.1.2f | Add unit tests (12 tests for apply_key_value_options) | ✅ Complete |
+|   7.1.2g | Update implementation plan | ✅ Complete |
 | **7.1.3** | Update sink_parquet docstrings to document HF support | ✅ Complete |
 
 #### Task 7.1.1: Wire HF Token
@@ -207,13 +210,13 @@ def test_streaming_upload(hf_test_repo):
   - [x] Task 6.2.S: Smoke Test (Real HF Hub Push) ✅
   - [x] Task 6.2: Partitioned Write Support ✅
   - [x] Task 6.3: Progress Reporting ✅
-- [ ] **Phase 7:** Python Bindings (1/3 subtasks) ← Current Priority
+- [ ] **Phase 7:** Python Bindings (1/3 tasks: Task 7.1 ✅) ← Current Priority
 - [ ] **Phase 8:** Testing (0/4)
 - [ ] **Phase 9:** Documentation (0/4)
 
-**Status:** 6/9 phases complete. Rust implementation fully functional. Working on Python bindings.
+**Status:** 6/9 phases complete. Rust implementation fully functional. Task 7.1 (Python options wiring) complete.
 
-**Next:** Task 7.1.2e - Wire hf_options to HfSinkOptions in to_graph.rs
+**Next:** Task 7.2 - sink_parquet Integration (verify end-to-end flow)
 
 ---
 
