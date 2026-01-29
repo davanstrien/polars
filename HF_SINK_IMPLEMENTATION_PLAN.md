@@ -9,44 +9,56 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ## Current Status (2026-01-29)
 
 ```
-✅ Phases 0-6 complete (Foundation → Advanced Features)
-🔄 Phase 7 in progress - Python Bindings (Tasks 7.1-7.3 complete, Tasks 7.4.1-7.4.3 done)
-⏳ Task 7.4: Feature Flag Wiring (3/5 subtasks complete - polars-lazy + polars + polars-python done)
-❌ Task 8.2.P BLOCKED - Python E2E test requires Task 7.4 completion
+✅ Phases 0-7 complete (Foundation → Python Bindings)
+✅ Task 7.4: Feature Flag Wiring COMPLETE - Python E2E test PASSES!
+✅ Task 8.2.P: Python E2E Smoke Test COMPLETE
+🔄 Phase 8 in progress - Testing (mock fixtures, integration tests)
 ```
 
-**Critical Finding:** `hf_sink` feature flag is NOT propagated to `polars-python`, causing
-`hf://` URLs to panic with "impl error: unresolved hf:// path".
+**Python E2E Test Result:** Successfully uploaded file to HF Hub:
+- `hf://datasets/davanstrien/test-polars-streaming/data/python-e2e-7.4.5.parquet`
+- LFS OID: `48100f9f117d2d6661d2ac21b0421e4111dcdc7713db07352c1d42808430dd39`
 
 **Build Status:**
 ```bash
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
-✅ cargo check -p polars-python                    # PASSES (but hf_sink NOT enabled!)
+✅ cargo check -p polars-python                    # PASSES (hf_sink enabled via io feature)
 ✅ cargo test -p polars-io checkpoint --features hf_sink  # 10 checkpoint tests pass
 ✅ cargo test -p polars-io hf_token --features hf_sink,http  # 4 token extraction tests pass
 ✅ cargo test -p polars-stream --features hf_sink hf_sink # 79 tests pass (69 + 10 mock)
 ✅ cargo test -p polars-io apply_key_value --features hf_sink  # 12 apply_key_value tests pass
-❌ Python E2E test - FAILS (hf_sink feature not wired through)
+✅ Python E2E test - PASSES (Task 7.4.5 + 8.2.P complete)
 ```
 
-**Branch:** `feature/hf-hub-sink` (252 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (254 commits ahead of main)
 
 ---
 
 ## What's Next
 
-### Task 7.4: Feature Flag Wiring (PRIORITY - BLOCKING PYTHON SUPPORT)
+### Phase 8: Testing
 
-**Next Task:** 7.4.5 - Python E2E Smoke Test
+**Next Task:** 8.2.3c/d - Mock HTTP Fixtures (mock_commit, mock_tree)
+
+With the Python E2E test passing, the priority shifts to building out the mock test infrastructure.
+
+### Task 7.4: Feature Flag Wiring ✅ COMPLETE
 
 The `hf_sink` feature is now fully wired through the dependency chain:
 1. ✅ `polars-lazy/Cargo.toml` - `hf_sink = ["polars-stream?/hf_sink"]` (DONE)
 2. ✅ `polars/Cargo.toml` - `hf_sink = ["polars-lazy?/hf_sink", "new_streaming", "cloud"]` (DONE)
 3. ✅ `polars-python/Cargo.toml` - `hf_sink = ["polars/hf_sink"]` + added to `io` feature (DONE)
-4. N/A `py-polars/pyproject.toml` - Features flow through Cargo.toml, `io` is in `full` which is default
+4. ✅ Python E2E test passes (Task 7.4.5)
 
-See Task 7.4 section below for details.
+**Bugs Fixed During Task 7.4.5:**
+1. **Tokio Runtime Issue** - `upload_shard_task` was spawned in polars' custom executor but needed
+   Tokio for HTTP operations. Fixed by using `pl_async::get_runtime().spawn()` for the upload loop.
+   - File: `crates/polars-stream/src/nodes/io_sinks/hf_sink/mod.rs`
+
+2. **API 404 Handling** - When checking existing files, a 404 response was being parsed as JSON array,
+   causing "expected a sequence" error. Fixed by handling 404 status in `GetPages::next()`.
+   - File: `crates/polars-io/src/cloud/hf/api.rs`
 
 **Task 8.2.3a/b: MockHfHub + mock_lfs_batch + mock_presigned_upload** ✅ Complete
 - Added `MockHfHub` struct wrapping wiremock `MockServer` with builder pattern
@@ -233,7 +245,7 @@ polars-python/hf_sink ✅ (Task 7.4.3 - DONE)
 | **7.4.2** | Add `hf_sink` feature to `polars/Cargo.toml` | ✅ Complete |
 | **7.4.3** | Add `hf_sink` feature to `polars-python/Cargo.toml` | ✅ Complete |
 | **7.4.4** | Enable `hf_sink` in py-polars build (pyproject.toml) | N/A (flows via `io` feature) |
-| **7.4.5** | Re-run Python E2E smoke test (Task 8.2.P) | [ ] |
+| **7.4.5** | Re-run Python E2E smoke test (Task 8.2.P) | ✅ Complete |
 
 **Verification:**
 ```bash
@@ -270,30 +282,31 @@ Mock HTTP integration tests using wiremock to test the full upload pipeline.
 - `crates/polars-stream/Cargo.toml` - Added `wiremock = "0.6"` dev-dependency
 - `crates/polars-stream/src/nodes/io_sinks/hf_sink/mock_tests.rs` - Mock test infrastructure
 
-### Task 8.2.P: Python E2E Smoke Test (Priority) 🔄 BLOCKED
+### Task 8.2.P: Python E2E Smoke Test (Priority) ✅ COMPLETE
 
-**Status:** Blocked by Task 7.4 (Feature Flag Wiring)
+**Status:** ✅ PASSED (2026-01-29)
 
-**Why:** Verify the full Python → Rust → HF Hub pipeline works before building more infrastructure.
-
-**Test:**
+**Test Result:**
 ```python
 import polars as pl
 
 df = pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
 df.write_parquet(
-    "hf://datasets/davanstrien/test-polars-streaming/data/python-e2e-test.parquet",
+    "hf://datasets/davanstrien/test-polars-streaming/data/python-e2e-7.4.5.parquet",
     storage_options={"token": "hf_xxx"}
 )
+# ✅ SUCCESS - File uploaded to HF Hub
 ```
 
-**Result (2026-01-29):** ❌ FAILED with `panic!("impl error: unresolved hf:// path")`
+**Uploaded File:**
+- Path: `data/python-e2e-7.4.5.parquet/train-00000.parquet`
+- Size: 711 bytes
+- LFS OID: `48100f9f117d2d6661d2ac21b0421e4111dcdc7713db07352c1d42808430dd39`
 
-**Root Cause:** The `hf_sink` feature is NOT enabled when building py-polars!
-
-The feature is defined in `polars-io` and `polars-stream`, but not propagated through the dependency chain to `polars-python`. This causes the code at `lower_ir.rs:279` to take the `#[cfg(not(feature = "hf_sink"))]` path, routing `hf://` URLs to `FileSink` instead of `HfSink`.
-
-**Fix Required:** Task 7.4 (Feature Flag Wiring)
+**Issues Fixed:**
+1. Feature flag wiring (Task 7.4) - `hf_sink` now flows through dependency chain
+2. Tokio runtime issue - HTTP tasks now spawn in Tokio, not polars executor
+3. API 404 handling - `GetPages::next()` now returns `None` for 404 responses
 
 ---
 
@@ -327,25 +340,25 @@ def test_streaming_upload(hf_test_repo):
   - [x] Task 6.2.S: Smoke Test (Real HF Hub Push) ✅
   - [x] Task 6.2: Partitioned Write Support ✅
   - [x] Task 6.3: Progress Reporting ✅
-- [ ] **Phase 7:** Python Bindings 🔄 (3/4 tasks complete)
+- [x] **Phase 7:** Python Bindings ✅ COMPLETE
   - [x] Task 7.1: Wire Python Options to HfSinkOptions ✅
   - [x] Task 7.2: sink_parquet Integration ✅
   - [x] Task 7.3: write_parquet Integration ✅
-  - [ ] **Task 7.4: Feature Flag Wiring** ← BLOCKING PYTHON SUPPORT!
-- [ ] **Phase 8:** Testing (blocked by 7.4)
+  - [x] Task 7.4: Feature Flag Wiring ✅
+- [ ] **Phase 8:** Testing 🔄 IN PROGRESS
   - [x] Task 8.2.1: Mock HTTP infrastructure ✅
   - [x] Task 8.2.2: Base URL injection ✅
   - [x] Task 8.2.3a/b: MockHfHub + mock_lfs_batch + mock_presigned_upload ✅
-  - [ ] **Task 8.2.P: Python E2E Smoke Test** ← BLOCKED by 7.4
-  - [ ] Task 8.2.3c/d: Remaining mock fixtures
+  - [x] Task 8.2.P: Python E2E Smoke Test ✅ PASSED
+  - [ ] Task 8.2.3c/d: Remaining mock fixtures (mock_commit, mock_tree)
   - [ ] Task 8.2.4-8.2.6: Mock integration tests
   - [ ] Task 8.3: E2E Tests (Real HF)
   - [ ] Task 8.4: Performance Benchmarks
 - [ ] **Phase 9:** Documentation (0/4)
 
-**Status:** 6/9 phases complete. Phase 7 blocked by missing feature flag wiring (Task 7.4).
+**Status:** 7/9 phases complete. Python E2E test passes!
 
-**Next:** Task 7.4 - Feature Flag Wiring (PRIORITY - enables Python support for hf:// URLs)
+**Next:** Task 8.2.3c/d - Remaining mock fixtures (mock_commit, mock_tree)
 
 ---
 
