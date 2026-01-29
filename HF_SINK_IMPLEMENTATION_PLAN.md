@@ -10,8 +10,9 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ```
 ✅ Phases 0-6 complete (Foundation → Advanced Features)
-🔄 Phase 7 in progress - Python Bindings (Tasks 7.1-7.3 complete, Task 7.4 BLOCKING)
-❌ Task 8.2.P FAILED - Python E2E test revealed hf_sink feature not enabled in py-polars!
+🔄 Phase 7 in progress - Python Bindings (Tasks 7.1-7.3 complete, Tasks 7.4.1-7.4.3 done)
+⏳ Task 7.4: Feature Flag Wiring (3/5 subtasks complete - polars-lazy + polars + polars-python done)
+❌ Task 8.2.P BLOCKED - Python E2E test requires Task 7.4 completion
 ```
 
 **Critical Finding:** `hf_sink` feature flag is NOT propagated to `polars-python`, causing
@@ -29,7 +30,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ❌ Python E2E test - FAILS (hf_sink feature not wired through)
 ```
 
-**Branch:** `feature/hf-hub-sink` (248 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (250 commits ahead of main)
 
 ---
 
@@ -37,13 +38,13 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ### Task 7.4: Feature Flag Wiring (PRIORITY - BLOCKING PYTHON SUPPORT)
 
-**Next Task:** 7.4.1 - Add `hf_sink` feature to `polars-lazy/Cargo.toml`
+**Next Task:** 7.4.5 - Python E2E Smoke Test
 
-The `hf_sink` feature must be propagated through the dependency chain:
-1. `polars-lazy/Cargo.toml` - Add `hf_sink = ["polars-stream/hf_sink"]`
-2. `polars/Cargo.toml` - Add `hf_sink = ["polars-lazy/hf_sink"]`
-3. `polars-python/Cargo.toml` - Add `hf_sink = ["polars/hf_sink"]`
-4. `py-polars/pyproject.toml` - Enable `hf_sink` in default build
+The `hf_sink` feature is now fully wired through the dependency chain:
+1. ✅ `polars-lazy/Cargo.toml` - `hf_sink = ["polars-stream?/hf_sink"]` (DONE)
+2. ✅ `polars/Cargo.toml` - `hf_sink = ["polars-lazy?/hf_sink", "new_streaming", "cloud"]` (DONE)
+3. ✅ `polars-python/Cargo.toml` - `hf_sink = ["polars/hf_sink"]` + added to `io` feature (DONE)
+4. N/A `py-polars/pyproject.toml` - Features flow through Cargo.toml, `io` is in `full` which is default
 
 See Task 7.4 section below for details.
 
@@ -206,32 +207,32 @@ Enable `storage_options` and HF-specific options to flow from Python through to 
 
 **Problem:** The `hf_sink` feature is defined in `polars-io` and `polars-stream`, but NOT propagated through the dependency chain to `polars-python`. This means `hf://` URLs panic when used from Python.
 
-**Current Feature Chain (BROKEN):**
+**Current Feature Chain (PARTIALLY FIXED):**
 ```
 polars-io/hf_sink ✅ (defined)
 polars-stream/hf_sink ✅ (defined, enables polars-io/hf_sink)
-polars-lazy/hf_sink ❌ (NOT defined)
-polars/hf_sink ❌ (NOT defined)
-polars-python/hf_sink ❌ (NOT defined)
+polars-lazy/hf_sink ✅ (Task 7.4.1 - DONE)
+polars/hf_sink ✅ (Task 7.4.2 - DONE)
+polars-python/hf_sink ✅ (Task 7.4.3 - DONE)
 ```
 
 **Files to Modify:**
 
-| File | Change |
-|------|--------|
-| `crates/polars-lazy/Cargo.toml` | Add `hf_sink = ["polars-stream/hf_sink"]` feature |
-| `crates/polars/Cargo.toml` | Add `hf_sink = ["polars-lazy/hf_sink"]` feature |
-| `crates/polars-python/Cargo.toml` | Add `hf_sink = ["polars/hf_sink"]` feature |
-| `py-polars/pyproject.toml` | Add `hf_sink` to default features |
+| File | Change | Status |
+|------|--------|--------|
+| `crates/polars-lazy/Cargo.toml` | `hf_sink = ["polars-stream?/hf_sink"]` | ✅ Done |
+| `crates/polars/Cargo.toml` | `hf_sink = ["polars-lazy?/hf_sink", "new_streaming", "cloud"]` | ✅ Done |
+| `crates/polars-python/Cargo.toml` | `hf_sink = ["polars/hf_sink"]` + added to `io` feature | ✅ Done |
+| `py-polars/pyproject.toml` | N/A (features flow through Cargo.toml) | N/A |
 
 **Subtasks:**
 
 | Subtask | Description | Status |
 |---------|-------------|--------|
-| **7.4.1** | Add `hf_sink` feature to `polars-lazy/Cargo.toml` | [ ] |
-| **7.4.2** | Add `hf_sink` feature to `polars/Cargo.toml` | [ ] |
-| **7.4.3** | Add `hf_sink` feature to `polars-python/Cargo.toml` | [ ] |
-| **7.4.4** | Enable `hf_sink` in py-polars build (pyproject.toml) | [ ] |
+| **7.4.1** | Add `hf_sink` feature to `polars-lazy/Cargo.toml` | ✅ Complete |
+| **7.4.2** | Add `hf_sink` feature to `polars/Cargo.toml` | ✅ Complete |
+| **7.4.3** | Add `hf_sink` feature to `polars-python/Cargo.toml` | ✅ Complete |
+| **7.4.4** | Enable `hf_sink` in py-polars build (pyproject.toml) | N/A (flows via `io` feature) |
 | **7.4.5** | Re-run Python E2E smoke test (Task 8.2.P) | [ ] |
 
 **Verification:**
