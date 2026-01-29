@@ -105,6 +105,51 @@ impl MockHfHub {
         self
     }
 
+    /// Mount a mock for the commit API endpoint.
+    ///
+    /// The commit API is called after all LFS uploads complete to atomically
+    /// commit the files to the repository.
+    ///
+    /// URL pattern: `POST /api/datasets/{repo}/commit/{revision}`
+    ///
+    /// # Arguments
+    /// * `commit_oid` - The commit OID to return in the response (40-char hex)
+    ///
+    /// # Example
+    /// ```ignore
+    /// mock.mock_lfs_batch(vec![...])
+    ///     .await
+    ///     .mock_presigned_upload()
+    ///     .await
+    ///     .mock_commit("abc123def456789012345678901234567890abcd")
+    ///     .await;
+    /// ```
+    pub async fn mock_commit(&self, commit_oid: impl Into<String>) -> &Self {
+        let oid = commit_oid.into();
+        let response_json = format!(
+            r#"{{
+                "commitUrl": "{}/datasets/user/repo/commit/{}",
+                "commitOid": "{}"
+            }}"#,
+            self.uri(),
+            oid,
+            oid
+        );
+
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/api/datasets/.*/commit/.*"))
+            .and(header("content-type", "application/x-ndjson"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(response_json)
+                    .insert_header("content-type", "application/json"),
+            )
+            .mount(&self.mock_server)
+            .await;
+
+        self
+    }
+
     /// Get reference to underlying MockServer for custom mocks.
     pub fn server(&self) -> &MockServer {
         &self.mock_server
@@ -445,4 +490,99 @@ async fn test_mock_lfs_batch_and_upload_flow() {
         .unwrap();
 
     assert_eq!(upload_response.status(), 200);
+}
+
+/// Test mock_commit returns success response.
+#[tokio::test]
+async fn test_mock_commit_success() {
+    let mock = MockHfHub::start().await;
+    let commit_oid = "abc123def456789012345678901234567890abcd";
+
+    mock.mock_commit(commit_oid).await;
+
+    let client = reqwest::Client::new();
+    let commit_url = format!("{}/api/datasets/user/repo/commit/main", mock.uri());
+
+    let response = client
+        .post(&commit_url)
+        .header("content-type", "application/x-ndjson")
+        .body(
+            r#"{"key":"header","value":{"summary":"Test commit"}}
+{"key":"lfsFile","value":{"path":"data/test.parquet","algo":"sha256","oid":"sha256...","size":1024}}
+"#,
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+
+    let body = response.text().await.unwrap();
+    assert!(body.contains("commitUrl"));
+    assert!(body.contains("commitOid"));
+    assert!(body.contains(commit_oid));
+}
+
+/// Test full upload flow: LFS batch → presigned upload → commit.
+#[tokio::test]
+async fn test_mock_full_upload_flow() {
+    let mock = MockHfHub::start().await;
+    let test_oid = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let commit_oid = "abc123def456789012345678901234567890abcd";
+
+    // Mount all mocks (chaining)
+    mock.mock_lfs_batch(vec![MockLfsObject::new_upload(test_oid, 1024)])
+        .await
+        .mock_presigned_upload()
+        .await
+        .mock_commit(commit_oid)
+        .await;
+
+    let client = reqwest::Client::new();
+
+    // Step 1: LFS batch
+    let lfs_url = format!(
+        "{}/datasets/user/repo.git/info/lfs/objects/batch",
+        mock.uri()
+    );
+    let batch_response = client
+        .post(&lfs_url)
+        .header("content-type", "application/vnd.git-lfs+json")
+        .body(format!(
+            r#"{{"operation":"upload","objects":[{{"oid":"{}","size":1024}}]}}"#,
+            test_oid
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(batch_response.status(), 200);
+
+    // Step 2: Upload
+    let upload_url = format!("{}/upload/{}", mock.uri(), test_oid);
+    let upload_response = client
+        .put(&upload_url)
+        .body(b"test content".to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(upload_response.status(), 200);
+
+    // Step 3: Commit
+    let commit_url = format!("{}/api/datasets/user/repo/commit/main", mock.uri());
+    let commit_response = client
+        .post(&commit_url)
+        .header("content-type", "application/x-ndjson")
+        .body(format!(
+            r#"{{"key":"header","value":{{"summary":"Upload"}}}}
+{{"key":"lfsFile","value":{{"path":"test.parquet","algo":"sha256","oid":"{}","size":1024}}}}
+"#,
+            test_oid
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(commit_response.status(), 200);
+
+    let body = commit_response.text().await.unwrap();
+    assert!(body.contains(commit_oid));
 }
