@@ -9,21 +9,24 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ## Current Status (2026-01-29)
 
 ```
-✅ Phases 0-7 complete (Foundation → Python Bindings)
-✅ Phase 7 complete - Python Bindings (sink_parquet, write_parquet)
-✅ Task 8.2.1 complete - Add wiremock mock HTTP infrastructure
-✅ Task 8.2.2 complete - Add base URL injection to HFRepoLocation for mock testing
+✅ Phases 0-6 complete (Foundation → Advanced Features)
+🔄 Phase 7 in progress - Python Bindings (Tasks 7.1-7.3 complete, Task 7.4 BLOCKING)
+❌ Task 8.2.P FAILED - Python E2E test revealed hf_sink feature not enabled in py-polars!
 ```
+
+**Critical Finding:** `hf_sink` feature flag is NOT propagated to `polars-python`, causing
+`hf://` URLs to panic with "impl error: unresolved hf:// path".
 
 **Build Status:**
 ```bash
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
-✅ cargo check -p polars-python                    # PASSES
+✅ cargo check -p polars-python                    # PASSES (but hf_sink NOT enabled!)
 ✅ cargo test -p polars-io checkpoint --features hf_sink  # 10 checkpoint tests pass
 ✅ cargo test -p polars-io hf_token --features hf_sink,http  # 4 token extraction tests pass
-✅ cargo test -p polars-stream --features hf_sink hf_sink # 73 tests pass (68 + 1 mock + 4 new)
+✅ cargo test -p polars-stream --features hf_sink hf_sink # 79 tests pass (69 + 10 mock)
 ✅ cargo test -p polars-io apply_key_value --features hf_sink  # 12 apply_key_value tests pass
+❌ Python E2E test - FAILS (hf_sink feature not wired through)
 ```
 
 **Branch:** `feature/hf-hub-sink` (248 commits ahead of main)
@@ -32,9 +35,27 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ## What's Next
 
-### Phase 8: Testing (Current Priority)
+### Task 7.4: Feature Flag Wiring (PRIORITY - BLOCKING PYTHON SUPPORT)
 
-**Next Task:** 8.2.3 - Create mock LFS batch API tests
+**Next Task:** 7.4.1 - Add `hf_sink` feature to `polars-lazy/Cargo.toml`
+
+The `hf_sink` feature must be propagated through the dependency chain:
+1. `polars-lazy/Cargo.toml` - Add `hf_sink = ["polars-stream/hf_sink"]`
+2. `polars/Cargo.toml` - Add `hf_sink = ["polars-lazy/hf_sink"]`
+3. `polars-python/Cargo.toml` - Add `hf_sink = ["polars/hf_sink"]`
+4. `py-polars/pyproject.toml` - Enable `hf_sink` in default build
+
+See Task 7.4 section below for details.
+
+**Task 8.2.3a/b: MockHfHub + mock_lfs_batch + mock_presigned_upload** ✅ Complete
+- Added `MockHfHub` struct wrapping wiremock `MockServer` with builder pattern
+- Implemented `mock_lfs_batch()` for LFS batch API (`POST .../.git/info/lfs/objects/batch`)
+- Implemented `mock_presigned_upload()` for S3 presigned URL uploads
+- Added `MockLfsObject` helper for configuring mock LFS responses
+- Added helper `build_lfs_batch_response()` to generate JSON responses
+- Added `reqwest = { workspace = true }` to polars-stream dev-dependencies
+- 6 new tests: mock_hf_hub_start, mock_lfs_batch_single_upload, mock_lfs_batch_already_exists, mock_lfs_batch_multiple_objects, mock_presigned_upload, mock_lfs_batch_and_upload_flow
+- Total mock tests: 10 (4 existing + 6 new)
 
 **Task 8.2.2: Base URL Injection** ✅ Complete
 - Added `base_url: String` field to `HFRepoLocation` struct
@@ -181,6 +202,45 @@ Enable `storage_options` and HF-specific options to flow from Python through to 
 - Added PyArrow + hf:// validation (raises ValueError)
 - Added docstring documentation and HF Hub example
 
+### Task 7.4: Feature Flag Wiring [ ] ← **BLOCKING PYTHON SUPPORT**
+
+**Problem:** The `hf_sink` feature is defined in `polars-io` and `polars-stream`, but NOT propagated through the dependency chain to `polars-python`. This means `hf://` URLs panic when used from Python.
+
+**Current Feature Chain (BROKEN):**
+```
+polars-io/hf_sink ✅ (defined)
+polars-stream/hf_sink ✅ (defined, enables polars-io/hf_sink)
+polars-lazy/hf_sink ❌ (NOT defined)
+polars/hf_sink ❌ (NOT defined)
+polars-python/hf_sink ❌ (NOT defined)
+```
+
+**Files to Modify:**
+
+| File | Change |
+|------|--------|
+| `crates/polars-lazy/Cargo.toml` | Add `hf_sink = ["polars-stream/hf_sink"]` feature |
+| `crates/polars/Cargo.toml` | Add `hf_sink = ["polars-lazy/hf_sink"]` feature |
+| `crates/polars-python/Cargo.toml` | Add `hf_sink = ["polars/hf_sink"]` feature |
+| `py-polars/pyproject.toml` | Add `hf_sink` to default features |
+
+**Subtasks:**
+
+| Subtask | Description | Status |
+|---------|-------------|--------|
+| **7.4.1** | Add `hf_sink` feature to `polars-lazy/Cargo.toml` | [ ] |
+| **7.4.2** | Add `hf_sink` feature to `polars/Cargo.toml` | [ ] |
+| **7.4.3** | Add `hf_sink` feature to `polars-python/Cargo.toml` | [ ] |
+| **7.4.4** | Enable `hf_sink` in py-polars build (pyproject.toml) | [ ] |
+| **7.4.5** | Re-run Python E2E smoke test (Task 8.2.P) | [ ] |
+
+**Verification:**
+```bash
+# After changes, rebuild and test:
+cd py-polars && maturin develop --release
+python -c "import polars as pl; pl.DataFrame({'a': [1]}).write_parquet('hf://datasets/user/repo/test.parquet')"
+```
+
 ---
 
 ## Phase 8: Testing
@@ -195,8 +255,12 @@ Mock HTTP integration tests using wiremock to test the full upload pipeline.
 | Subtask | Description | Status |
 |---------|-------------|--------|
 | **8.2.1** | Add wiremock dev-dependency + skeleton test file | ✅ Complete |
-| 8.2.2 | Add base URL injection to HFRepoLocation | [ ] |
-| 8.2.3 | Create reusable mock fixtures (LFS, commit, tree APIs) | [ ] |
+| **8.2.2** | Add base URL injection to HFRepoLocation | ✅ Complete |
+| **8.2.3** | Create reusable mock fixtures (LFS, commit, tree APIs) | 🔄 In Progress |
+|   8.2.3a | Create MockHfHub struct + mock_lfs_batch() | ✅ Complete |
+|   8.2.3b | Create mock_presigned_upload() | ✅ Complete |
+|   8.2.3c | Create mock_commit() | [ ] |
+|   8.2.3d | Create mock_tree() | [ ] |
 | 8.2.4 | Implement test_single_shard_upload | [ ] |
 | 8.2.5 | Implement test_multi_shard_upload | [ ] |
 | 8.2.6 | Implement test_overwrite_mode | [ ] |
@@ -204,6 +268,33 @@ Mock HTTP integration tests using wiremock to test the full upload pipeline.
 **Files added:**
 - `crates/polars-stream/Cargo.toml` - Added `wiremock = "0.6"` dev-dependency
 - `crates/polars-stream/src/nodes/io_sinks/hf_sink/mock_tests.rs` - Mock test infrastructure
+
+### Task 8.2.P: Python E2E Smoke Test (Priority) 🔄 BLOCKED
+
+**Status:** Blocked by Task 7.4 (Feature Flag Wiring)
+
+**Why:** Verify the full Python → Rust → HF Hub pipeline works before building more infrastructure.
+
+**Test:**
+```python
+import polars as pl
+
+df = pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+df.write_parquet(
+    "hf://datasets/davanstrien/test-polars-streaming/data/python-e2e-test.parquet",
+    storage_options={"token": "hf_xxx"}
+)
+```
+
+**Result (2026-01-29):** ❌ FAILED with `panic!("impl error: unresolved hf:// path")`
+
+**Root Cause:** The `hf_sink` feature is NOT enabled when building py-polars!
+
+The feature is defined in `polars-io` and `polars-stream`, but not propagated through the dependency chain to `polars-python`. This causes the code at `lower_ir.rs:279` to take the `#[cfg(not(feature = "hf_sink"))]` path, routing `hf://` URLs to `FileSink` instead of `HfSink`.
+
+**Fix Required:** Task 7.4 (Feature Flag Wiring)
+
+---
 
 ### Task 8.3: E2E Tests (Real HF) [ ]
 ```python
@@ -235,20 +326,25 @@ def test_streaming_upload(hf_test_repo):
   - [x] Task 6.2.S: Smoke Test (Real HF Hub Push) ✅
   - [x] Task 6.2: Partitioned Write Support ✅
   - [x] Task 6.3: Progress Reporting ✅
-- [x] **Phase 7:** Python Bindings ✅ Complete
+- [ ] **Phase 7:** Python Bindings 🔄 (3/4 tasks complete)
   - [x] Task 7.1: Wire Python Options to HfSinkOptions ✅
   - [x] Task 7.2: sink_parquet Integration ✅
   - [x] Task 7.3: write_parquet Integration ✅
-- [ ] **Phase 8:** Testing (1/4 subtasks) ← Current Priority
+  - [ ] **Task 7.4: Feature Flag Wiring** ← BLOCKING PYTHON SUPPORT!
+- [ ] **Phase 8:** Testing (blocked by 7.4)
   - [x] Task 8.2.1: Mock HTTP infrastructure ✅
-  - [ ] Task 8.2.2-8.2.6: Remaining mock integration tests
+  - [x] Task 8.2.2: Base URL injection ✅
+  - [x] Task 8.2.3a/b: MockHfHub + mock_lfs_batch + mock_presigned_upload ✅
+  - [ ] **Task 8.2.P: Python E2E Smoke Test** ← BLOCKED by 7.4
+  - [ ] Task 8.2.3c/d: Remaining mock fixtures
+  - [ ] Task 8.2.4-8.2.6: Mock integration tests
   - [ ] Task 8.3: E2E Tests (Real HF)
   - [ ] Task 8.4: Performance Benchmarks
 - [ ] **Phase 9:** Documentation (0/4)
 
-**Status:** 7/9 phases complete. Mock testing infrastructure added.
+**Status:** 6/9 phases complete. Phase 7 blocked by missing feature flag wiring (Task 7.4).
 
-**Next:** Task 8.2.2 - Add base URL injection to HFRepoLocation for mock testing
+**Next:** Task 7.4 - Feature Flag Wiring (PRIORITY - enables Python support for hf:// URLs)
 
 ---
 
