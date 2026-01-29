@@ -9,11 +9,9 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ## Current Status (2026-01-29)
 
 ```
-✅ Phases 0-6 complete (Foundation → Advanced Features)
-✅ Phase 6 complete - Checkpoint, Partitioned Writes, Progress Reporting
-✅ Task 7.1 complete - Wire Python Options to HfSinkOptions
-✅ Task 7.2 complete - sink_parquet Integration (code complete, tested via 7.1)
-✅ Task 7.3 complete - write_parquet Integration (hf_options parameter added)
+✅ Phases 0-7 complete (Foundation → Python Bindings)
+✅ Phase 7 complete - Python Bindings (sink_parquet, write_parquet)
+✅ Task 8.2.1 complete - Add wiremock mock HTTP infrastructure
 ```
 
 **Build Status:**
@@ -23,17 +21,24 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo check -p polars-python                    # PASSES
 ✅ cargo test -p polars-io checkpoint --features hf_sink  # 10 checkpoint tests pass
 ✅ cargo test -p polars-io hf_token --features hf_sink,http  # 4 token extraction tests pass
-✅ cargo test -p polars-stream --features hf_sink hf_sink # 68 tests pass
+✅ cargo test -p polars-stream --features hf_sink hf_sink # 69 tests pass (68 + 1 mock)
 ✅ cargo test -p polars-io apply_key_value --features hf_sink  # 12 apply_key_value tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (244 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (245 commits ahead of main)
 
 ---
 
 ## What's Next
 
-### Phase 7: Python Bindings (Current Priority)
+### Phase 8: Testing (Current Priority)
+
+**Next Task:** 8.2.2 - Add base URL injection to HFRepoLocation for mock testing
+
+**Task 8.2.1: Mock HTTP Infrastructure** ✅ Complete
+- Added `wiremock = "0.6"` to polars-stream dev-dependencies
+- Created `mock_tests.rs` with skeleton test verifying wiremock setup
+- Test passes: `cargo test -p polars-stream --features hf_sink mock_server_setup`
 
 **Task 7.1.1: Wire HF Token** ✅ Complete
 - Added `CloudOptions::hf_token()` helper method in `cloud/options.rs`
@@ -170,15 +175,24 @@ Enable `storage_options` and HF-specific options to flow from Python through to 
 ## Phase 8: Testing
 
 ### Task 8.1: Unit Tests [ ]
-Ongoing - included in component work
+Ongoing - included in component work (114 tests across modules)
 
-### Task 8.2: Integration Tests (Mock) [ ]
-```rust
-#[tokio::test]
-async fn test_single_shard_upload() { ... }
-async fn test_multi_shard_upload() { ... }
-async fn test_overwrite_mode() { ... }
-```
+### Task 8.2: Integration Tests (Mock)
+
+Mock HTTP integration tests using wiremock to test the full upload pipeline.
+
+| Subtask | Description | Status |
+|---------|-------------|--------|
+| **8.2.1** | Add wiremock dev-dependency + skeleton test file | ✅ Complete |
+| 8.2.2 | Add base URL injection to HFRepoLocation | [ ] |
+| 8.2.3 | Create reusable mock fixtures (LFS, commit, tree APIs) | [ ] |
+| 8.2.4 | Implement test_single_shard_upload | [ ] |
+| 8.2.5 | Implement test_multi_shard_upload | [ ] |
+| 8.2.6 | Implement test_overwrite_mode | [ ] |
+
+**Files added:**
+- `crates/polars-stream/Cargo.toml` - Added `wiremock = "0.6"` dev-dependency
+- `crates/polars-stream/src/nodes/io_sinks/hf_sink/mock_tests.rs` - Mock test infrastructure
 
 ### Task 8.3: E2E Tests (Real HF) [ ]
 ```python
@@ -214,12 +228,16 @@ def test_streaming_upload(hf_test_repo):
   - [x] Task 7.1: Wire Python Options to HfSinkOptions ✅
   - [x] Task 7.2: sink_parquet Integration ✅
   - [x] Task 7.3: write_parquet Integration ✅
-- [ ] **Phase 8:** Testing (0/4) ← Current Priority
+- [ ] **Phase 8:** Testing (1/4 subtasks) ← Current Priority
+  - [x] Task 8.2.1: Mock HTTP infrastructure ✅
+  - [ ] Task 8.2.2-8.2.6: Remaining mock integration tests
+  - [ ] Task 8.3: E2E Tests (Real HF)
+  - [ ] Task 8.4: Performance Benchmarks
 - [ ] **Phase 9:** Documentation (0/4)
 
-**Status:** 7/9 phases complete. Full Python API (sink_parquet + write_parquet) now supports HF Hub.
+**Status:** 7/9 phases complete. Mock testing infrastructure added.
 
-**Next:** Phase 8 - Testing (unit tests, integration tests, E2E tests)
+**Next:** Task 8.2.2 - Add base URL injection to HFRepoLocation for mock testing
 
 ---
 

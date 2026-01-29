@@ -1899,6 +1899,9 @@ impl SinkNode for HfSinkNode {
 }
 
 #[cfg(test)]
+mod mock_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use polars_io::cloud::hf::HfSinkProgress;
