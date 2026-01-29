@@ -151,6 +151,11 @@ pub struct HfSinkOptions {
     /// When set, data is written to paths like `data/{partition_col}={value}/train-00000.parquet`.
     /// Only single-column partitioning is supported.
     pub partition_col: Option<String>,
+    /// Override API base URL (for testing). Default: None (uses https://huggingface.co)
+    ///
+    /// This field is excluded from serialization as it's primarily for testing purposes.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub api_base_url: Option<String>,
 }
 
 impl Default for HfSinkOptions {
@@ -173,6 +178,7 @@ impl Default for HfSinkOptions {
             update_card: true,
             progress: None,
             partition_col: None,
+            api_base_url: None,
         }
     }
 }
@@ -198,6 +204,7 @@ impl PartialEq for HfSinkOptions {
             && self.upload_concurrency == other.upload_concurrency
             && self.update_card == other.update_card
             && self.partition_col == other.partition_col
+            && self.api_base_url == other.api_base_url
         // Note: progress is intentionally excluded from equality comparison
     }
 }
@@ -222,6 +229,7 @@ impl std::hash::Hash for HfSinkOptions {
         self.upload_concurrency.hash(state);
         self.update_card.hash(state);
         self.partition_col.hash(state);
+        self.api_base_url.hash(state);
         // Note: progress is intentionally excluded from hash computation
     }
 }
@@ -246,6 +254,7 @@ impl std::fmt::Debug for HfSinkOptions {
             .field("update_card", &self.update_card)
             .field("progress", &self.progress.as_ref().map(|_| "<callback>"))
             .field("partition_col", &self.partition_col)
+            .field("api_base_url", &self.api_base_url)
             .finish()
     }
 }
@@ -519,6 +528,23 @@ impl HfSinkOptionsBuilder {
     /// ```
     pub fn with_partition_col(mut self, col: impl Into<String>) -> Self {
         self.options.partition_col = Some(col.into());
+        self
+    }
+
+    /// Set a custom API base URL (primarily for testing).
+    ///
+    /// When set, all HF Hub API calls will use this URL instead of the default
+    /// `https://huggingface.co`. This is useful for integration testing with mock servers.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let options = HfSinkOptions::builder("user/repo")
+    ///     .with_path_in_repo("data")
+    ///     .with_api_base_url("http://localhost:8080")
+    ///     .build()?;
+    /// ```
+    pub fn with_api_base_url(mut self, url: impl Into<String>) -> Self {
+        self.options.api_base_url = Some(url.into());
         self
     }
 

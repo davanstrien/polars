@@ -163,12 +163,14 @@ pub async fn list_existing_files(
 /// * `revision` - Git revision ("main", "refs/convert/parquet", etc.)
 /// * `path_prefix` - Path prefix to check (e.g., "data/train")
 /// * `token` - Optional HF API token for private repos
+/// * `api_base_url` - Optional custom API base URL (for testing)
 pub async fn check_existing_files(
     repo_type: &str,
     repo_id: &str,
     revision: &str,
     path_prefix: &str,
     token: Option<&str>,
+    api_base_url: Option<&str>,
 ) -> PolarsResult<Vec<ExistingFile>> {
     use crate::cloud::options::USER_AGENT;
 
@@ -181,15 +183,20 @@ pub async fn check_existing_files(
         );
     }
 
+    // Allow http for testing with mock servers
+    let https_only = api_base_url
+        .map(|url| url.starts_with("https://"))
+        .unwrap_or(true);
+
     let client = reqwest::ClientBuilder::new()
         .user_agent(USER_AGENT)
         .http1_only()
-        .https_only(true)
+        .https_only(https_only)
         .default_headers(headers)
         .build()
         .map_err(to_compute_err)?;
 
-    let repo_location = HFRepoLocation::new(repo_type, repo_id, revision);
+    let repo_location = HFRepoLocation::new(repo_type, repo_id, revision, api_base_url);
 
     list_existing_files(&client, &repo_location, path_prefix).await
 }
@@ -204,6 +211,7 @@ pub async fn check_existing_files(
 /// * `repo_id` - Repository ID ("user/repo" or "org/repo")
 /// * `revision` - Git revision ("main", etc.)
 /// * `token` - Optional HF API token for private repos
+/// * `api_base_url` - Optional custom API base URL (for testing)
 ///
 /// # Returns
 /// * `Ok(Some(content))` - README content as a string
@@ -214,6 +222,7 @@ pub async fn fetch_readme(
     repo_id: &str,
     revision: &str,
     token: Option<&str>,
+    api_base_url: Option<&str>,
 ) -> PolarsResult<Option<String>> {
     use crate::cloud::options::USER_AGENT;
 
@@ -226,15 +235,20 @@ pub async fn fetch_readme(
         );
     }
 
+    // Allow http for testing with mock servers
+    let https_only = api_base_url
+        .map(|url| url.starts_with("https://"))
+        .unwrap_or(true);
+
     let client = reqwest::ClientBuilder::new()
         .user_agent(USER_AGENT)
         .http1_only()
-        .https_only(true)
+        .https_only(https_only)
         .default_headers(headers)
         .build()
         .map_err(to_compute_err)?;
 
-    let repo_location = HFRepoLocation::new(repo_type, repo_id, revision);
+    let repo_location = HFRepoLocation::new(repo_type, repo_id, revision, api_base_url);
     let uri = repo_location.get_file_uri("README.md");
 
     let resp = with_concurrency_budget(1, || async { client.get(&uri).send().await })

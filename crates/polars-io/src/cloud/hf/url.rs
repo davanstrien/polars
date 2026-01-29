@@ -30,32 +30,39 @@ pub struct HFRepoLocation {
     repository: String,
     /// Git revision (unencoded)
     revision: String,
+    /// Base URL for HF Hub API (default: "https://huggingface.co")
+    base_url: String,
     pub api_base_path: String,
     pub download_base_path: String,
 }
 
+/// Default HF Hub base URL.
+const DEFAULT_HF_BASE_URL: &str = "https://huggingface.co";
+
 impl HFRepoLocation {
-    pub fn new(bucket: &str, repository: &str, revision: &str) -> Self {
+    pub fn new(bucket: &str, repository: &str, revision: &str, base_url: Option<&str>) -> Self {
         // * Don't percent-encode bucket/repository - they are path segments where
         //   slashes are separators. E.g. "HuggingFaceFW/fineweb-2" must stay as-is.
         // * DO encode revision - slashes in revisions like "refs/convert/parquet"
         //   are part of the revision name, not path separators.
         //   See: https://github.com/pola-rs/polars/issues/25389
+        let base_url = base_url.unwrap_or(DEFAULT_HF_BASE_URL);
         let encoded_revision =
             percent_encoding::percent_encode(revision.as_bytes(), URL_ENCODE_CHARSET);
         let api_base_path = format!(
-            "https://huggingface.co/api/{}/{}/tree/{}/",
-            bucket, repository, encoded_revision
+            "{}/api/{}/{}/tree/{}/",
+            base_url, bucket, repository, encoded_revision
         );
         let download_base_path = format!(
-            "https://huggingface.co/{}/{}/resolve/{}/",
-            bucket, repository, encoded_revision
+            "{}/{}/{}/resolve/{}/",
+            base_url, bucket, repository, encoded_revision
         );
 
         Self {
             bucket: bucket.to_string(),
             repository: repository.to_string(),
             revision: revision.to_string(),
+            base_url: base_url.to_string(),
             api_base_path,
             download_base_path,
         }
@@ -80,38 +87,38 @@ impl HFRepoLocation {
     /// Returns URL for LFS batch API (upload coordination).
     ///
     /// Used to request presigned upload URLs before uploading files to HF Hub.
-    /// POST https://huggingface.co/{bucket}/{repo}.git/info/lfs/objects/batch
+    /// POST {base_url}/{bucket}/{repo}.git/info/lfs/objects/batch
     #[cfg(feature = "hf_sink")]
     pub fn get_lfs_batch_uri(&self) -> String {
         format!(
-            "https://huggingface.co/{}/{}.git/info/lfs/objects/batch",
-            self.bucket, self.repository
+            "{}/{}/{}.git/info/lfs/objects/batch",
+            self.base_url, self.bucket, self.repository
         )
     }
 
     /// Returns URL for Commit API (atomic commit).
     ///
     /// Used to atomically commit uploaded files to the repository.
-    /// POST https://huggingface.co/api/{bucket}/{repo}/commit/{revision}
+    /// POST {base_url}/api/{bucket}/{repo}/commit/{revision}
     #[cfg(feature = "hf_sink")]
     pub fn get_commit_uri(&self) -> String {
         let encoded_revision =
             percent_encoding::percent_encode(self.revision.as_bytes(), URL_ENCODE_CHARSET);
         format!(
-            "https://huggingface.co/api/{}/{}/commit/{}",
-            self.bucket, self.repository, encoded_revision
+            "{}/api/{}/{}/commit/{}",
+            self.base_url, self.bucket, self.repository, encoded_revision
         )
     }
 
     /// Returns URL for completing a multipart LFS upload.
     ///
     /// After uploading all parts to S3, this endpoint finalizes the multipart upload.
-    /// POST https://huggingface.co/{bucket}/{repo}.git/info/lfs/objects/{sha256}/finalize
+    /// POST {base_url}/{bucket}/{repo}.git/info/lfs/objects/{sha256}/finalize
     #[cfg(feature = "hf_sink")]
     pub fn get_lfs_multipart_complete_uri(&self, sha256: &str) -> String {
         format!(
-            "https://huggingface.co/{}/{}.git/info/lfs/objects/{}/finalize",
-            self.bucket, self.repository, sha256
+            "{}/{}/{}.git/info/lfs/objects/{}/finalize",
+            self.base_url, self.bucket, self.repository, sha256
         )
     }
 }
@@ -251,7 +258,7 @@ mod tests {
         // Special chars (spaces, colons) must be encoded for file downloads to work.
         // See: https://github.com/pola-rs/polars/issues/25389
 
-        let loc = HFRepoLocation::new("datasets", "HuggingFaceFW/fineweb-2", "main");
+        let loc = HFRepoLocation::new("datasets", "HuggingFaceFW/fineweb-2", "main", None);
 
         // Check base paths don't encode slashes
         assert_eq!(
@@ -289,7 +296,7 @@ mod tests {
 
         // Check that revision slashes ARE encoded (they're part of the revision name)
         // e.g. "refs/convert/parquet" -> "refs%2Fconvert%2Fparquet"
-        let loc = HFRepoLocation::new("datasets", "user/repo", "refs/convert/parquet");
+        let loc = HFRepoLocation::new("datasets", "user/repo", "refs/convert/parquet", None);
         assert_eq!(
             loc.api_base_path,
             "https://huggingface.co/api/datasets/user/repo/tree/refs%2Fconvert%2Fparquet/"
@@ -303,14 +310,14 @@ mod tests {
     #[cfg(feature = "hf_sink")]
     #[test]
     fn test_get_lfs_batch_uri() {
-        let loc = HFRepoLocation::new("datasets", "user/repo", "main");
+        let loc = HFRepoLocation::new("datasets", "user/repo", "main", None);
         assert_eq!(
             loc.get_lfs_batch_uri(),
             "https://huggingface.co/datasets/user/repo.git/info/lfs/objects/batch"
         );
 
         // Spaces should also work
-        let loc = HFRepoLocation::new("spaces", "org/my-space", "main");
+        let loc = HFRepoLocation::new("spaces", "org/my-space", "main", None);
         assert_eq!(
             loc.get_lfs_batch_uri(),
             "https://huggingface.co/spaces/org/my-space.git/info/lfs/objects/batch"
@@ -320,7 +327,7 @@ mod tests {
     #[cfg(feature = "hf_sink")]
     #[test]
     fn test_get_commit_uri() {
-        let loc = HFRepoLocation::new("datasets", "user/repo", "main");
+        let loc = HFRepoLocation::new("datasets", "user/repo", "main", None);
         assert_eq!(
             loc.get_commit_uri(),
             "https://huggingface.co/api/datasets/user/repo/commit/main"
@@ -331,7 +338,7 @@ mod tests {
     #[test]
     fn test_get_commit_uri_encodes_revision() {
         // Revision with slashes should be percent-encoded
-        let loc = HFRepoLocation::new("datasets", "user/repo", "refs/convert/parquet");
+        let loc = HFRepoLocation::new("datasets", "user/repo", "refs/convert/parquet", None);
         assert_eq!(
             loc.get_commit_uri(),
             "https://huggingface.co/api/datasets/user/repo/commit/refs%2Fconvert%2Fparquet"
@@ -353,10 +360,37 @@ mod tests {
     #[cfg(feature = "hf_sink")]
     #[test]
     fn test_get_lfs_multipart_complete_uri() {
-        let loc = HFRepoLocation::new("datasets", "user/repo", "main");
+        let loc = HFRepoLocation::new("datasets", "user/repo", "main", None);
         assert_eq!(
             loc.get_lfs_multipart_complete_uri("abc123def456"),
             "https://huggingface.co/datasets/user/repo.git/info/lfs/objects/abc123def456/finalize"
+        );
+    }
+
+    #[cfg(feature = "hf_sink")]
+    #[test]
+    fn test_custom_base_url() {
+        // Test custom base URL for mock testing scenarios
+        let loc =
+            HFRepoLocation::new("datasets", "user/repo", "main", Some("http://localhost:8080"));
+
+        // All URLs should use the custom base
+        assert!(loc.api_base_path.starts_with("http://localhost:8080/"));
+        assert!(loc.download_base_path.starts_with("http://localhost:8080/"));
+        assert!(loc.get_lfs_batch_uri().starts_with("http://localhost:8080/"));
+        assert!(loc.get_commit_uri().starts_with("http://localhost:8080/"));
+        assert!(loc
+            .get_lfs_multipart_complete_uri("abc123")
+            .starts_with("http://localhost:8080/"));
+
+        // Verify full URLs are correct
+        assert_eq!(
+            loc.get_lfs_batch_uri(),
+            "http://localhost:8080/datasets/user/repo.git/info/lfs/objects/batch"
+        );
+        assert_eq!(
+            loc.get_commit_uri(),
+            "http://localhost:8080/api/datasets/user/repo/commit/main"
         );
     }
 }

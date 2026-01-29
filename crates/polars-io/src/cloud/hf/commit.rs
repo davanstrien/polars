@@ -358,25 +358,32 @@ impl CommitClient {
     /// * `repo_id` - Repository ID in format "user/repo" or "org/repo"
     /// * `revision` - Branch or commit to target (e.g., "main")
     /// * `token` - HF Hub authentication token
+    /// * `api_base_url` - Optional custom API base URL (for testing)
     ///
     /// # Example
     /// ```ignore
-    /// let client = CommitClient::new("datasets", "user/my-dataset", "main", "hf_xxx")?;
+    /// let client = CommitClient::new("datasets", "user/my-dataset", "main", "hf_xxx", None)?;
     /// ```
     pub fn new(
         bucket: &str,
         repo_id: &str,
         revision: &str,
         token: impl Into<String>,
+        api_base_url: Option<&str>,
     ) -> PolarsResult<Self> {
+        // Allow http for testing with mock servers
+        let https_only = api_base_url
+            .map(|url| url.starts_with("https://"))
+            .unwrap_or(true);
+
         let client = reqwest::ClientBuilder::new()
             .user_agent(USER_AGENT)
             .http1_only()
-            .https_only(true)
+            .https_only(https_only)
             .build()
             .map_err(to_compute_err)?;
 
-        let repo_location = HFRepoLocation::new(bucket, repo_id, revision);
+        let repo_location = HFRepoLocation::new(bucket, repo_id, revision, api_base_url);
 
         Ok(Self {
             client,

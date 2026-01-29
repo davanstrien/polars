@@ -1501,7 +1501,13 @@ impl SinkNode for HfSinkNode {
         let revision = self.options.effective_revision();
 
         // 3. Create LFS client and upload executor
-        let lfs_client = LfsClient::new(bucket, &self.options.repo_id, &revision, token)?;
+        let lfs_client = LfsClient::new(
+            bucket,
+            &self.options.repo_id,
+            &revision,
+            token,
+            self.options.api_base_url.as_deref(),
+        )?;
         let upload_executor = UploadExecutor::new()?;
 
         // 4. Create channels for shard pipeline:
@@ -1618,6 +1624,7 @@ impl SinkNode for HfSinkNode {
                     &options.effective_revision(),
                     &options.path_in_repo,
                     token.as_deref(),
+                    options.api_base_url.as_deref(),
                 )
                 .await?;
 
@@ -1642,6 +1649,7 @@ impl SinkNode for HfSinkNode {
                     &options.effective_revision(),
                     &options.path_in_repo,
                     token.as_deref(),
+                    options.api_base_url.as_deref(),
                 )
                 .await?;
 
@@ -1664,6 +1672,7 @@ impl SinkNode for HfSinkNode {
                     &options.effective_revision(),
                     &options.path_in_repo,
                     token.as_deref(),
+                    options.api_base_url.as_deref(),
                 )
                 .await?;
 
@@ -1710,6 +1719,7 @@ impl SinkNode for HfSinkNode {
                 &options.repo_id,
                 &options.effective_revision(),
                 token.clone(),
+                options.api_base_url.as_deref(),
             )?;
 
             // Step F: Build commit operations from ShardCompletions
@@ -1772,6 +1782,7 @@ impl SinkNode for HfSinkNode {
                     &options.repo_id,
                     options.effective_revision(),
                     Some(&token),
+                    options.api_base_url.as_deref(),
                 )
                 .await?
             } else {

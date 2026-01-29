@@ -253,6 +253,7 @@ pub fn expand_paths_hive(
                         check_directory_level,
                         cloud_options,
                         glob,
+                        None, // api_base_url - use default for reads
                     ),
                 )?;
 

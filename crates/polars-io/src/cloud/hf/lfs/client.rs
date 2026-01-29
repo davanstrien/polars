@@ -35,20 +35,27 @@ impl LfsClient {
     /// * `repo_id` - Repository ID (e.g., "user/repo")
     /// * `revision` - Git revision (e.g., "main")
     /// * `token` - HF Hub authentication token
+    /// * `api_base_url` - Optional custom API base URL (for testing)
     pub fn new(
         bucket: &str,
         repo_id: &str,
         revision: &str,
         token: impl Into<String>,
+        api_base_url: Option<&str>,
     ) -> PolarsResult<Self> {
+        // Allow http for testing with mock servers
+        let https_only = api_base_url
+            .map(|url| url.starts_with("https://"))
+            .unwrap_or(true);
+
         let client = reqwest::ClientBuilder::new()
             .user_agent(USER_AGENT)
             .http1_only()
-            .https_only(true)
+            .https_only(https_only)
             .build()
             .map_err(to_compute_err)?;
 
-        let repo_location = HFRepoLocation::new(bucket, repo_id, revision);
+        let repo_location = HFRepoLocation::new(bucket, repo_id, revision, api_base_url);
 
         Ok(Self {
             client,
@@ -339,19 +346,19 @@ mod tests {
 
     #[test]
     fn test_new_client_datasets() {
-        let result = LfsClient::new("datasets", "user/repo", "main", "hf_token");
+        let result = LfsClient::new("datasets", "user/repo", "main", "hf_token", None);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_new_client_spaces() {
-        let result = LfsClient::new("spaces", "org/my-space", "main", "token");
+        let result = LfsClient::new("spaces", "org/my-space", "main", "token", None);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_lfs_batch_url_via_repo_location() {
-        let client = LfsClient::new("datasets", "user/repo", "main", "token").unwrap();
+        let client = LfsClient::new("datasets", "user/repo", "main", "token", None).unwrap();
         let batch_url = client.repo_location.get_lfs_batch_uri();
         assert_eq!(
             batch_url,

@@ -20,13 +20,19 @@ pub async fn expand_paths_hf(
     check_directory_level: bool,
     cloud_options: &Option<CloudOptions>,
     glob: bool,
+    api_base_url: Option<&str>,
 ) -> PolarsResult<(usize, Vec<PlRefPath>)> {
     assert!(!paths.is_empty());
+
+    // Allow http for testing with mock servers
+    let https_only = api_base_url
+        .map(|url| url.starts_with("https://"))
+        .unwrap_or(true);
 
     let client = reqwest::ClientBuilder::new()
         .user_agent(USER_AGENT)
         .http1_only()
-        .https_only(true);
+        .https_only(https_only);
 
     let client = if let Some(CloudOptions {
         config: Some(CloudConfig::Http { headers }),
@@ -55,6 +61,7 @@ pub async fn expand_paths_hf(
             &path_parts.bucket,
             &path_parts.repository,
             &path_parts.revision,
+            api_base_url,
         );
         let rel_path = path_parts.path.as_str();
 
