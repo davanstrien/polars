@@ -12,6 +12,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Phases 0-7 complete (Foundation → Python Bindings)
 ✅ Phase 7 complete - Python Bindings (sink_parquet, write_parquet)
 ✅ Task 8.2.1 complete - Add wiremock mock HTTP infrastructure
+✅ Task 8.2.2 complete - Add base URL injection to HFRepoLocation for mock testing
 ```
 
 **Build Status:**
@@ -21,11 +22,11 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo check -p polars-python                    # PASSES
 ✅ cargo test -p polars-io checkpoint --features hf_sink  # 10 checkpoint tests pass
 ✅ cargo test -p polars-io hf_token --features hf_sink,http  # 4 token extraction tests pass
-✅ cargo test -p polars-stream --features hf_sink hf_sink # 69 tests pass (68 + 1 mock)
+✅ cargo test -p polars-stream --features hf_sink hf_sink # 73 tests pass (68 + 1 mock + 4 new)
 ✅ cargo test -p polars-io apply_key_value --features hf_sink  # 12 apply_key_value tests pass
 ```
 
-**Branch:** `feature/hf-hub-sink` (246 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (248 commits ahead of main)
 
 ---
 
@@ -33,7 +34,17 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ### Phase 8: Testing (Current Priority)
 
-**Next Task:** 8.2.2 - Add base URL injection to HFRepoLocation for mock testing
+**Next Task:** 8.2.3 - Create mock LFS batch API tests
+
+**Task 8.2.2: Base URL Injection** ✅ Complete
+- Added `base_url: String` field to `HFRepoLocation` struct
+- Modified `HFRepoLocation::new()` to accept `Option<&str>` base_url parameter
+- Updated all URL-building methods to use `self.base_url` instead of hardcoded `https://huggingface.co`
+- Added `api_base_url: Option<String>` field to `HfSinkOptions` with builder method
+- Threaded `api_base_url` through all callers: `LfsClient`, `CommitClient`, `check_existing_files`, `fetch_readme`, `expand_paths_hf`
+- HTTP client now allows http:// (not just https://) when custom base_url provided (for mock server testing)
+- Added tests: `test_custom_base_url`, `test_options_with_custom_base_url`, `test_repo_location_custom_base_url`, `test_mock_server_with_options_pattern`
+- Files modified: `url.rs`, `options.rs`, `lfs/client.rs`, `commit.rs`, `api.rs`, `glob.rs`, `path_utils/mod.rs`, `hf_sink/mod.rs`, `mock_tests.rs`
 
 **Task 8.2.1: Mock HTTP Infrastructure** ✅ Complete
 - Added `wiremock = "0.6"` to polars-stream dev-dependencies
