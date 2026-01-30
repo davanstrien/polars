@@ -407,14 +407,21 @@ HF_TOKEN=hf_xxx pytest -m "hf_hub" py-polars/tests/unit/io/cloud/test_hf_sink.py
 - 10GB swap space to avoid OOM during compilation
 - Tests wheel installation before uploading
 
-### Task 9.3: Smoke Test Install [ ]
+### Task 9.3: Smoke Test Install 🔄 IN PROGRESS
 
 Verify the wheels install and work in a clean environment.
 
 | Subtask | Description | Status |
 |---------|-------------|--------|
-| **9.3.1** | Test `uv pip install <wheel-url>` in Colab | [ ] |
-| **9.3.2** | Verify basic `sink_parquet("hf://...")` works | [ ] |
+| **9.3.1** | Test `uv pip install <wheel-url>` in Colab | ✅ Complete |
+| **9.3.2** | Verify basic `sink_parquet("hf://...")` works | ✅ Complete |
+| **9.3.3** | Test streaming read → filter → write | ✅ Works for small data |
+| **9.3.4** | Test larger streaming writes | ⚠️ BUG-001 |
+
+**Notes:**
+- Must install BOTH `polars-*.whl` (base) AND `polars_runtime_32-*.whl` (runtime)
+- Small streaming writes work (single file, head(N))
+- Large multi-file streaming fails with "upload channel closed" (see BUG-001)
 
 ### Task 9.4: Demo Notebook [ ]
 
@@ -431,6 +438,45 @@ Verify the wheels install and work in a clean environment.
 | **9.5.1** | List known limitations / caveats | [ ] |
 | **9.5.2** | Note this is experimental / WIP | [ ] |
 | **9.5.3** | Add install + usage examples to README | [ ] |
+
+---
+
+## Known Issues / Bugs to Investigate
+
+| Issue | Description | Status | Priority |
+|-------|-------------|--------|----------|
+| **BUG-001** | "upload channel closed unexpectedly" on large streaming writes | [ ] | High |
+
+### BUG-001: Upload Channel Closed Unexpectedly
+
+**Symptom:** `ComputeError: upload channel closed unexpectedly` when streaming larger datasets.
+
+**Reproduction:**
+```python
+import polars as pl
+
+lf = pl.scan_parquet("hf://datasets/HuggingFaceFW/finepdfs/data/deu_Latn/train/*.parquet")
+filtered = lf.select(["id", "url", "language", "token_count"])
+filtered.sink_parquet(
+    "hf://datasets/davanstrien/test-polars-streaming/finepdfs-filtered.parquet",
+    storage_options={"token": "hf_xxx"},
+    hf_options={"mode": "overwrite"}
+)
+```
+
+**Observed:** Small writes work (single file, head(1000)). Larger multi-file streaming fails.
+
+**Possible Causes:**
+1. Network timeout during long uploads
+2. HF Hub rate limiting on LFS uploads
+3. Channel synchronization issue between `buffer_and_write_task` and `upload_shard_task`
+4. Memory pressure causing task failure
+
+**Investigation Tasks:**
+- [ ] Add better error logging to capture underlying cause
+- [ ] Test with different shard sizes (`max_shard_size` option)
+- [ ] Check if issue is related to number of shards vs total data size
+- [ ] Test with `upload_concurrency=1` to rule out concurrency issues
 
 ---
 
