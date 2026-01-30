@@ -74,6 +74,7 @@ peaks = ["polars-python/peaks"]
 hist = ["polars-python/hist"]
 find_many = ["polars-python/find_many"]
 new_streaming = ["polars-python/new_streaming"]
+hf_sink = ["polars-python/hf_sink"]
 
 dtype-i8 = ["polars-python/dtype-i8"]
 dtype-i16 = ["polars-python/dtype-i16"]
@@ -102,6 +103,7 @@ full = [
   "catalog",
   "polars-python/full",
   "performant",
+  "hf_sink",
 ]
 
 default_alloc = ["polars-python/default_alloc"]
