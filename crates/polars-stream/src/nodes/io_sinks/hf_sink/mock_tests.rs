@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 use wiremock::matchers::{body_string_contains, header, method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use polars_io::cloud::hf::commit::{CommitClient, CommitOperation, CommitOperationAdd};
 use polars_io::cloud::hf::lfs::{LfsClient, UploadExecutor};
 use polars_io::cloud::hf::{HFRepoLocation, HfSinkOptions, MmapBuffer, sha256_to_hex};
 
@@ -804,4 +805,104 @@ async fn test_single_shard_upload() {
 
     // 8. Verify success (Basic transfer returns None, not multipart completions)
     assert!(completions.is_none());
+}
+
+/// Integration test for multi-shard upload flow with commit.
+///
+/// Tests the complete multi-shard upload pipeline:
+/// 1. Create 3 test shards with different content
+/// 2. Compute SHA256 for each
+/// 3. Mock LFS batch API for all 3 objects
+/// 4. Upload each shard sequentially (as in production)
+/// 5. Create atomic commit with all 3 shards
+/// 6. Verify commit success
+#[tokio::test]
+async fn test_multi_shard_upload() {
+    // 1. Create test data (3 shards with different content)
+    let shard_data: Vec<&[u8]> = vec![
+        b"shard 0: parquet content for first file - test data",
+        b"shard 1: different content for second file - more bytes",
+        b"shard 2: unique content for third file - final shard",
+    ];
+
+    // 2. Compute SHA256 for each shard
+    let shard_infos: Vec<(String, u64)> = shard_data
+        .iter()
+        .map(|d| (compute_sha256(d), d.len() as u64))
+        .collect();
+
+    // 3. Start mock server with all endpoints
+    let mock = MockHfHub::start().await;
+    mock.mock_lfs_batch(
+        shard_infos
+            .iter()
+            .map(|(sha, size)| MockLfsObject::new_upload(sha, *size))
+            .collect(),
+    )
+    .await
+    .mock_presigned_upload()
+    .await
+    .mock_commit("abc123def456789012345678901234567890abcd")
+    .await;
+
+    // 4. Create clients with mock server URL
+    let lfs_client = LfsClient::new(
+        "datasets",
+        "user/test-repo",
+        "main",
+        "test_token",
+        Some(&mock.uri()),
+    )
+    .unwrap();
+    let upload_executor = UploadExecutor::new_with_base_url(Some(&mock.uri())).unwrap();
+    let commit_client = CommitClient::new(
+        "datasets",
+        "user/test-repo",
+        "main",
+        "test_token",
+        Some(&mock.uri()),
+    )
+    .unwrap();
+
+    // 5. Upload each shard sequentially (mirrors production flow)
+    let mut operations = Vec::new();
+    for (i, data) in shard_data.iter().enumerate() {
+        let (sha256, size) = &shard_infos[i];
+
+        // Create buffer and write data
+        let mut buffer = MmapBuffer::new(*size as usize).unwrap();
+        buffer.write_all(*data).unwrap();
+        let handle = buffer.into_read_handle().unwrap();
+
+        // LFS batch request to get presigned URL
+        let transfer = lfs_client.request_upload(sha256, *size).await.unwrap();
+
+        // Upload to presigned URL
+        let _completions = upload_executor
+            .upload(handle, transfer, sha256, i, None)
+            .await
+            .unwrap();
+
+        // Track for commit
+        operations.push(CommitOperation::Add(CommitOperationAdd::lfs(
+            format!("data/train-{:05}.parquet", i),
+            sha256.clone(),
+            *size,
+        )));
+    }
+
+    // 6. Create atomic commit with all 3 shards
+    let commit_info = commit_client
+        .create_commit(
+            "Upload via Polars",
+            Some("3 test shards uploaded"),
+            &operations,
+            false,
+        )
+        .await
+        .unwrap();
+
+    // 7. Verify success
+    assert!(commit_info.commit_url.contains("commit"));
+    assert_eq!(commit_info.oid, "abc123def456789012345678901234567890abcd");
 }

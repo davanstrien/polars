@@ -14,7 +14,8 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Task 8.2.P: Python E2E Smoke Test COMPLETE
 ✅ Task 8.2.3: Mock fixtures COMPLETE (15 tests: LFS, upload, commit, tree)
 ✅ Task 8.2.4: test_single_shard_upload COMPLETE (16 mock tests total)
-🔄 Phase 8 in progress - Testing (8.2.5: test_multi_shard_upload next)
+✅ Task 8.2.5: test_multi_shard_upload COMPLETE (17 mock tests total)
+🔄 Phase 8 in progress - Testing (8.2.6: test_overwrite_mode next)
 ```
 
 **Python E2E Test Result:** Successfully uploaded file to HF Hub:
@@ -28,12 +29,12 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo check -p polars-python                    # PASSES (hf_sink enabled via io feature)
 ✅ cargo test -p polars-io checkpoint --features hf_sink  # 10 checkpoint tests pass
 ✅ cargo test -p polars-io hf_token --features hf_sink,http  # 4 token extraction tests pass
-✅ cargo test -p polars-stream --features hf_sink hf_sink # 85 tests pass (69 + 16 mock)
+✅ cargo test -p polars-stream --features hf_sink hf_sink # 86 tests pass (69 + 17 mock)
 ✅ cargo test -p polars-io apply_key_value --features hf_sink  # 12 apply_key_value tests pass
 ✅ Python E2E test - PASSES (Task 7.4.5 + 8.2.P complete)
 ```
 
-**Branch:** `feature/hf-hub-sink` (262 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (198 commits ahead of main)
 
 ---
 
@@ -41,9 +42,9 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ### Phase 8: Testing
 
-**Next Task:** 8.2.5 - Implement test_multi_shard_upload
+**Next Task:** 8.2.6 - Implement test_overwrite_mode
 
-With Task 8.2.4 complete, the next step is testing multi-shard upload flow using MockHfHub.
+With Task 8.2.5 complete, the next step is testing overwrite mode handling using MockHfHub.
 
 ### Task 7.4: Feature Flag Wiring ✅ COMPLETE
 
@@ -277,7 +278,7 @@ Mock HTTP integration tests using wiremock to test the full upload pipeline.
 |   8.2.3c | Create mock_commit() | ✅ Complete |
 |   8.2.3d | Create mock_tree() | ✅ Complete |
 | **8.2.4** | Implement test_single_shard_upload | ✅ Complete |
-| 8.2.5 | Implement test_multi_shard_upload | [ ] |
+| **8.2.5** | Implement test_multi_shard_upload | ✅ Complete |
 | 8.2.6 | Implement test_overwrite_mode | [ ] |
 
 **Task 8.2.4: test_single_shard_upload** ✅ Complete
@@ -286,6 +287,12 @@ Mock HTTP integration tests using wiremock to test the full upload pipeline.
 - Added `compute_sha256()` helper function
 - Added `test_single_shard_upload` test: LFS batch → presigned upload flow with mock HTTP
 - Total mock tests: 16 (15 existing + 1 new)
+
+**Task 8.2.5: test_multi_shard_upload** ✅ Complete
+- Added `test_multi_shard_upload` test: full multi-shard upload + commit flow
+- Tests 3 shards: LFS batch → presigned upload (x3) → atomic commit
+- Uses `LfsClient`, `UploadExecutor`, and `CommitClient` with MockHfHub
+- Total mock tests: 17 (16 existing + 1 new)
 
 **Task 8.2.3c: mock_commit()** ✅ Complete
 - Added `mock_commit(commit_oid)` method to `MockHfHub`
@@ -377,14 +384,15 @@ def test_streaming_upload(hf_test_repo):
   - [x] Task 8.2.3c: mock_commit() ✅ (12 mock tests)
   - [x] Task 8.2.3d: mock_tree() ✅ (15 mock tests)
   - [x] Task 8.2.4: test_single_shard_upload ✅ (16 mock tests)
-  - [ ] Task 8.2.5-8.2.6: Mock integration tests
+  - [x] Task 8.2.5: test_multi_shard_upload ✅ (17 mock tests)
+  - [ ] Task 8.2.6: test_overwrite_mode
   - [ ] Task 8.3: E2E Tests (Real HF)
   - [ ] Task 8.4: Performance Benchmarks
 - [ ] **Phase 9:** Documentation (0/4)
 
 **Status:** 7/9 phases complete. Python E2E test passes!
 
-**Next:** Task 8.2.5 - test_multi_shard_upload integration test
+**Next:** Task 8.2.6 - test_overwrite_mode integration test
 
 ---
 
