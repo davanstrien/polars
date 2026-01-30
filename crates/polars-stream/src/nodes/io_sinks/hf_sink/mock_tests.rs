@@ -21,10 +21,14 @@
 //!     .build()?;
 //! ```
 
+use std::io::Write;
+
+use sha2::{Digest, Sha256};
 use wiremock::matchers::{body_string_contains, header, method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use polars_io::cloud::hf::{HFRepoLocation, HfSinkOptions};
+use polars_io::cloud::hf::lfs::{LfsClient, UploadExecutor};
+use polars_io::cloud::hf::{HFRepoLocation, HfSinkOptions, MmapBuffer, sha256_to_hex};
 
 // ============================================================================
 // MockHfHub - Reusable mock fixture for HF Hub APIs
@@ -732,4 +736,72 @@ async fn test_mock_tree_with_directories() {
 
     assert!(body.contains("\"type\": \"directory\""));
     assert!(body.contains("\"type\": \"file\""));
+}
+
+// ============================================================================
+// Integration Tests - Task 8.2.4
+// ============================================================================
+
+/// Compute SHA256 hash of data as lowercase hex string.
+fn compute_sha256(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let result: [u8; 32] = hasher.finalize().into();
+    sha256_to_hex(&result)
+}
+
+/// Integration test for single-shard upload flow.
+///
+/// Tests the complete LFS batch → presigned upload pipeline:
+/// 1. Create test data with known SHA256
+/// 2. Mock LFS batch API to return presigned upload URL
+/// 3. Mock presigned upload endpoint
+/// 4. Execute LfsClient.request_upload() + UploadExecutor.upload()
+/// 5. Verify success
+#[tokio::test]
+async fn test_single_shard_upload() {
+    // 1. Create test data and compute SHA256
+    let test_data = b"test parquet content for upload integration test";
+    let test_sha256 = compute_sha256(test_data);
+    let test_size = test_data.len() as u64;
+
+    // 2. Start mock server with LFS batch and presigned upload endpoints
+    let mock = MockHfHub::start().await;
+    mock.mock_lfs_batch(vec![MockLfsObject::new_upload(&test_sha256, test_size)])
+        .await
+        .mock_presigned_upload()
+        .await;
+
+    // 3. Create LfsClient configured with mock server
+    let lfs_client = LfsClient::new(
+        "datasets",
+        "user/test-repo",
+        "main",
+        "test_token",
+        Some(&mock.uri()),
+    )
+    .unwrap();
+
+    // 4. Create UploadExecutor (with http allowed for mock server)
+    let upload_executor = UploadExecutor::new_with_base_url(Some(&mock.uri())).unwrap();
+
+    // 5. Create test MmapReadHandle
+    let mut buffer = MmapBuffer::new(1024).unwrap();
+    buffer.write_all(test_data).unwrap();
+    let handle = buffer.into_read_handle().unwrap();
+
+    // 6. Execute LFS batch request
+    let transfer = lfs_client
+        .request_upload(&test_sha256, test_size)
+        .await
+        .unwrap();
+
+    // 7. Execute upload
+    let completions = upload_executor
+        .upload(handle, transfer, &test_sha256, 0, None)
+        .await
+        .unwrap();
+
+    // 8. Verify success (Basic transfer returns None, not multipart completions)
+    assert!(completions.is_none());
 }

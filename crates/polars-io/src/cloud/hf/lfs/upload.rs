@@ -57,6 +57,27 @@ impl UploadExecutor {
         Ok(Self { client })
     }
 
+    /// Create upload executor with custom base URL (for testing).
+    ///
+    /// When `base_url` is provided and starts with "http://", https_only
+    /// is disabled to allow testing with mock servers.
+    ///
+    /// # Arguments
+    /// * `base_url` - Optional base URL for determining https_only setting
+    pub fn new_with_base_url(base_url: Option<&str>) -> PolarsResult<Self> {
+        let https_only = base_url
+            .map(|url| url.starts_with("https://"))
+            .unwrap_or(true);
+
+        let client = reqwest::ClientBuilder::new()
+            .user_agent(USER_AGENT)
+            .https_only(https_only)
+            .build()
+            .map_err(to_compute_err)?;
+
+        Ok(Self { client })
+    }
+
     /// Upload data using the transfer method specified by LFS.
     ///
     /// # Arguments

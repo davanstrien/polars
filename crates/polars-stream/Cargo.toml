@@ -54,6 +54,7 @@ version_check = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true, features = ["rustls-tls"] }
+sha2 = { workspace = true }
 tempfile = "3"
 wiremock = "0.6"
 
