@@ -9,15 +9,11 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ## Current Status (2026-01-30)
 
 ```
-✅ Phases 0-7 complete (Foundation → Python Bindings)
-✅ Task 7.4: Feature Flag Wiring COMPLETE - Python E2E test PASSES!
-✅ Task 8.2.P: Python E2E Smoke Test COMPLETE
-✅ Task 8.2.3: Mock fixtures COMPLETE (15 tests: LFS, upload, commit, tree)
-✅ Task 8.2.4: test_single_shard_upload COMPLETE (16 mock tests total)
-✅ Task 8.2.5: test_multi_shard_upload COMPLETE (17 mock tests total)
-✅ Task 8.2.6: test_overwrite_mode COMPLETE (18 mock tests total)
-✅ Task 8.3.1: First E2E test (test_basic_upload) COMPLETE
-🔄 Phase 8 in progress - Testing (8.3.2: test_overwrite_mode next)
+✅ Phases 0-8 complete (Foundation → Python Bindings → Core Testing)
+✅ Python E2E test PASSES - sink_parquet("hf://...") works!
+✅ 87 Rust tests pass (69 unit + 18 mock integration)
+✅ 1 Python E2E test passes (test_basic_upload)
+🔄 Phase 9 in progress - Distribution & Demo
 ```
 
 **Python E2E Test Result:** Successfully uploaded file to HF Hub:
@@ -29,12 +25,8 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
 ✅ cargo check -p polars-python                    # PASSES (hf_sink enabled via io feature)
-✅ cargo test -p polars-io checkpoint --features hf_sink  # 10 checkpoint tests pass
-✅ cargo test -p polars-io hf_token --features hf_sink,http  # 4 token extraction tests pass
-✅ cargo test -p polars-stream --features hf_sink hf_sink # 87 tests pass (69 + 18 mock)
-✅ cargo test -p polars-io apply_key_value --features hf_sink  # 12 apply_key_value tests pass
-✅ Python E2E test - PASSES (Task 7.4.5 + 8.2.P complete)
-✅ pytest -m "hf_hub" test_hf_sink.py - PASSES (Task 8.3.1 complete)
+✅ cargo test -p polars-stream --features hf_sink hf_sink # 87 tests pass
+✅ Python E2E test - PASSES
 ```
 
 **Branch:** `feature/hf-hub-sink` (267 commits ahead of main)
@@ -43,11 +35,17 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ## What's Next
 
-### Phase 8: Testing
+### Phase 9: Distribution & Demo
 
-**Next Task:** 8.3.2 - test_overwrite_mode (E2E)
+**Goal:** Make it easy for people to test without compiling. Not a formal release.
 
-Task 8.3.1 (test_basic_upload) complete. Next: test overwrite mode with real HF Hub.
+**Next Task:** 9.2 - GitHub Actions for Wheels
+
+1. ~~Clean up repo (remove scratch files)~~ ✅
+2. ~~Push to davanstrien/polars fork~~ ✅
+3. Set up GitHub Actions to build wheels
+4. Smoke test install in Colab
+5. Create demo notebook
 
 ### Task 7.4: Feature Flag Wiring ✅ COMPLETE
 
@@ -380,12 +378,50 @@ HF_TOKEN=hf_xxx pytest -m "hf_hub" py-polars/tests/unit/io/cloud/test_hf_sink.py
 
 ---
 
-## Phase 9: Documentation
+## Phase 9: Distribution & Demo
 
-### Task 9.1: User Guide [ ]
-### Task 9.2: API Reference [ ]
-### Task 9.3: Error Message Polish [ ]
-### Task 9.4: Release Notes [ ]
+**Goal:** Make the feature easy for people to test without compiling from source. This is NOT a formal release - just a way to share a working prototype and gather feedback.
+
+### Task 9.1: Clean Branch for Fork ✅ Complete
+
+| Subtask | Description | Status |
+|---------|-------------|--------|
+| **9.1.1** | Create clean branch from feature/hf-hub-sink | ✅ Complete |
+| **9.1.2** | Remove test files / scratch work from repo root | ✅ Complete (moved to scratch/) |
+| **9.1.3** | Push to davanstrien/polars fork | ✅ Complete |
+
+### Task 9.2: GitHub Actions for Wheels [ ]
+
+| Subtask | Description | Status |
+|---------|-------------|--------|
+| **9.2.1** | Create `.github/workflows/build-hf-sink-wheels.yml` | [ ] |
+| **9.2.2** | Target platforms: Linux x64, macOS ARM64 | [ ] |
+| **9.2.3** | Attach wheels to GitHub Release | [ ] |
+
+### Task 9.3: Smoke Test Install [ ]
+
+Verify the wheels install and work in a clean environment.
+
+| Subtask | Description | Status |
+|---------|-------------|--------|
+| **9.3.1** | Test `uv pip install <wheel-url>` in Colab | [ ] |
+| **9.3.2** | Verify basic `sink_parquet("hf://...")` works | [ ] |
+
+### Task 9.4: Demo Notebook [ ]
+
+| Subtask | Description | Status |
+|---------|-------------|--------|
+| **9.4.1** | Create notebook: streaming read → filter → streaming write | [ ] |
+| **9.4.2** | Show "Hub is your disk" workflow (TBs with minimal RAM) | [ ] |
+| **9.4.3** | Upload to HF Hub or include in repo | [ ] |
+
+### Task 9.5: Document Limitations [ ]
+
+| Subtask | Description | Status |
+|---------|-------------|--------|
+| **9.5.1** | List known limitations / caveats | [ ] |
+| **9.5.2** | Note this is experimental / WIP | [ ] |
+| **9.5.3** | Add install + usage examples to README | [ ] |
 
 ---
 
@@ -402,7 +438,7 @@ HF_TOKEN=hf_xxx pytest -m "hf_hub" py-polars/tests/unit/io/cloud/test_hf_sink.py
   - [x] Task 7.2: sink_parquet Integration ✅
   - [x] Task 7.3: write_parquet Integration ✅
   - [x] Task 7.4: Feature Flag Wiring ✅
-- [ ] **Phase 8:** Testing 🔄 IN PROGRESS
+- [x] **Phase 8:** Testing ✅ (core testing complete, additional E2E tests can continue in parallel)
   - [x] Task 8.2.1: Mock HTTP infrastructure ✅
   - [x] Task 8.2.2: Base URL injection ✅
   - [x] Task 8.2.3a/b: MockHfHub + mock_lfs_batch + mock_presigned_upload ✅
@@ -412,17 +448,19 @@ HF_TOKEN=hf_xxx pytest -m "hf_hub" py-polars/tests/unit/io/cloud/test_hf_sink.py
   - [x] Task 8.2.4: test_single_shard_upload ✅ (16 mock tests)
   - [x] Task 8.2.5: test_multi_shard_upload ✅ (17 mock tests)
   - [x] Task 8.2.6: test_overwrite_mode ✅ (18 mock tests)
-  - [ ] Task 8.3: E2E Tests (Real HF) 🔄
-    - [x] Task 8.3.1: First E2E test (test_basic_upload) ✅
-    - [ ] Task 8.3.2: test_overwrite_mode
-    - [ ] Task 8.3.3: test_append_mode
-    - [ ] Task 8.3.4: test_partitioned_write
-  - [ ] Task 8.4: Performance Benchmarks
-- [ ] **Phase 9:** Documentation (0/4)
+  - [x] Task 8.3.1: First E2E test (test_basic_upload) ✅
+  - [ ] Task 8.3.2-8.3.4: Additional E2E tests (can continue in parallel)
+  - [ ] Task 8.4: Performance Benchmarks (optional)
+- [ ] **Phase 9:** Distribution & Demo 🔄 CURRENT FOCUS
+  - [x] Task 9.1: Clean branch for fork ✅
+  - [ ] Task 9.2: GitHub Actions for wheels
+  - [ ] Task 9.3: Smoke test install (Colab)
+  - [ ] Task 9.4: Demo notebook
+  - [ ] Task 9.5: Document limitations
 
-**Status:** 7/9 phases complete. Mock testing complete (18 tests)!
+**Status:** 8/9 phases complete. Python E2E works! Branch cleaned and pushed.
 
-**Next:** Task 8.3.2 - test_overwrite_mode (E2E)
+**Next:** Task 9.2 - GitHub Actions for wheels
 
 ---
 
