@@ -6,13 +6,14 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ---
 
-## Current Status (2026-01-29)
+## Current Status (2026-01-30)
 
 ```
 ✅ Phases 0-7 complete (Foundation → Python Bindings)
 ✅ Task 7.4: Feature Flag Wiring COMPLETE - Python E2E test PASSES!
 ✅ Task 8.2.P: Python E2E Smoke Test COMPLETE
-🔄 Phase 8 in progress - Testing (mock fixtures, integration tests)
+✅ Task 8.2.3: Mock fixtures COMPLETE (15 tests: LFS, upload, commit, tree)
+🔄 Phase 8 in progress - Testing (integration tests next)
 ```
 
 **Python E2E Test Result:** Successfully uploaded file to HF Hub:
@@ -31,7 +32,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Python E2E test - PASSES (Task 7.4.5 + 8.2.P complete)
 ```
 
-**Branch:** `feature/hf-hub-sink` (193 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (260 commits ahead of main)
 
 ---
 
