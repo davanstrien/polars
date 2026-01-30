@@ -39,13 +39,14 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 **Goal:** Make it easy for people to test without compiling. Not a formal release.
 
-**Next Task:** 9.2 - GitHub Actions for Wheels
+**Next Task:** 9.2.2 - Add macOS ARM64 to wheel build
 
 1. ~~Clean up repo (remove scratch files)~~ ✅
 2. ~~Push to davanstrien/polars fork~~ ✅
-3. Set up GitHub Actions to build wheels
-4. Smoke test install in Colab
-5. Create demo notebook
+3. ~~Set up GitHub Actions to build wheels (Linux x64)~~ ✅ (Task 9.2.1)
+4. Add macOS ARM64 to wheel build (Task 9.2.2)
+5. Smoke test install in Colab
+6. Create demo notebook
 
 ### Task 7.4: Feature Flag Wiring ✅ COMPLETE
 
@@ -390,13 +391,21 @@ HF_TOKEN=hf_xxx pytest -m "hf_hub" py-polars/tests/unit/io/cloud/test_hf_sink.py
 | **9.1.2** | Remove test files / scratch work from repo root | ✅ Complete (moved to scratch/) |
 | **9.1.3** | Push to davanstrien/polars fork | ✅ Complete |
 
-### Task 9.2: GitHub Actions for Wheels [ ]
+### Task 9.2: GitHub Actions for Wheels 🔄 IN PROGRESS
 
 | Subtask | Description | Status |
 |---------|-------------|--------|
-| **9.2.1** | Create `.github/workflows/build-hf-sink-wheels.yml` | [ ] |
-| **9.2.2** | Target platforms: Linux x64, macOS ARM64 | [ ] |
+| **9.2.1** | Create `.github/workflows/build-hf-sink-wheels.yml` | ✅ Complete |
+| **9.2.2** | Target platforms: Linux x64, macOS ARM64 | [ ] (Linux x64 done, macOS pending) |
 | **9.2.3** | Attach wheels to GitHub Release | [ ] |
+
+**Task 9.2.1 Details:**
+- Created `build-hf-sink-wheels.yml` with Linux x64 wheel build
+- Uses `maturin-action@v1` with `dist-release` profile
+- Builds `polars-runtime-32` (default runtime)
+- Manual trigger via `workflow_dispatch` with dry-run option
+- 10GB swap space to avoid OOM during compilation
+- Tests wheel installation before uploading
 
 ### Task 9.3: Smoke Test Install [ ]
 
@@ -453,7 +462,7 @@ Verify the wheels install and work in a clean environment.
   - [ ] Task 8.4: Performance Benchmarks (optional)
 - [ ] **Phase 9:** Distribution & Demo 🔄 CURRENT FOCUS
   - [x] Task 9.1: Clean branch for fork ✅
-  - [ ] Task 9.2: GitHub Actions for wheels
+  - [ ] Task 9.2: GitHub Actions for wheels (9.2.1 Linux x64 ✅, 9.2.2-9.2.3 pending)
   - [ ] Task 9.3: Smoke test install (Colab)
   - [ ] Task 9.4: Demo notebook
   - [ ] Task 9.5: Document limitations
