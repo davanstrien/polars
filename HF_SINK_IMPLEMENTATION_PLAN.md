@@ -11,8 +11,9 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ```
 ✅ Phases 0-8 complete (Foundation → Python Bindings → Core Testing)
 ✅ Python E2E test PASSES - sink_parquet("hf://...") works!
-✅ 87 Rust tests pass (69 unit + 18 mock integration)
+✅ 86 Rust tests pass (unit + mock integration)
 ✅ 1 Python E2E test passes (test_basic_upload)
+✅ BUG-001 FIXED - rate limit handling and error propagation improved
 🔄 Phase 9 in progress - Distribution & Demo
 ```
 
@@ -25,11 +26,11 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo check -p polars-io --features hf_sink     # PASSES
 ✅ cargo check -p polars-stream --features hf_sink # PASSES
 ✅ cargo check -p polars-python                    # PASSES (hf_sink enabled via io feature)
-✅ cargo test -p polars-stream --features hf_sink hf_sink # 87 tests pass
+✅ cargo test -p polars-stream --features hf_sink hf_sink # 86 tests pass
 ✅ Python E2E test - PASSES
 ```
 
-**Branch:** `feature/hf-hub-sink` (269 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (209 commits ahead of main)
 
 ---
 
@@ -47,6 +48,8 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 4. Add macOS ARM64 to wheel build (Task 9.2.2)
 5. Smoke test install in Colab
 6. Create demo notebook
+
+**Recent Fix:** BUG-001 (upload channel closed) now fixed - improved rate limit handling and error propagation
 
 ### Task 7.4: Feature Flag Wiring ✅ COMPLETE
 
