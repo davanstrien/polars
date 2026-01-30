@@ -150,6 +150,39 @@ impl MockHfHub {
         self
     }
 
+    /// Mount a mock for the Tree API endpoint.
+    ///
+    /// The Tree API lists files in a repository path. Used by `check_existing_files()`
+    /// to verify write modes (ErrorIfExists, Overwrite, Append).
+    ///
+    /// URL pattern: `GET /api/datasets/{repo}/tree/{revision}/{path}`
+    ///
+    /// # Arguments
+    /// * `entries` - Mock entries to return. Empty vec = empty directory.
+    ///
+    /// # Example
+    /// ```ignore
+    /// mock.mock_tree(vec![
+    ///     MockTreeEntry::file("data/train-00000.parquet", 1024),
+    ///     MockTreeEntry::file("data/train-00001.parquet", 2048),
+    /// ]).await;
+    /// ```
+    pub async fn mock_tree(&self, entries: Vec<MockTreeEntry>) -> &Self {
+        let response_json = build_tree_response(&entries);
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"/api/datasets/.*/tree/.*"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(response_json)
+                    .insert_header("content-type", "application/json"),
+            )
+            .mount(&self.mock_server)
+            .await;
+
+        self
+    }
+
     /// Get reference to underlying MockServer for custom mocks.
     pub fn server(&self) -> &MockServer {
         &self.mock_server
@@ -187,6 +220,41 @@ impl MockLfsObject {
             oid: oid.into(),
             size,
             already_exists: true,
+        }
+    }
+}
+
+// ============================================================================
+// MockTreeEntry - Helper for building Tree API responses
+// ============================================================================
+
+/// Specification for a mock tree entry in a tree API response.
+#[derive(Debug, Clone)]
+pub struct MockTreeEntry {
+    /// Relative path within the repository
+    pub path: String,
+    /// File size in bytes (0 for directories)
+    pub size: u64,
+    /// Whether this is a directory
+    pub is_directory: bool,
+}
+
+impl MockTreeEntry {
+    /// Create a mock file entry.
+    pub fn file(path: impl Into<String>, size: u64) -> Self {
+        Self {
+            path: path.into(),
+            size,
+            is_directory: false,
+        }
+    }
+
+    /// Create a mock directory entry.
+    pub fn directory(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            size: 0,
+            is_directory: true,
         }
     }
 }
@@ -238,6 +306,23 @@ fn build_lfs_batch_response(mock_uri: &str, objects: Vec<MockLfsObject>) -> Stri
         }}"#,
         objects_json.join(",")
     )
+}
+
+/// Build the JSON response body for a Tree API request.
+fn build_tree_response(entries: &[MockTreeEntry]) -> String {
+    let entries_json: Vec<String> = entries
+        .iter()
+        .map(|e| {
+            format!(
+                r#"{{"type": "{}", "path": "{}", "size": {}}}"#,
+                if e.is_directory { "directory" } else { "file" },
+                e.path,
+                e.size
+            )
+        })
+        .collect();
+
+    format!("[{}]", entries_json.join(","))
 }
 
 /// Verify wiremock infrastructure works.
@@ -585,4 +670,66 @@ async fn test_mock_full_upload_flow() {
 
     let body = commit_response.text().await.unwrap();
     assert!(body.contains(commit_oid));
+}
+
+// ============================================================================
+// mock_tree Tests
+// ============================================================================
+
+/// Test mock_tree returns file list correctly.
+#[tokio::test]
+async fn test_mock_tree_lists_files() {
+    let mock = MockHfHub::start().await;
+
+    mock.mock_tree(vec![
+        MockTreeEntry::file("data/train-00000.parquet", 1024),
+        MockTreeEntry::file("data/train-00001.parquet", 2048),
+    ])
+    .await;
+
+    let client = reqwest::Client::new();
+    let tree_url = format!("{}/api/datasets/user/repo/tree/main/data", mock.uri());
+
+    let response = client.get(&tree_url).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+
+    let body = response.text().await.unwrap();
+    assert!(body.contains("train-00000.parquet"));
+    assert!(body.contains("train-00001.parquet"));
+    assert!(body.contains("\"type\": \"file\""));
+}
+
+/// Test mock_tree returns empty list for empty directory.
+#[tokio::test]
+async fn test_mock_tree_empty() {
+    let mock = MockHfHub::start().await;
+    mock.mock_tree(vec![]).await;
+
+    let client = reqwest::Client::new();
+    let tree_url = format!("{}/api/datasets/user/repo/tree/main/data", mock.uri());
+
+    let response = client.get(&tree_url).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.text().await.unwrap(), "[]");
+}
+
+/// Test mock_tree with mix of files and directories.
+#[tokio::test]
+async fn test_mock_tree_with_directories() {
+    let mock = MockHfHub::start().await;
+
+    mock.mock_tree(vec![
+        MockTreeEntry::directory("data/subdir"),
+        MockTreeEntry::file("data/train.parquet", 1024),
+    ])
+    .await;
+
+    let client = reqwest::Client::new();
+    let tree_url = format!("{}/api/datasets/user/repo/tree/main/data", mock.uri());
+
+    let response = client.get(&tree_url).send().await.unwrap();
+    let body = response.text().await.unwrap();
+
+    assert!(body.contains("\"type\": \"directory\""));
+    assert!(body.contains("\"type\": \"file\""));
 }
