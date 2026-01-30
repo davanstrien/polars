@@ -51,6 +51,12 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 **Recent Fix:** BUG-001 (upload channel closed) now fixed - improved rate limit handling and error propagation
 
+### Future Enhancements (Low Priority)
+
+- **Better debug logging for rate limits**: Distinguish "waiting 30s (fallback - header missing)" vs "waiting 42s (per RateLimit header)" in verbose output. Would help verify BUG-001 fix is working as expected.
+
+---
+
 ### Task 7.4: Feature Flag Wiring ✅ COMPLETE
 
 The `hf_sink` feature is now fully wired through the dependency chain:
