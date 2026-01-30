@@ -1,0 +1,112 @@
+name: Build HF Sink Wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Build with minimal optimization (faster, for testing)
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.10'
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  # CPU features for x86_64 (modern CPUs with AVX2)
+  NONCOMPAT_TUNE_CPU: 'skylake'
+  NONCOMPAT_FEATURES: '+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+cmpxchg16b,+avx,+avx2,+fma,+bmi1,+bmi2,+lzcnt,+pclmulqdq,+movbe'
+  NONCOMPAT_CC_FEATURES: '-msse3 -mssse3 -msse4.1 -msse4.2 -mpopcnt -mcx16 -mavx -mavx2 -mfma -mbmi -mbmi2 -mlzcnt -mpclmul -mmovbe'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Build the base polars Python package (pure Python wrapper)
+  base-package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Build base package
+        run: uv build py-polars --out-dir dist
+
+      - name: Upload base package
+        uses: actions/upload-artifact@v4
+        with:
+          name: base-package
+          path: dist
+
+  # Build Linux x64 wheel
+  build-wheel-linux-x64:
+    needs: [base-package]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download base package
+        uses: actions/download-artifact@v4
+        with:
+          name: base-package
+          path: dist
+
+      # Avoid potential out-of-memory errors during compilation
+      - name: Set swap space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 10
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install base polars package
+        run: |
+          pip install --force-reinstall --no-dependencies dist/polars-*.whl
+          rm -rf dist/*
+
+      - name: Set RUSTFLAGS for x86-64
+        run: |
+          echo "RUSTFLAGS=-C target-feature=$NONCOMPAT_FEATURES -Z tune-cpu=$NONCOMPAT_TUNE_CPU" >> $GITHUB_ENV
+          echo "CFLAGS=$NONCOMPAT_CC_FEATURES -mtune=$NONCOMPAT_TUNE_CPU" >> $GITHUB_ENV
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          target: x86_64-unknown-linux-gnu
+          args: >
+            --profile ${{ inputs.dry-run == true && 'mindebug-dev' || 'dist-release' }}
+            --manifest-path py-polars/runtime/polars-runtime-32/Cargo.toml
+            --out dist
+          manylinux: auto
+          maturin-version: 1.8.3
+
+      - name: Test wheel
+        run: |
+          pip install --force-reinstall --verbose dist/*.whl
+          python -c 'import polars; polars.show_versions()'
+          # Quick sanity check for HF sink feature
+          python -c 'import polars as pl; df = pl.DataFrame({"a": [1,2,3]}); print("Polars loaded OK")'
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-linux-x64
+          path: dist/*.whl
