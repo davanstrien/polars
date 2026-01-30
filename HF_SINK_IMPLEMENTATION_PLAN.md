@@ -34,9 +34,10 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo test -p polars-stream --features hf_sink hf_sink # 87 tests pass (69 + 18 mock)
 ✅ cargo test -p polars-io apply_key_value --features hf_sink  # 12 apply_key_value tests pass
 ✅ Python E2E test - PASSES (Task 7.4.5 + 8.2.P complete)
+✅ pytest -m "hf_hub" test_hf_sink.py - PASSES (Task 8.3.1 complete)
 ```
 
-**Branch:** `feature/hf-hub-sink` (266 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (267 commits ahead of main)
 
 ---
 
@@ -44,9 +45,9 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ### Phase 8: Testing
 
-**Next Task:** 8.3 - E2E Tests (Real HF)
+**Next Task:** 8.3.2 - test_overwrite_mode (E2E)
 
-Mock testing is complete (18 tests). Next step is real HF Hub E2E tests with a test repository.
+Task 8.3.1 (test_basic_upload) complete. Next: test overwrite mode with real HF Hub.
 
 ### Task 7.4: Feature Flag Wiring ✅ COMPLETE
 
