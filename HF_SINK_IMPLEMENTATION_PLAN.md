@@ -16,7 +16,8 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Task 8.2.4: test_single_shard_upload COMPLETE (16 mock tests total)
 ✅ Task 8.2.5: test_multi_shard_upload COMPLETE (17 mock tests total)
 ✅ Task 8.2.6: test_overwrite_mode COMPLETE (18 mock tests total)
-🔄 Phase 8 in progress - Testing (8.3: E2E Tests next)
+✅ Task 8.3.1: First E2E test (test_basic_upload) COMPLETE
+🔄 Phase 8 in progress - Testing (8.3.2: test_overwrite_mode next)
 ```
 
 **Python E2E Test Result:** Successfully uploaded file to HF Hub:
@@ -349,11 +350,27 @@ df.write_parquet(
 
 ---
 
-### Task 8.3: E2E Tests (Real HF) [ ]
-```python
-@pytest.mark.requires_hf_token
-def test_streaming_upload(hf_test_repo):
-    df.write_parquet(f"hf://datasets/{hf_test_repo}/data/test.parquet")
+### Task 8.3: E2E Tests (Real HF) 🔄 IN PROGRESS
+
+Python E2E tests using a real HF Hub repository (`davanstrien/test-polars-streaming`).
+
+| Subtask | Description | Status |
+|---------|-------------|--------|
+| **8.3.1** | First E2E test (basic upload) | ✅ Complete |
+|   8.3.1a | Add `hf_hub` pytest marker to pyproject.toml | ✅ Complete |
+|   8.3.1b | Create conftest.py with HF fixtures | ✅ Complete |
+|   8.3.1c | Create test_hf_sink.py with test_basic_upload | ✅ Complete |
+| **8.3.2** | test_overwrite_mode | [ ] Pending |
+| **8.3.3** | test_append_mode | [ ] Pending |
+| **8.3.4** | test_partitioned_write | [ ] Pending |
+
+**Files Created:**
+- `py-polars/tests/unit/io/cloud/conftest.py` - HF fixtures (hf_token, hf_test_repo)
+- `py-polars/tests/unit/io/cloud/test_hf_sink.py` - E2E tests
+
+**Run Tests:**
+```bash
+HF_TOKEN=hf_xxx pytest -m "hf_hub" py-polars/tests/unit/io/cloud/test_hf_sink.py -v
 ```
 
 ### Task 8.4: Performance Benchmarks [ ]
@@ -394,13 +411,17 @@ def test_streaming_upload(hf_test_repo):
   - [x] Task 8.2.4: test_single_shard_upload ✅ (16 mock tests)
   - [x] Task 8.2.5: test_multi_shard_upload ✅ (17 mock tests)
   - [x] Task 8.2.6: test_overwrite_mode ✅ (18 mock tests)
-  - [ ] Task 8.3: E2E Tests (Real HF)
+  - [ ] Task 8.3: E2E Tests (Real HF) 🔄
+    - [x] Task 8.3.1: First E2E test (test_basic_upload) ✅
+    - [ ] Task 8.3.2: test_overwrite_mode
+    - [ ] Task 8.3.3: test_append_mode
+    - [ ] Task 8.3.4: test_partitioned_write
   - [ ] Task 8.4: Performance Benchmarks
 - [ ] **Phase 9:** Documentation (0/4)
 
 **Status:** 7/9 phases complete. Mock testing complete (18 tests)!
 
-**Next:** Task 8.3 - E2E Tests (Real HF Hub)
+**Next:** Task 8.3.2 - test_overwrite_mode (E2E)
 
 ---
 
