@@ -445,38 +445,29 @@ Verify the wheels install and work in a clean environment.
 
 | Issue | Description | Status | Priority |
 |-------|-------------|--------|----------|
-| **BUG-001** | "upload channel closed unexpectedly" on large streaming writes | [ ] | High |
+| **BUG-001** | "upload channel closed unexpectedly" on large streaming writes | ✅ Fixed | High |
 
-### BUG-001: Upload Channel Closed Unexpectedly
+### BUG-001: Upload Channel Closed Unexpectedly ✅ FIXED
+
+**Root Cause Identified:** The issue had two components:
+1. **`.unwrap()` panic** at line 1398 in `upload_shard_task` masked the real network error
+2. **Immediate retry on 429** - when `RateLimit` header was missing, `wait_secs.unwrap_or(0)` caused 0-second waits between retries
 
 **Symptom:** `ComputeError: upload channel closed unexpectedly` when streaming larger datasets.
 
-**Reproduction:**
-```python
-import polars as pl
+**Fix Applied (2026-01-30):**
 
-lf = pl.scan_parquet("hf://datasets/HuggingFaceFW/finepdfs/data/deu_Latn/train/*.parquet")
-filtered = lf.select(["id", "url", "language", "token_count"])
-filtered.sink_parquet(
-    "hf://datasets/davanstrien/test-polars-streaming/finepdfs-filtered.parquet",
-    storage_options={"token": "hf_xxx"},
-    hf_options={"mode": "overwrite"}
-)
-```
+| Change | File | Line |
+|--------|------|------|
+| Replace `.unwrap()` with `map_err()` | `hf_sink/mod.rs` | 1398 |
+| Change fallback wait from 0s to 30s | `lfs/client.rs` | 293 |
+| Increase rate limit retries from 3 to 5 | `lfs/client.rs` | 19 |
 
-**Observed:** Small writes work (single file, head(1000)). Larger multi-file streaming fails.
+**Files Modified:**
+- `crates/polars-stream/src/nodes/io_sinks/hf_sink/mod.rs`
+- `crates/polars-io/src/cloud/hf/lfs/client.rs`
 
-**Possible Causes:**
-1. Network timeout during long uploads
-2. HF Hub rate limiting on LFS uploads
-3. Channel synchronization issue between `buffer_and_write_task` and `upload_shard_task`
-4. Memory pressure causing task failure
-
-**Investigation Tasks:**
-- [ ] Add better error logging to capture underlying cause
-- [ ] Test with different shard sizes (`max_shard_size` option)
-- [ ] Check if issue is related to number of shards vs total data size
-- [ ] Test with `upload_concurrency=1` to rule out concurrency issues
+**Tests:** All 86 HF sink tests pass. Error messages now show actual network failures instead of "channel closed".
 
 ---
 

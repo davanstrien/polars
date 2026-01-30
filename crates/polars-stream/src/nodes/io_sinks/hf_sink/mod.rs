@@ -1395,7 +1395,9 @@ fn upload_shard_task(
 
     // Return a polars executor handle that awaits the Tokio handle
     spawn(TaskPriority::Low, async move {
-        io_handle.await.unwrap()
+        io_handle
+            .await
+            .map_err(|e| polars_err!(ComputeError: "HF upload task failed: {}", e))?
     })
 }
 

@@ -16,7 +16,8 @@ use crate::pl_async::with_concurrency_budget;
 use crate::utils::decode_json_response;
 
 /// Maximum number of retries on rate limit (429).
-const MAX_RATE_LIMIT_RETRIES: usize = 3;
+/// HF Hub rate limits are over 5-minute windows, so allow more retries.
+const MAX_RATE_LIMIT_RETRIES: usize = 5;
 
 /// Client for interacting with HF Hub's LFS (Large File Storage) API.
 ///
@@ -288,9 +289,10 @@ impl LfsClient {
                     .and_then(parse_rate_limit_wait);
 
                 let body = resp.text().await.unwrap_or_default();
+                // Default to 30s wait if RateLimit header missing or unparseable
                 polars_bail!(
                     ComputeError: "HTTP 429 rate limited (wait={}): {}",
-                    wait_secs.unwrap_or(0),
+                    wait_secs.unwrap_or(30),
                     body
                 );
             }
