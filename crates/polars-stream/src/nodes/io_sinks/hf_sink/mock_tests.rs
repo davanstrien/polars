@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use wiremock::matchers::{body_string_contains, header, method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use polars_io::cloud::hf::commit::{CommitClient, CommitOperation, CommitOperationAdd};
+use polars_io::cloud::hf::commit::{CommitClient, CommitOperation, CommitOperationAdd, CommitOperationDelete};
 use polars_io::cloud::hf::lfs::{LfsClient, UploadExecutor};
 use polars_io::cloud::hf::{HFRepoLocation, HfSinkOptions, MmapBuffer, sha256_to_hex};
 
@@ -177,6 +177,52 @@ impl MockHfHub {
 
         Mock::given(method("GET"))
             .and(path_regex(r"/api/datasets/.*/tree/.*"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(response_json)
+                    .insert_header("content-type", "application/json"),
+            )
+            .mount(&self.mock_server)
+            .await;
+
+        self
+    }
+
+    /// Mount a mock for commit API that verifies deletedFile entries are present.
+    ///
+    /// Use this for overwrite mode tests where existing files should be deleted.
+    /// The mock will only match requests containing "deletedFile" in the body.
+    ///
+    /// URL pattern: `POST /api/datasets/{repo}/commit/{revision}`
+    ///
+    /// # Arguments
+    /// * `commit_oid` - The commit OID to return in the response (40-char hex)
+    ///
+    /// # Example
+    /// ```ignore
+    /// mock.mock_tree(vec![MockTreeEntry::file("data/old.parquet", 1024)])
+    ///     .await
+    ///     .mock_lfs_batch(vec![...])
+    ///     .await
+    ///     .mock_commit_with_deletes("abc123...")
+    ///     .await;
+    /// ```
+    pub async fn mock_commit_with_deletes(&self, commit_oid: impl Into<String>) -> &Self {
+        let oid = commit_oid.into();
+        let response_json = format!(
+            r#"{{
+                "commitUrl": "{}/datasets/user/repo/commit/{}",
+                "commitOid": "{}"
+            }}"#,
+            self.uri(),
+            oid,
+            oid
+        );
+
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/api/datasets/.*/commit/.*"))
+            .and(header("content-type", "application/x-ndjson"))
+            .and(body_string_contains("deletedFile")) // Verify delete entries present
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_string(response_json)
@@ -905,4 +951,125 @@ async fn test_multi_shard_upload() {
     // 7. Verify success
     assert!(commit_info.commit_url.contains("commit"));
     assert_eq!(commit_info.oid, "abc123def456789012345678901234567890abcd");
+}
+
+// ============================================================================
+// Integration Tests - Task 8.2.6: Overwrite Mode
+// ============================================================================
+
+/// Integration test for overwrite mode: deletes existing files before adding new ones.
+///
+/// Tests the overwrite flow:
+/// 1. Mock Tree API to return 2 existing files
+/// 2. Create 1 new shard to upload
+/// 3. Mock LFS batch + presigned upload for new shard
+/// 4. Mock commit API (verify body contains deletedFile entries)
+/// 5. Execute flow using CommitClient with operations containing deletes + adds
+/// 6. Verify commit succeeds
+///
+/// The key difference from test_multi_shard_upload is:
+/// - Operations include both CommitOperation::Delete (for existing files)
+/// - And CommitOperation::Add (for new uploads)
+/// - mock_commit_with_deletes() validates that deletedFile entries are in commit body
+#[tokio::test]
+async fn test_overwrite_mode() {
+    // 1. Define new shard to upload (will replace existing files)
+    let new_data = b"new shard content for overwrite mode test - replacing existing files";
+    let new_sha256 = compute_sha256(new_data);
+    let new_size = new_data.len() as u64;
+
+    // 2. Start mock server with all endpoints
+    // - mock_tree: simulates existing files that will be deleted
+    // - mock_lfs_batch: for the new upload
+    // - mock_presigned_upload: for actual upload
+    // - mock_commit_with_deletes: validates deletedFile entries in commit
+    let mock = MockHfHub::start().await;
+    mock.mock_tree(vec![
+        MockTreeEntry::file("data/train-00000.parquet", 1024),
+        MockTreeEntry::file("data/train-00001.parquet", 2048),
+    ])
+    .await
+    .mock_lfs_batch(vec![MockLfsObject::new_upload(&new_sha256, new_size)])
+    .await
+    .mock_presigned_upload()
+    .await
+    .mock_commit_with_deletes("def456abc789012345678901234567890abcdef01")
+    .await;
+
+    // 3. Create clients with mock server URL
+    let lfs_client = LfsClient::new(
+        "datasets",
+        "user/test-repo",
+        "main",
+        "test_token",
+        Some(&mock.uri()),
+    )
+    .unwrap();
+    let upload_executor = UploadExecutor::new_with_base_url(Some(&mock.uri())).unwrap();
+    let commit_client = CommitClient::new(
+        "datasets",
+        "user/test-repo",
+        "main",
+        "test_token",
+        Some(&mock.uri()),
+    )
+    .unwrap();
+
+    // 4. Create buffer and upload new shard
+    let mut buffer = MmapBuffer::new(new_size as usize).unwrap();
+    buffer.write_all(new_data).unwrap();
+    let handle = buffer.into_read_handle().unwrap();
+
+    // LFS batch request to get presigned URL
+    let transfer = lfs_client
+        .request_upload(&new_sha256, new_size)
+        .await
+        .unwrap();
+
+    // Upload to presigned URL
+    let _completions = upload_executor
+        .upload(handle, transfer, &new_sha256, 0, None)
+        .await
+        .unwrap();
+
+    // 5. Build operations with BOTH deletes (existing files) and adds (new upload)
+    // In production, this is how overwrite mode works in finalize():
+    // - check_existing_files() returns existing files
+    // - create_delete_operations() builds Delete ops for each
+    // - New shards are added as Add ops
+    // - All ops committed atomically
+    let operations = vec![
+        // Delete existing files first (order matters for atomic commit)
+        CommitOperation::Delete(CommitOperationDelete {
+            path_in_repo: "data/train-00000.parquet".to_string(),
+        }),
+        CommitOperation::Delete(CommitOperationDelete {
+            path_in_repo: "data/train-00001.parquet".to_string(),
+        }),
+        // Add new file (replaces with fresh shard)
+        CommitOperation::Add(CommitOperationAdd::lfs(
+            "data/train-00000.parquet".to_string(),
+            new_sha256.clone(),
+            new_size,
+        )),
+    ];
+
+    // 6. Create atomic commit with deletes + adds
+    // The mock_commit_with_deletes will only succeed if body contains "deletedFile"
+    let commit_info = commit_client
+        .create_commit(
+            "Replace existing files via Polars",
+            Some("Overwrite mode: deleted 2, added 1"),
+            &operations,
+            false,
+        )
+        .await
+        .unwrap();
+
+    // 7. Verify success
+    assert!(commit_info.commit_url.contains("commit"));
+    assert_eq!(
+        commit_info.oid,
+        "def456abc789012345678901234567890abcdef01"
+    );
 }
