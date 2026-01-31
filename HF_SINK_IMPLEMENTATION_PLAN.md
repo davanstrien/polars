@@ -14,11 +14,13 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ 86 Rust tests pass (unit + mock integration)
 ✅ BUG-001 FIXED - error propagation now shows actual errors
 ✅ BUG-002 FIXED - multipart uploads now use correct HF Hub response format
+🔴 BUG-003 DISCOVERED - Completion channel deadlock blocks 2+ shard uploads
 🔄 Phase 9 in progress - Distribution & Demo
-🔄 Task 9.3.4a COMPLETE - Python wheel built with BUG-002 fix
 ```
 
-**Next Step:** Task 9.3.4b - Create test script for large DataFrame (~1M rows, >100MB) to validate multipart upload fix
+**Next Step:** Fix BUG-003 (completion channel deadlock) - blocks all multi-shard uploads
+
+**BUG-003 Summary:** The completion channel has capacity=1. When uploading 2+ shards, shard 1's completion send blocks because the channel is full. But `finalize()` only drains the channel after the upload task completes, creating a deadlock. See "Known Issues" section for details.
 
 **Local Dev Environment Ready:**
 ```bash
@@ -515,6 +517,7 @@ Verify the wheels install and work in a clean environment.
 |-------|-------------|--------|----------|
 | **BUG-001** | "upload channel closed unexpectedly" on large streaming writes | ✅ Fixed | High |
 | **BUG-002** | Multipart upload fails with 404 on `/api/complete_multipart` | ✅ Fixed | High |
+| **BUG-003** | Deadlock when uploading 2+ shards (completion channel capacity=1) | 🔴 Open | **Blocker** |
 
 ### BUG-001: Upload Channel Closed Unexpectedly ✅ FIXED
 
@@ -582,6 +585,25 @@ But Polars expected `actions.parts[]` array format (which doesn't exist).
 **Tests:** All 86 HF sink tests pass. Unit tests added for multipart format parsing.
 
 **Validation Pending:** Task 9.3.4 - test large file upload (>100MB) to verify fix with real HF Hub
+
+### BUG-003: Completion Channel Deadlock 🔴 OPEN (Blocker)
+
+**Discovered:** 2026-01-31 during Task 9.3.4 testing
+
+**Symptom:** Upload hangs when writing 2+ shards. Shard 0 completes, shard 1 hangs after "already exists".
+
+**Root Cause:** The completion channel (`connector::<ShardCompletion>()`) has **capacity 1**. When shard 1 tries to send its completion, the channel is full (shard 0's completion not yet consumed). But `finalize()` only drains the channel AFTER `upload_task.await` completes - creating a deadlock.
+
+**Key Location:** `hf_sink/mod.rs` line ~1530: `let (completion_tx, completion_rx) = connector::<ShardCompletion>();`
+
+**Suggested Fixes:**
+1. Use a buffered channel (e.g., `tokio::sync::mpsc::channel(32)`)
+2. Drain completions concurrently with upload task in `finalize()`
+3. Buffer completions in upload task, send all at end
+
+**Testing:** Add integration test with 2+ shards to prevent regression.
+
+**TODO:** Once fixed, consolidate BUG-001/002/003 details into archive doc to reduce plan size.
 
 ---
 
