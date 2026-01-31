@@ -15,6 +15,16 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ BUG-001 FIXED - error propagation now shows actual errors
 ✅ BUG-002 FIXED - multipart uploads now use correct HF Hub response format
 🔄 Phase 9 in progress - Distribution & Demo
+🔄 Task 9.3.4a COMPLETE - Python wheel built with BUG-002 fix
+```
+
+**Next Step:** Task 9.3.4b - Create test script for large DataFrame (~1M rows, >100MB) to validate multipart upload fix
+
+**Local Dev Environment Ready:**
+```bash
+cd /Users/davanstrien/Documents/code/polars
+source .venv/bin/activate
+python -c "import polars; print(polars.__version__)"  # 1.37.1
 ```
 
 **Python E2E Test Result:** Successfully uploaded file to HF Hub:
@@ -28,9 +38,10 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ cargo check -p polars-python                    # PASSES (hf_sink enabled via io feature)
 ✅ cargo test -p polars-stream --features hf_sink hf_sink # 86 tests pass
 ✅ Python E2E test - PASSES
+✅ Local wheel build (maturin develop --release) - 16m 36s
 ```
 
-**Branch:** `feature/hf-hub-sink` (216 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (217 commits ahead of main after this commit)
 
 ---
 
@@ -461,11 +472,18 @@ Verify the wheels install and work in a clean environment.
 
 | Subtask | Description | Status |
 |---------|-------------|--------|
-| **9.3.4a** | Build Python wheel with latest BUG-002 fix | [ ] |
+| **9.3.4a** | Build Python wheel with latest BUG-002 fix | ✅ Complete |
 | **9.3.4b** | Create test script for large DataFrame (~1M rows, >100MB) | [ ] |
 | **9.3.4c** | Run test and verify multipart upload succeeds | [ ] |
 | **9.3.4d** | Read back and verify data integrity | [ ] |
 | **9.3.4e** | Update implementation plan with results | [ ] |
+
+**Task 9.3.4a Details (2026-01-31):**
+- Build command: `maturin develop --release -m py-polars/runtime/polars-runtime-32/Cargo.toml`
+- Build time: 16m 36s (release profile)
+- Wheel built: `polars_runtime_32-1.37.1-cp310-abi3-linux_aarch64.whl`
+- Polars version: 1.37.1
+- Small file smoke test: ✅ PASSED (uploaded to `hf://datasets/davanstrien/test-polars-streaming/data/build-test-9.3.4a-*.parquet`)
 
 **Notes:**
 - Must install BOTH `polars-*.whl` (base) AND `polars_runtime_32-*.whl` (runtime)
