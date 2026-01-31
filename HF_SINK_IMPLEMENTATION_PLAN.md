@@ -18,9 +18,19 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 🔄 Phase 9 in progress - Distribution & Demo
 ```
 
-**Next Step:** Task 9.3.4b - Test large file upload (>100MB) to verify BUG-002 multipart fix
+**Next Step:** Task 9.4 - Create demo notebook
 
-**All Blockers Resolved!** BUG-001, BUG-002, and BUG-003 are now fixed. Ready to test large uploads.
+**All Blockers Resolved!** BUG-001, BUG-002, and BUG-003 are now fixed.
+
+**Task 9.3.4b COMPLETE:** Large file upload verified (2026-01-31)
+- Test: `scratch/test_large_upload_9_3_4b.py`
+- Generated: 1M rows, 5 columns (~72.4 MB)
+- Upload time: ~1.5-2s (sink_parquet streaming, 72MB file)
+- Read-back verified: all integrity checks passed
+- **Confirms BUG-002 fix works** - multipart upload (>16MB threshold) succeeded!
+- **Both paths verified:**
+  - `df.write_parquet("hf://...")` - eager write ✅
+  - `df.lazy().sink_parquet("hf://...")` - streaming via HfSinkNode ✅
 
 **Local Dev Environment Ready:**
 ```bash
@@ -43,7 +53,7 @@ python -c "import polars; print(polars.__version__)"  # 1.37.1
 ✅ Local wheel build (maturin develop --release) - 16m 36s
 ```
 
-**Branch:** `feature/hf-hub-sink` (220 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (221 commits ahead of main)
 
 ---
 
@@ -87,8 +97,8 @@ But Polars expected `actions.parts[]` array format (which doesn't exist).
 3. ~~Set up GitHub Actions to build wheels (Linux x64)~~ ✅ (Task 9.2.1)
 4. Add macOS ARM64 to wheel build (Task 9.2.2) - *helps with local debugging*
 5. ~~Smoke test install in Colab~~ ✅ (small files work)
-6. **🔄 Test large file upload (>100MB)** - Task 9.3.4 - verify BUG-002 fix with real HF Hub
-7. Create demo notebook
+6. ~~Test large file upload (>16MB multipart)~~ ✅ Task 9.3.4b - BUG-002 fix verified with 72MB upload
+7. Create demo notebook (Task 9.4)
 
 **Recent Fixes:**
 - BUG-001 ✅ FIXED - error propagation now shows actual errors
