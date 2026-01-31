@@ -11,7 +11,7 @@ use polars_core::config;
 use polars_error::{PolarsResult, polars_bail, to_compute_err};
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG};
 
-use super::types::{LfsPartCompletion, LfsPartInfo, LfsTransfer};
+use super::types::{LfsPartCompletion, LfsTransfer};
 use crate::cloud::hf::mmap_buffer::MmapReadHandle;
 use crate::cloud::hf::HfSinkProgress;
 use crate::cloud::options::USER_AGENT;
@@ -88,8 +88,10 @@ impl UploadExecutor {
     /// * `progress` - Optional progress callback for upload tracking
     ///
     /// # Returns
-    /// * `Ok(None)` - File already exists, skipped upload
-    /// * `Ok(Some(completions))` - Multipart upload completed, returns part ETags
+    /// * `Ok(None)` - File already exists or basic upload (no multipart completion needed)
+    /// * `Ok(Some((completion_url, completions)))` - Multipart upload completed,
+    ///   returns the completion URL and part ETags. Caller should POST to completion_url
+    ///   with the part completions.
     /// * `Err(...)` - Upload failed after retries
     pub async fn upload(
         &self,
@@ -98,7 +100,7 @@ impl UploadExecutor {
         sha256: &str,
         shard_index: usize,
         progress: Option<Arc<dyn HfSinkProgress>>,
-    ) -> PolarsResult<Option<Vec<LfsPartCompletion>>> {
+    ) -> PolarsResult<Option<(String, Vec<LfsPartCompletion>)>> {
         match transfer {
             LfsTransfer::AlreadyExists => {
                 if config::verbose() {
@@ -111,11 +113,17 @@ impl UploadExecutor {
                     .await?;
                 Ok(None)
             },
-            LfsTransfer::Multipart { parts } => {
+            LfsTransfer::Multipart {
+                completion_url,
+                chunk_size,
+                part_urls,
+            } => {
                 let completions = self
-                    .upload_multipart(data.as_slice(), &parts, shard_index, progress)
+                    .upload_multipart(data.as_slice(), chunk_size, &part_urls, shard_index, progress)
                     .await?;
-                Ok(Some(completions))
+                // Return the completion URL along with part completions
+                // The caller needs the completion_url to finalize the upload
+                Ok(Some((completion_url, completions)))
             },
         }
     }
@@ -212,55 +220,49 @@ impl UploadExecutor {
 
     /// Upload data using multipart upload.
     ///
-    /// This uploads parts in parallel and returns completion info with ETags.
+    /// This uploads parts sequentially and returns completion info with ETags.
     /// The caller should then call `LfsClient::complete_multipart()` with these.
+    ///
+    /// # Arguments
+    /// * `data` - The complete file data
+    /// * `chunk_size` - Size of each chunk in bytes (from LFS batch response)
+    /// * `part_urls` - Presigned S3 URLs for each part, as (part_number, url) tuples
+    /// * `shard_index` - Zero-based index of the shard being uploaded
+    /// * `progress` - Optional progress callback
     async fn upload_multipart(
         &self,
         data: &[u8],
-        parts: &[LfsPartInfo],
+        chunk_size: u64,
+        part_urls: &[(u32, String)],
         shard_index: usize,
         progress: Option<Arc<dyn HfSinkProgress>>,
     ) -> PolarsResult<Vec<LfsPartCompletion>> {
-        if parts.is_empty() {
+        if part_urls.is_empty() {
             polars_bail!(ComputeError: "multipart upload requires at least one part");
         }
 
         let total_size = data.len() as u64;
+        let chunk_size = chunk_size as usize;
 
         // Report upload start (0 bytes)
         if let Some(ref p) = progress {
             p.on_shard_upload_progress(shard_index, 0, total_size);
         }
 
-        // Calculate byte ranges for each part
-        let mut offset = 0usize;
-        let part_ranges: Vec<_> = parts
-            .iter()
-            .map(|part| {
-                let start = offset;
-                let end = start + part.size as usize;
-                offset = end;
-                (part, start..end)
-            })
-            .collect();
-
-        // Verify total size matches
-        if offset != data.len() {
-            polars_bail!(
-                ComputeError: "multipart parts total size ({}) doesn't match data size ({})",
-                offset,
-                data.len()
-            );
-        }
-
-        // Upload parts sequentially for now
+        // Upload parts sequentially
         // TODO: Consider parallel upload with futures::stream::buffered()
-        let mut completions = Vec::with_capacity(parts.len());
+        let mut completions = Vec::with_capacity(part_urls.len());
         let mut bytes_uploaded: u64 = 0;
 
-        for (part, range) in part_ranges {
-            let data_slice = &data[range.clone()];
-            let completion = self.upload_single_part_with_retry(part, data_slice).await?;
+        for (i, (part_number, url)) in part_urls.iter().enumerate() {
+            // Calculate byte range for this part
+            let start = i * chunk_size;
+            let end = std::cmp::min(start + chunk_size, data.len());
+            let data_slice = &data[start..end];
+
+            let completion = self
+                .upload_single_part_with_retry(*part_number, url, data_slice)
+                .await?;
             completions.push(completion);
 
             // Report progress after each part
@@ -283,18 +285,19 @@ impl UploadExecutor {
     /// Upload a single part with retry, returning completion info.
     async fn upload_single_part_with_retry(
         &self,
-        part: &LfsPartInfo,
+        part_number: u32,
+        url: &str,
         data: &[u8],
     ) -> PolarsResult<LfsPartCompletion> {
         let mut retries = 0;
 
         loop {
-            let result = self.upload_single_part(part, data).await;
+            let result = self.upload_single_part(part_number, url, data).await;
 
             match result {
                 Ok(etag) => {
                     return Ok(LfsPartCompletion {
-                        part_number: part.part_number,
+                        part_number,
                         etag,
                     });
                 },
@@ -303,7 +306,7 @@ impl UploadExecutor {
                     if retries > MAX_UPLOAD_RETRIES {
                         polars_bail!(
                             ComputeError: "part {} upload failed after {} retries: {}",
-                            part.part_number,
+                            part_number,
                             MAX_UPLOAD_RETRIES,
                             e
                         );
@@ -313,7 +316,7 @@ impl UploadExecutor {
                     if config::verbose() {
                         eprintln!(
                             "Part {} upload failed, retrying in {}ms: {}",
-                            part.part_number, delay, e
+                            part_number, delay, e
                         );
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
@@ -323,11 +326,16 @@ impl UploadExecutor {
     }
 
     /// Upload a single part and return the ETag.
-    async fn upload_single_part(&self, part: &LfsPartInfo, data: &[u8]) -> PolarsResult<String> {
+    async fn upload_single_part(
+        &self,
+        part_number: u32,
+        url: &str,
+        data: &[u8],
+    ) -> PolarsResult<String> {
         with_concurrency_budget(1, || async {
             let resp = self
                 .client
-                .put(&part.href)
+                .put(url)
                 .header(CONTENT_LENGTH, data.len())
                 .header(CONTENT_TYPE, "application/octet-stream")
                 .body(Bytes::copy_from_slice(data))
@@ -348,7 +356,7 @@ impl UploadExecutor {
                 let body = resp.text().await.unwrap_or_default();
                 polars_bail!(
                     ComputeError: "S3 multipart part {} upload failed (HTTP {}): {}",
-                    part.part_number,
+                    part_number,
                     status.as_u16(),
                     body
                 );
@@ -358,7 +366,7 @@ impl UploadExecutor {
             etag.ok_or_else(|| {
                 polars_error::polars_err!(
                     ComputeError: "S3 response missing ETag for part {}",
-                    part.part_number
+                    part_number
                 )
             })
         })
@@ -390,39 +398,28 @@ mod tests {
     #[test]
     fn test_part_range_calculation() {
         // Simulate what upload_multipart does for range calculation
-        let parts = vec![
-            LfsPartInfo {
-                part_number: 1,
-                size: 100,
-                href: "http://example.com/part1".to_string(),
-            },
-            LfsPartInfo {
-                part_number: 2,
-                size: 150,
-                href: "http://example.com/part2".to_string(),
-            },
-            LfsPartInfo {
-                part_number: 3,
-                size: 50,
-                href: "http://example.com/part3".to_string(),
-            },
+        // With the new format, we use chunk_size to calculate ranges
+        let chunk_size: usize = 100;
+        let part_urls = vec![
+            (1u32, "http://example.com/part1".to_string()),
+            (2u32, "http://example.com/part2".to_string()),
+            (3u32, "http://example.com/part3".to_string()),
         ];
+        let data_len = 280; // 3 parts: 100 + 100 + 80 bytes
 
-        let mut offset = 0usize;
-        let ranges: Vec<_> = parts
+        let ranges: Vec<_> = part_urls
             .iter()
-            .map(|part| {
-                let start = offset;
-                let end = start + part.size as usize;
-                offset = end;
-                (part.part_number, start..end)
+            .enumerate()
+            .map(|(i, (part_number, _url))| {
+                let start = i * chunk_size;
+                let end = std::cmp::min(start + chunk_size, data_len);
+                (*part_number, start..end)
             })
             .collect();
 
         assert_eq!(ranges.len(), 3);
         assert_eq!(ranges[0], (1, 0..100));
-        assert_eq!(ranges[1], (2, 100..250));
-        assert_eq!(ranges[2], (3, 250..300));
-        assert_eq!(offset, 300); // Total size
+        assert_eq!(ranges[1], (2, 100..200));
+        assert_eq!(ranges[2], (3, 200..280)); // Last part is smaller
     }
 }

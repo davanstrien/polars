@@ -105,6 +105,22 @@ impl LfsObject {
     ///
     /// Returns `Err` if the object has an error, otherwise returns the
     /// appropriate transfer action (AlreadyExists, Basic, or Multipart).
+    ///
+    /// For multipart uploads, HF Hub returns the format:
+    /// ```json
+    /// {
+    ///   "actions": {
+    ///     "upload": {
+    ///       "href": "https://huggingface.co/api/complete_multipart?...",
+    ///       "header": {
+    ///         "chunk_size": "16000000",
+    ///         "00001": "https://s3.../part1?...",
+    ///         "00002": "https://s3.../part2?..."
+    ///       }
+    ///     }
+    ///   }
+    /// }
+    /// ```
     pub fn into_transfer(self) -> Result<LfsTransfer, LfsObjectError> {
         // Check for per-object error
         if let Some(error) = self.error {
@@ -115,16 +131,52 @@ impl LfsObject {
         match self.actions {
             None => Ok(LfsTransfer::AlreadyExists),
             Some(actions) => {
-                // Prefer multipart if parts are provided
-                if let Some(parts) = actions.parts {
-                    Ok(LfsTransfer::Multipart { parts })
-                } else if let Some(upload) = actions.upload {
-                    Ok(LfsTransfer::Basic {
-                        url: upload.href,
-                        headers: upload.header,
-                    })
+                if let Some(upload) = actions.upload {
+                    // Check for multipart by looking for chunk_size in header
+                    if let Some(chunk_size_str) = upload.header.get("chunk_size") {
+                        // Parse chunk_size
+                        let chunk_size: u64 = chunk_size_str.parse().map_err(|_| LfsObjectError {
+                            code: 422,
+                            message: format!(
+                                "Invalid chunk_size in multipart response: {}",
+                                chunk_size_str
+                            ),
+                        })?;
+
+                        // Extract part URLs from numeric header keys (e.g., "00001", "00002", "1", "2")
+                        let mut part_urls: Vec<(u32, String)> = upload
+                            .header
+                            .iter()
+                            .filter_map(|(key, url)| {
+                                // Try to parse the key as a number (handles "1", "00001", etc.)
+                                key.parse::<u32>().ok().map(|n| (n, url.clone()))
+                            })
+                            .collect();
+
+                        // Sort by part number to ensure correct upload order
+                        part_urls.sort_by_key(|(n, _)| *n);
+
+                        if part_urls.is_empty() {
+                            return Err(LfsObjectError {
+                                code: 422,
+                                message: "No part URLs found in multipart response".to_string(),
+                            });
+                        }
+
+                        Ok(LfsTransfer::Multipart {
+                            completion_url: upload.href,
+                            chunk_size,
+                            part_urls,
+                        })
+                    } else {
+                        // Basic transfer - no chunk_size means single upload
+                        Ok(LfsTransfer::Basic {
+                            url: upload.href,
+                            headers: upload.header,
+                        })
+                    }
                 } else {
-                    // No upload action and no parts = already exists
+                    // No upload action = already exists
                     Ok(LfsTransfer::AlreadyExists)
                 }
             },
@@ -200,7 +252,7 @@ impl std::error::Error for LfsObjectError {}
 /// This enum abstracts the three possible outcomes from the LFS batch API:
 /// - File already exists (skip upload)
 /// - Basic upload (single PUT request)
-/// - Multipart upload (multiple PUT requests)
+/// - Multipart upload (multiple PUT requests to S3, then POST to completion URL)
 #[derive(Debug, Clone)]
 pub enum LfsTransfer {
     /// File already exists on HF Hub - skip upload.
@@ -212,10 +264,20 @@ pub enum LfsTransfer {
         /// Headers to include in the PUT request
         headers: HashMap<String, String>,
     },
-    /// Multipart upload - upload in chunks, then complete.
+    /// Multipart upload - upload chunks to S3, then complete via HF Hub API.
+    ///
+    /// HF Hub returns multipart info in `actions.upload` with:
+    /// - `href`: The completion URL to POST to after all parts uploaded
+    /// - `header.chunk_size`: Size of each part in bytes
+    /// - `header["00001"]`, `header["00002"]`, etc.: Presigned S3 URLs for each part
     Multipart {
-        /// Parts to upload
-        parts: Vec<LfsPartInfo>,
+        /// URL to POST completion request to (from `actions.upload.href`)
+        completion_url: String,
+        /// Size of each chunk in bytes (from `header.chunk_size`)
+        chunk_size: u64,
+        /// Presigned S3 URLs for each part, sorted by part number.
+        /// Each tuple is (part_number, presigned_url).
+        part_urls: Vec<(u32, String)>,
     },
 }
 
@@ -239,9 +301,12 @@ impl LfsTransfer {
 ///
 /// After uploading a part to the presigned S3 URL, the response includes
 /// an ETag header. This struct captures that for the completion request.
+///
+/// Note: HF Hub expects `partNumber` (camelCase) in the JSON payload.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LfsPartCompletion {
-    /// Part number (1-indexed, matching the original LfsPartInfo)
+    /// Part number (1-indexed)
     pub part_number: u32,
     /// ETag from S3 response header (includes surrounding quotes)
     pub etag: String,
@@ -326,6 +391,7 @@ mod tests {
 
     #[test]
     fn test_deserialize_multipart_upload() {
+        // Test the actual HF Hub multipart format with numeric header keys
         let json = r#"{
             "transfer": "multipart",
             "objects": [{
@@ -333,10 +399,14 @@ mod tests {
                 "size": 104857600,
                 "authenticated": true,
                 "actions": {
-                    "parts": [
-                        {"part_number": 1, "size": 5242880, "href": "https://s3.example.com/part1"},
-                        {"part_number": 2, "size": 5242880, "href": "https://s3.example.com/part2"}
-                    ]
+                    "upload": {
+                        "href": "https://huggingface.co/api/complete_multipart?uploadId=xyz",
+                        "header": {
+                            "chunk_size": "16000000",
+                            "00001": "https://s3.example.com/part1?partNumber=1",
+                            "00002": "https://s3.example.com/part2?partNumber=2"
+                        }
+                    }
                 }
             }]
         }"#;
@@ -345,14 +415,28 @@ mod tests {
 
         assert_eq!(response.transfer, "multipart");
 
-        let obj = &response.objects[0];
-        let actions = obj.actions.as_ref().unwrap();
-        let parts = actions.parts.as_ref().unwrap();
+        let obj = response.objects.into_iter().next().unwrap();
+        let transfer = obj.into_transfer().unwrap();
 
-        assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0].part_number, 1);
-        assert_eq!(parts[0].size, 5242880);
-        assert_eq!(parts[1].part_number, 2);
+        match transfer {
+            LfsTransfer::Multipart {
+                completion_url,
+                chunk_size,
+                part_urls,
+            } => {
+                assert_eq!(
+                    completion_url,
+                    "https://huggingface.co/api/complete_multipart?uploadId=xyz"
+                );
+                assert_eq!(chunk_size, 16000000);
+                assert_eq!(part_urls.len(), 2);
+                assert_eq!(part_urls[0].0, 1); // part number
+                assert!(part_urls[0].1.contains("part1"));
+                assert_eq!(part_urls[1].0, 2);
+                assert!(part_urls[1].1.contains("part2"));
+            },
+            _ => panic!("Expected Multipart transfer"),
+        }
     }
 
     #[test]
@@ -429,25 +513,25 @@ mod tests {
 
     #[test]
     fn test_into_transfer_multipart() {
+        // Multipart is detected by presence of chunk_size in header
         let obj = LfsObject {
             oid: "large_hash".to_string(),
             size: 100_000_000,
             authenticated: Some(true),
             actions: Some(LfsActions {
-                upload: None,
+                upload: Some(LfsAction {
+                    href: "https://huggingface.co/api/complete_multipart?uploadId=abc".to_string(),
+                    header: [
+                        ("chunk_size".to_string(), "50000000".to_string()),
+                        ("1".to_string(), "https://s3.example.com/part1".to_string()),
+                        ("2".to_string(), "https://s3.example.com/part2".to_string()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    expires_at: None,
+                }),
                 verify: None,
-                parts: Some(vec![
-                    LfsPartInfo {
-                        part_number: 1,
-                        size: 50_000_000,
-                        href: "https://s3.example.com/part1".to_string(),
-                    },
-                    LfsPartInfo {
-                        part_number: 2,
-                        size: 50_000_000,
-                        href: "https://s3.example.com/part2".to_string(),
-                    },
-                ]),
+                parts: None,
             }),
             error: None,
         };
@@ -455,10 +539,19 @@ mod tests {
         let transfer = obj.into_transfer().unwrap();
 
         match transfer {
-            LfsTransfer::Multipart { parts } => {
-                assert_eq!(parts.len(), 2);
-                assert_eq!(parts[0].part_number, 1);
-                assert_eq!(parts[1].part_number, 2);
+            LfsTransfer::Multipart {
+                completion_url,
+                chunk_size,
+                part_urls,
+            } => {
+                assert_eq!(
+                    completion_url,
+                    "https://huggingface.co/api/complete_multipart?uploadId=abc"
+                );
+                assert_eq!(chunk_size, 50_000_000);
+                assert_eq!(part_urls.len(), 2);
+                assert_eq!(part_urls[0].0, 1);
+                assert_eq!(part_urls[1].0, 2);
             },
             _ => panic!("Expected Multipart transfer"),
         }
@@ -551,7 +644,8 @@ mod tests {
 
         let json = serde_json::to_string(&completion).unwrap();
 
-        assert!(json.contains("\"part_number\":1"));
+        // HF Hub expects camelCase: "partNumber" not "part_number"
+        assert!(json.contains("\"partNumber\":1"));
         assert!(json.contains("\"etag\":"));
         // ETag value should be preserved with quotes
         assert!(json.contains("abc123def456"));
@@ -580,7 +674,8 @@ mod tests {
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
         assert_eq!(json["parts"].as_array().unwrap().len(), 2);
-        assert_eq!(json["parts"][0]["part_number"], 1);
-        assert_eq!(json["parts"][1]["part_number"], 2);
+        // HF Hub expects camelCase: "partNumber"
+        assert_eq!(json["parts"][0]["partNumber"], 1);
+        assert_eq!(json["parts"][1]["partNumber"], 2);
     }
 }

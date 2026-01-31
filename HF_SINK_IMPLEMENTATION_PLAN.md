@@ -13,7 +13,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Python E2E test PASSES - sink_parquet("hf://...") works for small files!
 ✅ 86 Rust tests pass (unit + mock integration)
 ✅ BUG-001 FIXED - error propagation now shows actual errors
-⚠️ BUG-002 FOUND - multipart uploads fail with 404 (large files)
+✅ BUG-002 FIXED - multipart uploads now use correct HF Hub response format
 🔄 Phase 9 in progress - Distribution & Demo
 ```
 
@@ -36,17 +36,34 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ## What's Next
 
-### BLOCKER: Fix BUG-002 (Multipart Upload 404)
+### ~~BLOCKER: Fix BUG-002 (Multipart Upload 404)~~ ✅ FIXED
 
-**Priority:** High - blocks large file uploads
+**Status:** Fixed in commit (branch: feature/hf-hub-sink)
 
-**Next Steps:**
-1. Research HF Hub LFS multipart API:
-   - Check `scratch/reference_repos/huggingface_hub/src/huggingface_hub/lfs.py`
-   - Review https://huggingface.co/docs/hub/en/xet/legacy-git-lfs
-   - Check OpenAPI spec: https://huggingface.co/spaces/huggingface/openapi
-2. Add verbose logging to see actual presigned URLs being used
-3. Compare our implementation with huggingface_hub library
+**Root Cause:** Polars was parsing the wrong response format for multipart uploads. HF Hub returns:
+```json
+{
+  "actions": {
+    "upload": {
+      "href": "https://huggingface.co/api/complete_multipart?...",  // Completion URL
+      "header": {
+        "chunk_size": "16000000",
+        "00001": "https://s3.../part1?...",  // Part URLs as numeric keys
+        "00002": "https://s3.../part2?..."
+      }
+    }
+  }
+}
+```
+But Polars expected `actions.parts[]` array format (which doesn't exist).
+
+**Fix Applied:**
+1. `types.rs` - Updated `LfsTransfer::Multipart` to include `completion_url`, `chunk_size`, `part_urls`
+2. `types.rs` - Updated `into_transfer()` to parse numeric header keys for part URLs
+3. `types.rs` - Fixed `LfsPartCompletion` to use `partNumber` (camelCase) as HF expects
+4. `client.rs` - Updated `complete_multipart()` to accept provided completion URL
+5. `upload.rs` - Updated multipart upload to use new format
+6. `hf_sink/mod.rs` - Thread completion URL through upload flow
 
 ### Phase 9: Distribution & Demo
 
@@ -61,7 +78,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 **Recent Fixes:**
 - BUG-001 ✅ FIXED - error propagation now shows actual errors
-- BUG-002 🔄 IN PROGRESS - multipart uploads fail with 404
+- BUG-002 ✅ FIXED - multipart uploads now use correct HF Hub format (completion URL + numeric header keys)
 
 ### Future Enhancements (Low Priority)
 

@@ -160,27 +160,27 @@ impl LfsClient {
     /// to finalize the multipart upload on HF Hub.
     ///
     /// # Arguments
+    /// * `completion_url` - The completion URL from the LFS batch response
     /// * `sha256` - SHA256 hash of the complete file
     /// * `parts` - Part completions with ETags from S3 responses
     ///
     /// # Example
     ///
     /// ```ignore
-    /// // Upload returns part completions for multipart transfers
-    /// if let Some(completions) = executor.upload(data, transfer, sha256).await? {
-    ///     lfs_client.complete_multipart(sha256, completions).await?;
+    /// // Upload returns completion URL and part completions for multipart transfers
+    /// if let Some((completion_url, completions)) = executor.upload(data, transfer, sha256).await? {
+    ///     lfs_client.complete_multipart(&completion_url, sha256, completions).await?;
     /// }
     /// ```
     pub async fn complete_multipart(
         &self,
+        completion_url: &str,
         sha256: &str,
         parts: Vec<LfsPartCompletion>,
     ) -> PolarsResult<()> {
         if parts.is_empty() {
             polars_bail!(ComputeError: "cannot complete multipart upload with no parts");
         }
-
-        let complete_url = self.repo_location.get_lfs_multipart_complete_uri(sha256);
 
         let request = LfsMultipartCompleteRequest {
             oid: sha256.to_string(),
@@ -191,13 +191,14 @@ impl LfsClient {
 
         if config::verbose() {
             eprintln!(
-                "Completing multipart upload for {} ({} parts)",
+                "Completing multipart upload for {} ({} parts) at {}",
                 sha256,
-                request.parts.len()
+                request.parts.len(),
+                completion_url
             );
         }
 
-        self.send_bytes_request_with_retry(&complete_url, body)
+        self.send_bytes_request_with_retry(completion_url, body)
             .await?;
 
         Ok(())

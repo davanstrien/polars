@@ -1308,7 +1308,7 @@ fn upload_shard_task(
                 .await?;
 
             // 2. Upload data (handles AlreadyExists, Basic, Multipart)
-            let maybe_completions = upload_executor
+            let maybe_multipart_completion = upload_executor
                 .upload(
                     shard.buffer,
                     transfer,
@@ -1319,9 +1319,10 @@ fn upload_shard_task(
                 .await?;
 
             // 3. Complete multipart if needed
-            if let Some(completions) = maybe_completions {
+            // For multipart uploads, we get (completion_url, part_completions)
+            if let Some((completion_url, completions)) = maybe_multipart_completion {
                 lfs_client
-                    .complete_multipart(&shard.sha256, completions)
+                    .complete_multipart(&completion_url, &shard.sha256, completions)
                     .await?;
             }
 
