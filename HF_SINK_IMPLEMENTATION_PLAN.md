@@ -43,7 +43,7 @@ python -c "import polars; print(polars.__version__)"  # 1.37.1
 ✅ Local wheel build (maturin develop --release) - 16m 36s
 ```
 
-**Branch:** `feature/hf-hub-sink` (217 commits ahead of main after this commit)
+**Branch:** `feature/hf-hub-sink` (220 commits ahead of main)
 
 ---
 
