@@ -6,14 +6,14 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ---
 
-## Current Status (2026-01-30)
+## Current Status (2026-01-31)
 
 ```
 ✅ Phases 0-8 complete (Foundation → Python Bindings → Core Testing)
-✅ Python E2E test PASSES - sink_parquet("hf://...") works!
+✅ Python E2E test PASSES - sink_parquet("hf://...") works for small files!
 ✅ 86 Rust tests pass (unit + mock integration)
-✅ 1 Python E2E test passes (test_basic_upload)
-✅ BUG-001 FIXED - rate limit handling and error propagation improved
+✅ BUG-001 FIXED - error propagation now shows actual errors
+⚠️ BUG-002 FOUND - multipart uploads fail with 404 (large files)
 🔄 Phase 9 in progress - Distribution & Demo
 ```
 
@@ -36,20 +36,32 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 
 ## What's Next
 
+### BLOCKER: Fix BUG-002 (Multipart Upload 404)
+
+**Priority:** High - blocks large file uploads
+
+**Next Steps:**
+1. Research HF Hub LFS multipart API:
+   - Check `scratch/reference_repos/huggingface_hub/src/huggingface_hub/lfs.py`
+   - Review https://huggingface.co/docs/hub/en/xet/legacy-git-lfs
+   - Check OpenAPI spec: https://huggingface.co/spaces/huggingface/openapi
+2. Add verbose logging to see actual presigned URLs being used
+3. Compare our implementation with huggingface_hub library
+
 ### Phase 9: Distribution & Demo
 
 **Goal:** Make it easy for people to test without compiling. Not a formal release.
 
-**Next Task:** 9.2.2 - Add macOS ARM64 to wheel build
-
 1. ~~Clean up repo (remove scratch files)~~ ✅
 2. ~~Push to davanstrien/polars fork~~ ✅
 3. ~~Set up GitHub Actions to build wheels (Linux x64)~~ ✅ (Task 9.2.1)
-4. Add macOS ARM64 to wheel build (Task 9.2.2)
-5. Smoke test install in Colab
+4. Add macOS ARM64 to wheel build (Task 9.2.2) - *helps with local debugging*
+5. ~~Smoke test install in Colab~~ ✅ (small files work, large files blocked by BUG-002)
 6. Create demo notebook
 
-**Recent Fix:** BUG-001 (upload channel closed) now fixed - improved rate limit handling and error propagation
+**Recent Fixes:**
+- BUG-001 ✅ FIXED - error propagation now shows actual errors
+- BUG-002 🔄 IN PROGRESS - multipart uploads fail with 404
 
 ### Future Enhancements (Low Priority)
 
@@ -455,6 +467,7 @@ Verify the wheels install and work in a clean environment.
 | Issue | Description | Status | Priority |
 |-------|-------------|--------|----------|
 | **BUG-001** | "upload channel closed unexpectedly" on large streaming writes | ✅ Fixed | High |
+| **BUG-002** | Multipart upload fails with 404 on `/api/complete_multipart` | 🔄 Investigating | High |
 
 ### BUG-001: Upload Channel Closed Unexpectedly ✅ FIXED
 
@@ -477,6 +490,39 @@ Verify the wheels install and work in a clean environment.
 - `crates/polars-io/src/cloud/hf/lfs/client.rs`
 
 **Tests:** All 86 HF sink tests pass. Error messages now show actual network failures instead of "channel closed".
+
+### BUG-002: Multipart Upload 404 Error 🔄 INVESTIGATING
+
+**Discovered:** 2026-01-31 during Colab testing
+
+**Symptom:** Large files (triggering multipart upload) fail with:
+```
+ComputeError: upload failed after 3 retries: S3 upload failed (HTTP 404):
+<pre>Cannot PUT /api/complete_multipart</pre>
+```
+
+**Context:**
+- Small writes work (single PUT, no multipart)
+- Large writes (500K rows) trigger multipart upload which fails
+- Error page looks like Express.js, not S3 - suggests wrong server
+- BUG-001 fix confirmed working: actual error now visible (not "channel closed")
+
+**Debugging Approach:**
+1. **Consult reference implementations:**
+   - `scratch/reference_repos/huggingface_hub/` - especially `src/huggingface_hub/lfs.py`
+   - `scratch/reference_repos/datasets/` - for upload patterns
+2. **Check HF Hub API documentation:**
+   - OpenAPI spec: https://huggingface.co/spaces/huggingface/openapi
+   - LFS backward compatibility: https://huggingface.co/docs/hub/en/xet/legacy-git-lfs#backward-compatibility-with-lfs
+3. **Add verbose logging** - Log actual presigned URLs being used
+4. **Local debugging** - Add macOS ARM64 wheel build (Task 9.2.2) for easier local testing
+
+**Files to Investigate:**
+- `crates/polars-io/src/cloud/hf/lfs/upload.rs` - `upload_single_part()` uses `part.href`
+- `crates/polars-io/src/cloud/hf/lfs/types.rs` - `LfsPartInfo` struct
+- `crates/polars-io/src/cloud/hf/lfs/client.rs` - LFS batch response parsing
+
+**Workaround:** Use smaller data that fits in single upload (< multipart threshold)
 
 ---
 
