@@ -74,7 +74,7 @@ But Polars expected `actions.parts[]` array format (which doesn't exist).
 3. ~~Set up GitHub Actions to build wheels (Linux x64)~~ ✅ (Task 9.2.1)
 4. Add macOS ARM64 to wheel build (Task 9.2.2) - *helps with local debugging*
 5. ~~Smoke test install in Colab~~ ✅ (small files work)
-6. **Test large file upload (>100MB)** - verify BUG-002 fix with real HF Hub
+6. **🔄 Test large file upload (>100MB)** - Task 9.3.4 - verify BUG-002 fix with real HF Hub
 7. Create demo notebook
 
 **Recent Fixes:**
@@ -455,12 +455,23 @@ Verify the wheels install and work in a clean environment.
 | **9.3.1** | Test `uv pip install <wheel-url>` in Colab | ✅ Complete |
 | **9.3.2** | Verify basic `sink_parquet("hf://...")` works | ✅ Complete |
 | **9.3.3** | Test streaming read → filter → write | ✅ Works for small data |
-| **9.3.4** | Test larger streaming writes | ⚠️ BUG-001 |
+| **9.3.4** | Test large file upload (>100MB) to verify BUG-002 multipart fix | 🔄 IN PROGRESS |
+
+**Task 9.3.4 Subtasks:**
+
+| Subtask | Description | Status |
+|---------|-------------|--------|
+| **9.3.4a** | Build Python wheel with latest BUG-002 fix | [ ] |
+| **9.3.4b** | Create test script for large DataFrame (~1M rows, >100MB) | [ ] |
+| **9.3.4c** | Run test and verify multipart upload succeeds | [ ] |
+| **9.3.4d** | Read back and verify data integrity | [ ] |
+| **9.3.4e** | Update implementation plan with results | [ ] |
 
 **Notes:**
 - Must install BOTH `polars-*.whl` (base) AND `polars_runtime_32-*.whl` (runtime)
 - Small streaming writes work (single file, head(N))
-- Large multi-file streaming fails with "upload channel closed" (see BUG-001)
+- BUG-001 ✅ FIXED: Error propagation now shows actual errors
+- BUG-002 ✅ FIXED: Multipart uploads use correct HF Hub format (needs real-world validation)
 
 ### Task 9.4: Demo Notebook [ ]
 
@@ -485,7 +496,7 @@ Verify the wheels install and work in a clean environment.
 | Issue | Description | Status | Priority |
 |-------|-------------|--------|----------|
 | **BUG-001** | "upload channel closed unexpectedly" on large streaming writes | ✅ Fixed | High |
-| **BUG-002** | Multipart upload fails with 404 on `/api/complete_multipart` | 🔄 Investigating | High |
+| **BUG-002** | Multipart upload fails with 404 on `/api/complete_multipart` | ✅ Fixed | High |
 
 ### BUG-001: Upload Channel Closed Unexpectedly ✅ FIXED
 
@@ -509,7 +520,7 @@ Verify the wheels install and work in a clean environment.
 
 **Tests:** All 86 HF sink tests pass. Error messages now show actual network failures instead of "channel closed".
 
-### BUG-002: Multipart Upload 404 Error 🔄 INVESTIGATING
+### BUG-002: Multipart Upload 404 Error ✅ FIXED
 
 **Discovered:** 2026-01-31 during Colab testing
 
@@ -519,28 +530,40 @@ ComputeError: upload failed after 3 retries: S3 upload failed (HTTP 404):
 <pre>Cannot PUT /api/complete_multipart</pre>
 ```
 
-**Context:**
-- Small writes work (single PUT, no multipart)
-- Large writes (500K rows) trigger multipart upload which fails
-- Error page looks like Express.js, not S3 - suggests wrong server
-- BUG-001 fix confirmed working: actual error now visible (not "channel closed")
+**Root Cause:** Polars was parsing the wrong response format for multipart uploads. HF Hub returns:
+```json
+{
+  "actions": {
+    "upload": {
+      "href": "https://huggingface.co/api/complete_multipart?...",  // Completion URL
+      "header": {
+        "chunk_size": "16000000",
+        "00001": "https://s3.../part1?...",  // Part URLs as numeric keys
+        "00002": "https://s3.../part2?..."
+      }
+    }
+  }
+}
+```
+But Polars expected `actions.parts[]` array format (which doesn't exist).
 
-**Debugging Approach:**
-1. **Consult reference implementations:**
-   - `scratch/reference_repos/huggingface_hub/` - especially `src/huggingface_hub/lfs.py`
-   - `scratch/reference_repos/datasets/` - for upload patterns
-2. **Check HF Hub API documentation:**
-   - OpenAPI spec: https://huggingface.co/spaces/huggingface/openapi
-   - LFS backward compatibility: https://huggingface.co/docs/hub/en/xet/legacy-git-lfs#backward-compatibility-with-lfs
-3. **Add verbose logging** - Log actual presigned URLs being used
-4. **Local debugging** - Add macOS ARM64 wheel build (Task 9.2.2) for easier local testing
+**Fix Applied:**
+1. `types.rs` - Updated `LfsTransfer::Multipart` to include `completion_url`, `chunk_size`, `part_urls`
+2. `types.rs` - Updated `into_transfer()` to parse numeric header keys for part URLs
+3. `types.rs` - Fixed `LfsPartCompletion` to use `partNumber` (camelCase) as HF expects
+4. `client.rs` - Updated `complete_multipart()` to accept provided completion URL
+5. `upload.rs` - Updated multipart upload to use new format
+6. `hf_sink/mod.rs` - Thread completion URL through upload flow
 
-**Files to Investigate:**
-- `crates/polars-io/src/cloud/hf/lfs/upload.rs` - `upload_single_part()` uses `part.href`
-- `crates/polars-io/src/cloud/hf/lfs/types.rs` - `LfsPartInfo` struct
-- `crates/polars-io/src/cloud/hf/lfs/client.rs` - LFS batch response parsing
+**Files Modified:**
+- `crates/polars-io/src/cloud/hf/lfs/types.rs`
+- `crates/polars-io/src/cloud/hf/lfs/upload.rs`
+- `crates/polars-io/src/cloud/hf/lfs/client.rs`
+- `crates/polars-stream/src/nodes/io_sinks/hf_sink/mod.rs`
 
-**Workaround:** Use smaller data that fits in single upload (< multipart threshold)
+**Tests:** All 86 HF sink tests pass. Unit tests added for multipart format parsing.
+
+**Validation Pending:** Task 9.3.4 - test large file upload (>100MB) to verify fix with real HF Hub
 
 ---
 
@@ -573,13 +596,13 @@ ComputeError: upload failed after 3 retries: S3 upload failed (HTTP 404):
 - [ ] **Phase 9:** Distribution & Demo 🔄 CURRENT FOCUS
   - [x] Task 9.1: Clean branch for fork ✅
   - [ ] Task 9.2: GitHub Actions for wheels (9.2.1 Linux x64 ✅, 9.2.2-9.2.3 pending)
-  - [ ] Task 9.3: Smoke test install (Colab)
+  - 🔄 Task 9.3: Smoke test install (9.3.1-9.3.3 ✅, 9.3.4 in progress)
   - [ ] Task 9.4: Demo notebook
   - [ ] Task 9.5: Document limitations
 
 **Status:** 8/9 phases complete. Python E2E works! Branch cleaned and pushed.
 
-**Next:** Task 9.2 - GitHub Actions for wheels
+**Next:** Task 9.3.4 - Test large file upload (>100MB) to verify BUG-002 multipart fix
 
 ---
 
