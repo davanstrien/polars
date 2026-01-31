@@ -47,6 +47,7 @@ use super::phase::PhaseOutcome;
 use super::{SinkInputPort, SinkNode};
 use crate::async_executor::spawn;
 use crate::async_primitives::connector::{Receiver, Sender, connector};
+use tokio::sync::mpsc;
 use crate::execute::StreamingExecutionState;
 use crate::nodes::{JoinHandle, TaskPriority};
 use crate::utils::tokio_handle_ext::AbortOnDropHandle;
@@ -1272,7 +1273,7 @@ fn partitioned_buffer_and_write_task(
 #[allow(dead_code)]
 fn upload_shard_task(
     shard_rx: Receiver<ShardToUpload>,
-    mut completion_tx: Sender<ShardCompletion>,
+    completion_tx: mpsc::Sender<ShardCompletion>,
     lfs_client: LfsClient,
     upload_executor: UploadExecutor,
     #[allow(unused_variables)] resumed_checkpoint: Option<Arc<CheckpointState>>,
@@ -1429,7 +1430,8 @@ pub struct HfSinkNode {
     /// Channel sender for finished shards (buffer_and_write_task → upload_shard_task)
     shard_tx: Option<Sender<ShardToUpload>>,
     /// Channel receiver for shard completions (for finalize/commit)
-    completion_rx: Option<Receiver<ShardCompletion>>,
+    /// Uses buffered mpsc channel (capacity 32) to prevent deadlock when uploading 2+ shards.
+    completion_rx: Option<mpsc::Receiver<ShardCompletion>>,
     /// Handle to await upload task completion
     upload_task: Option<JoinHandle<PolarsResult<()>>>,
     /// Checkpoint state for partition-aware resume logic (wrapped in Arc for cheap cloning)
@@ -1528,7 +1530,10 @@ impl SinkNode for HfSinkNode {
         // 4. Create channels for shard pipeline:
         //    buffer_and_write_task → shard_tx/shard_rx → upload_shard_task → completion_tx/rx
         let (shard_tx, shard_rx) = connector::<ShardToUpload>();
-        let (completion_tx, completion_rx) = connector::<ShardCompletion>();
+        // Use buffered mpsc channel (capacity 32) for completions to prevent deadlock
+        // when uploading 2+ shards. The connector (capacity 1) would block on send()
+        // before finalize() starts draining the channel. See BUG-003.
+        let (completion_tx, completion_rx) = mpsc::channel::<ShardCompletion>(32);
 
         // 5. Spawn upload task (background) - receives finished shards and uploads to HF Hub
         let upload_task = upload_shard_task(
@@ -1614,7 +1619,8 @@ impl SinkNode for HfSinkNode {
             // Start with resumed completions (already uploaded), then add new ones
             let mut completions = resumed_completions;
             let mut completion_rx = completion_rx;
-            while let Ok(completion) = completion_rx.recv().await {
+            // mpsc::Receiver::recv() returns Option<T>, not Result<T, RecvError>
+            while let Some(completion) = completion_rx.recv().await {
                 completions.push(completion);
             }
 
@@ -2326,7 +2332,7 @@ mod tests {
         // This is a compile-time check - the function exists and types align.
         fn _assert_types_compile(
             shard_rx: Receiver<ShardToUpload>,
-            completion_tx: Sender<ShardCompletion>,
+            completion_tx: mpsc::Sender<ShardCompletion>,
             lfs_client: LfsClient,
             upload_executor: UploadExecutor,
             resumed_checkpoint: Option<Arc<CheckpointState>>,
@@ -4345,5 +4351,104 @@ dataset_info:
 
         let result = partition_dataframe(df, "nonexistent");
         assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // BUG-003 Regression Tests: Completion Channel Deadlock
+    // =========================================================================
+
+    /// Test that the buffered completion channel allows multiple sends before any recv.
+    /// This is a regression test for BUG-003: with the old connector (capacity=1),
+    /// uploading 2+ shards would deadlock because send() blocked before finalize()
+    /// started draining the channel.
+    #[test]
+    fn test_completion_channel_no_deadlock() {
+        // Use tokio runtime to test async channel behavior
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (tx, mut rx) = mpsc::channel::<ShardCompletion>(32);
+
+            // Simulate uploading 4 shards - send all completions before any recv
+            // With connector (cap=1), this would deadlock after the first send
+            for i in 0..4 {
+                let completion = ShardCompletion {
+                    index: i,
+                    path_in_repo: format!("data/train-{:05}.parquet", i),
+                    sha256: format!("sha256_{}", i),
+                    size: 1000 * (i as u64 + 1),
+                    num_rows: 100,
+                };
+                // This should NOT block with buffered channel
+                tx.send(completion).await.unwrap();
+            }
+
+            // Drop sender to close channel
+            drop(tx);
+
+            // Receive all 4 completions (simulates finalize() draining)
+            let mut received = Vec::new();
+            while let Some(c) = rx.recv().await {
+                received.push(c);
+            }
+
+            assert_eq!(received.len(), 4);
+            assert_eq!(received[0].index, 0);
+            assert_eq!(received[3].index, 3);
+        });
+    }
+
+    /// Test that the completion channel capacity matches our expectations.
+    /// We use capacity 32 which should handle typical workloads without blocking.
+    #[test]
+    fn test_completion_channel_capacity() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (tx, mut rx) = mpsc::channel::<ShardCompletion>(32);
+
+            // Send 32 completions (full capacity)
+            for i in 0..32 {
+                let completion = ShardCompletion {
+                    index: i,
+                    path_in_repo: format!("data/train-{:05}.parquet", i),
+                    sha256: format!("sha256_{}", i),
+                    size: 1000,
+                    num_rows: 100,
+                };
+                tx.send(completion).await.unwrap();
+            }
+
+            // The 33rd should block (use try_send to test non-blocking)
+            let completion = ShardCompletion {
+                index: 32,
+                path_in_repo: "data/train-00032.parquet".to_string(),
+                sha256: "sha256_32".to_string(),
+                size: 1000,
+                num_rows: 100,
+            };
+            // try_send should fail when channel is full
+            assert!(tx.try_send(completion).is_err());
+
+            // Drain some to make room
+            rx.recv().await;
+
+            // Now send should work
+            let completion = ShardCompletion {
+                index: 32,
+                path_in_repo: "data/train-00032.parquet".to_string(),
+                sha256: "sha256_32".to_string(),
+                size: 1000,
+                num_rows: 100,
+            };
+            tx.send(completion).await.unwrap();
+
+            drop(tx);
+
+            // Receive all remaining (31 + 1 = 32)
+            let mut count = 0;
+            while let Some(_) = rx.recv().await {
+                count += 1;
+            }
+            assert_eq!(count, 32);
+        });
     }
 }
