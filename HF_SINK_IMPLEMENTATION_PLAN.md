@@ -30,7 +30,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Python E2E test - PASSES
 ```
 
-**Branch:** `feature/hf-hub-sink` (211 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (214 commits ahead of main)
 
 ---
 
@@ -73,8 +73,9 @@ But Polars expected `actions.parts[]` array format (which doesn't exist).
 2. ~~Push to davanstrien/polars fork~~ ✅
 3. ~~Set up GitHub Actions to build wheels (Linux x64)~~ ✅ (Task 9.2.1)
 4. Add macOS ARM64 to wheel build (Task 9.2.2) - *helps with local debugging*
-5. ~~Smoke test install in Colab~~ ✅ (small files work, large files blocked by BUG-002)
-6. Create demo notebook
+5. ~~Smoke test install in Colab~~ ✅ (small files work)
+6. **Test large file upload (>100MB)** - verify BUG-002 fix with real HF Hub
+7. Create demo notebook
 
 **Recent Fixes:**
 - BUG-001 ✅ FIXED - error propagation now shows actual errors
