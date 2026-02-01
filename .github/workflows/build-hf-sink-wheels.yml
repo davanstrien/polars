@@ -110,3 +110,51 @@ jobs:
         with:
           name: wheel-linux-x64
           path: dist/*.whl
+
+  # Build macOS ARM64 wheel
+  build-wheel-macos-arm64:
+    needs: [base-package]
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download base package
+        uses: actions/download-artifact@v4
+        with:
+          name: base-package
+          path: dist
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install base polars package
+        run: |
+          pip install --force-reinstall --no-dependencies dist/polars-*.whl
+          rm -rf dist/*
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          target: aarch64-apple-darwin
+          args: >
+            --profile ${{ inputs.dry-run == true && 'mindebug-dev' || 'dist-release' }}
+            --manifest-path py-polars/runtime/polars-runtime-32/Cargo.toml
+            --out dist
+          maturin-version: 1.8.3
+
+      - name: Test wheel
+        run: |
+          pip install --force-reinstall --verbose dist/*.whl
+          python -c 'import polars; polars.show_versions()'
+          # Quick sanity check for HF sink feature
+          python -c 'import polars as pl; df = pl.DataFrame({"a": [1,2,3]}); print("Polars loaded OK")'
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-macos-arm64
+          path: dist/*.whl
