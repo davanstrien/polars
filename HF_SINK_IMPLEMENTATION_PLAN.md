@@ -478,17 +478,17 @@ Verify the wheels install and work in a clean environment.
 | **9.3.1** | Test `uv pip install <wheel-url>` in Colab | ✅ Complete |
 | **9.3.2** | Verify basic `sink_parquet("hf://...")` works | ✅ Complete |
 | **9.3.3** | Test streaming read → filter → write | ✅ Works for small data |
-| **9.3.4** | Test large file upload (>100MB) to verify BUG-002 multipart fix | 🔄 IN PROGRESS |
+| **9.3.4** | Test large file upload (>100MB) to verify BUG-002 multipart fix | ✅ Complete |
 
 **Task 9.3.4 Subtasks:**
 
 | Subtask | Description | Status |
 |---------|-------------|--------|
 | **9.3.4a** | Build Python wheel with latest BUG-002 fix | ✅ Complete |
-| **9.3.4b** | Create test script for large DataFrame (~1M rows, >100MB) | [ ] |
-| **9.3.4c** | Run test and verify multipart upload succeeds | [ ] |
-| **9.3.4d** | Read back and verify data integrity | [ ] |
-| **9.3.4e** | Update implementation plan with results | [ ] |
+| **9.3.4b** | Create test script for large DataFrame (~1M rows, >100MB) | ✅ Complete |
+| **9.3.4c** | Run test and verify multipart upload succeeds | ✅ Complete |
+| **9.3.4d** | Read back and verify data integrity | ✅ Complete |
+| **9.3.4e** | Update implementation plan with results | ✅ Complete |
 
 **Task 9.3.4a Details (2026-01-31):**
 - Build command: `maturin develop --release -m py-polars/runtime/polars-runtime-32/Cargo.toml`
@@ -503,13 +503,23 @@ Verify the wheels install and work in a clean environment.
 - BUG-001 ✅ FIXED: Error propagation now shows actual errors
 - BUG-002 ✅ FIXED: Multipart uploads use correct HF Hub format (needs real-world validation)
 
-### Task 9.4: Demo Notebook [ ]
+### Task 9.4: Demo Script 🔄 IN PROGRESS
 
 | Subtask | Description | Status |
 |---------|-------------|--------|
-| **9.4.1** | Create notebook: streaming read → filter → streaming write | [ ] |
+| **9.4.1** | Create demo script: generate data → stream to HF Hub | ✅ Complete |
 | **9.4.2** | Show "Hub is your disk" workflow (TBs with minimal RAM) | [ ] |
 | **9.4.3** | Upload to HF Hub or include in repo | [ ] |
+
+**Task 9.4.1 Details (2026-02-01):**
+- Script: `scratch/demo_hf_hub_sink.py`
+- **"Hub is your disk" pattern:** Stream from one HF dataset to another
+- Source: `nvidia/OpenMathReasoning` (real HF dataset)
+- Processed: 50K rows, 9 columns → **576 MB**
+- Multipart upload: 38 parts (BUG-002 fix verified!)
+- Pipeline time: 115s, read-back: 19s
+- Read-back verified: all integrity checks passed
+- Commit: https://huggingface.co/datasets/davanstrien/test-polars-streaming/commit/c28cb614af259255e77bf4d33cc6945135a340c1
 
 ### Task 9.5: Document Limitations [ ]
 
@@ -528,6 +538,7 @@ Verify the wheels install and work in a clean environment.
 | **BUG-001** | "upload channel closed unexpectedly" on large streaming writes | ✅ Fixed | High |
 | **BUG-002** | Multipart upload fails with 404 on `/api/complete_multipart` | ✅ Fixed | High |
 | **BUG-003** | Deadlock when uploading 2+ shards (completion channel capacity=1) | ✅ Fixed | High |
+| **BUG-004** | Panic on List columns in streaming parquet sink | 🔍 Upstream | Low |
 
 ### BUG-001: Upload Channel Closed Unexpectedly ✅ FIXED
 
@@ -625,6 +636,22 @@ Replaced the capacity-1 `connector` with a buffered `tokio::sync::mpsc::channel(
 
 **Note:** This matches the standard pattern in polars-stream (30+ instances of `tokio::sync::mpsc::channel`).
 
+### BUG-004: List Columns Panic in Streaming Parquet Sink 🔍 UPSTREAM
+
+**Discovered:** 2026-02-01 during Task 9.4 demo testing
+
+**Symptom:** Datasets with List columns (e.g., `HuggingFaceFW/finetranslations`) panic:
+```
+panicked at crates/polars-parquet/src/arrow/write/schema.rs:425:17:
+internal error: entered unreachable code
+```
+
+**Root Cause:** When writing List/FixedSizeList/LargeList types, the write options aren't configured as `ChildWriteOptions::ListLike`, causing a mismatch in the parquet schema conversion.
+
+**Workaround:** Use datasets with only primitive types (String, Int, Float, Boolean).
+
+**Status:** Not HF-sink specific - affects all streaming parquet sinks with nested types. Low priority for this feature.
+
 ---
 
 ## Progress Checklist
@@ -656,13 +683,13 @@ Replaced the capacity-1 `connector` with a buffered `tokio::sync::mpsc::channel(
 - [ ] **Phase 9:** Distribution & Demo 🔄 CURRENT FOCUS
   - [x] Task 9.1: Clean branch for fork ✅
   - [ ] Task 9.2: GitHub Actions for wheels (9.2.1 Linux x64 ✅, 9.2.2-9.2.3 pending)
-  - 🔄 Task 9.3: Smoke test install (9.3.1-9.3.3 ✅, 9.3.4 in progress)
-  - [ ] Task 9.4: Demo notebook
+  - [x] Task 9.3: Smoke test install ✅ (9.3.1-9.3.4 all complete, 72MB multipart verified)
+  - 🔄 Task 9.4: Demo script (9.4.1 ✅, 9.4.2-9.4.3 pending)
   - [ ] Task 9.5: Document limitations
 
-**Status:** 8/9 phases complete. Python E2E works! Branch cleaned and pushed.
+**Status:** 8/9 phases complete. Python E2E works! Large file (72MB) multipart upload verified.
 
-**Next:** Task 9.3.4 - Test large file upload (>100MB) to verify BUG-002 multipart fix
+**Next:** Task 9.4 - Create demo notebook
 
 ---
 
