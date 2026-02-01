@@ -19,7 +19,7 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 🔄 Phase 9 in progress - Distribution & Demo
 ```
 
-**Next Step:** Task 9.4.2 - Show "Hub is your disk" workflow (TBs with minimal RAM) or Task 9.5 - Document limitations
+**Next Step:** Task 9.4.2 - Demo notebook for public sharing, or create GitHub Release with wheels
 
 **All Blockers Resolved!** BUG-001, BUG-002, and BUG-003 are now fixed.
 
@@ -522,13 +522,19 @@ Verify the wheels install and work in a clean environment.
 - Read-back verified: all integrity checks passed
 - Commit: https://huggingface.co/datasets/davanstrien/test-polars-streaming/commit/c28cb614af259255e77bf4d33cc6945135a340c1
 
-### Task 9.5: Document Limitations [ ]
+### Task 9.5: Document Limitations ✅ Complete
 
 | Subtask | Description | Status |
 |---------|-------------|--------|
-| **9.5.1** | List known limitations / caveats | [ ] |
-| **9.5.2** | Note this is experimental / WIP | [ ] |
-| **9.5.3** | Add install + usage examples to README | [ ] |
+| **9.5.1** | List known limitations / caveats | ✅ Complete |
+| **9.5.2** | Note this is experimental / WIP | ✅ Complete |
+| **9.5.3** | Add install + usage examples to README | ✅ Complete |
+
+**Task 9.5 Details (2026-02-01):**
+- Created `HF_SINK_README.md` - standalone user-facing documentation
+- Documents: limitations, install options, usage examples, "Hub is your disk" pattern
+- Notes experimental status and Claude Code development experiment
+- Easy to remove before any upstream PR (single file delete)
 
 ---
 
@@ -686,11 +692,11 @@ internal error: entered unreachable code
   - [ ] Task 9.2: GitHub Actions for wheels (9.2.1 Linux x64 ✅, 9.2.2-9.2.3 pending)
   - [x] Task 9.3: Smoke test install ✅ (9.3.1-9.3.4 all complete, 72MB multipart verified)
   - 🔄 Task 9.4: Demo script (9.4.1 ✅, 9.4.2-9.4.3 pending)
-  - [ ] Task 9.5: Document limitations
+  - [x] Task 9.5: Document limitations ✅ (HF_SINK_README.md created)
 
-**Status:** 8/9 phases complete. Python E2E works! Large file (72MB) multipart upload verified.
+**Status:** 8/9 phases complete. Python E2E works! Documentation ready for sharing.
 
-**Next:** Task 9.4 - Create demo notebook
+**Next:** Create GitHub Release with wheels, then announce
 
 ---
 
