@@ -7,6 +7,18 @@ on:
         description: Build with minimal optimization (faster, for testing)
         type: boolean
         default: false
+      tag:
+        description: Release tag (e.g., hf-sink-v0.1.0-alpha)
+        type: string
+        required: true
+        default: 'hf-sink-v0.1.0-alpha'
+      skip-release:
+        description: Skip creating GitHub release (just build wheels)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -158,3 +170,62 @@ jobs:
         with:
           name: wheel-macos-arm64
           path: dist/*.whl
+
+  # Create GitHub Release with all wheels
+  create-release:
+    if: ${{ inputs.skip-release != true }}
+    needs: [base-package, build-wheel-linux-x64, build-wheel-macos-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f -name "*.whl" | sort
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: "Polars HF Sink ${{ inputs.tag }}"
+          body: |
+            ## Polars HF Hub Sink (Experimental)
+
+            Native streaming writes to Hugging Face Hub from Polars.
+
+            ### Installation
+
+            Download the appropriate wheel for your platform and install:
+
+            ```bash
+            # Linux x64
+            pip install polars_runtime-*.linux_x86_64.whl
+
+            # macOS ARM64 (Apple Silicon)
+            pip install polars_runtime-*.macosx_*_arm64.whl
+            ```
+
+            ### Usage
+
+            ```python
+            import polars as pl
+
+            df = pl.DataFrame({"text": ["hello", "world"], "label": [0, 1]})
+            df.write_parquet(
+                "hf://datasets/username/my-dataset/data/train.parquet",
+                storage_options={"token": "hf_xxx"}
+            )
+            ```
+
+            See [HF_SINK_README.md](https://github.com/davanstrien/polars/blob/feature/hf-hub-sink/HF_SINK_README.md) for full documentation.
+          draft: false
+          prerelease: true
+          files: |
+            artifacts/base-package/*.whl
+            artifacts/wheel-linux-x64/*.whl
+            artifacts/wheel-macos-arm64/*.whl
