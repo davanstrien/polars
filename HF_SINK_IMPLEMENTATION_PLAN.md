@@ -12,14 +12,15 @@ Native HF Hub write support for Polars via `sink_parquet("hf://datasets/user/rep
 ✅ Phases 0-8 complete (Foundation → Python Bindings → Core Testing)
 ✅ Python E2E test PASSES - sink_parquet("hf://...") works for small files!
 ✅ 88 Rust tests pass (unit + mock integration + 2 new regression tests)
-✅ BUG-001 FIXED - error propagation now shows actual errors
-✅ BUG-002 FIXED - multipart uploads now use correct HF Hub response format
-✅ BUG-003 FIXED - completion channel deadlock resolved with buffered mpsc channel
+✅ BUG-001, BUG-002, BUG-003 FIXED - all critical bugs resolved
 ✅ Task 9.4.1 COMPLETE - "Hub is your disk" demo (576MB multipart upload verified!)
-🔄 Phase 9 in progress - Distribution & Demo
+✅ Task 9.5 COMPLETE - HF_SINK_README.md created for public sharing
+🔄 Phase 9 in progress - Distribution & Demo (ready for release!)
 ```
 
-**Next Step:** Task 9.4.2 - Demo notebook for public sharing, or create GitHub Release with wheels
+**Next Step:** Create GitHub Release with wheels, then announce publicly
+
+**Ready for Public Sharing!** Documentation complete in `HF_SINK_README.md`.
 
 **All Blockers Resolved!** BUG-001, BUG-002, and BUG-003 are now fixed.
 
@@ -54,7 +55,7 @@ python -c "import polars; print(polars.__version__)"  # 1.37.1
 ✅ Local wheel build (maturin develop --release) - 16m 36s
 ```
 
-**Branch:** `feature/hf-hub-sink` (223 commits ahead of main)
+**Branch:** `feature/hf-hub-sink` (225 commits ahead of main)
 
 ---
 
