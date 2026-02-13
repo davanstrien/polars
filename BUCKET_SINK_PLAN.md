@@ -581,3 +581,43 @@ If upload fails mid-stream, bucket has whatever shards completed. User re-runs a
 - Phase 2.5: Sink node — implement `SinkNode` trait for `HfBucketSinkNode` in `polars-stream`
 - Phase 2.6: Pipeline wiring — `PhysNodeKind::HfBucketSink` variant, `lower_ir.rs` dispatch, `to_graph.rs` match arm
 - Rebase onto latest `main` before Phase 2.5 to fix pre-existing `polars-core` build issue
+
+### 2026-02-13 — [Phase 2.5] Stub sink node + pipeline wiring
+**Branch**: feature/hf-bucket-sink
+**Status**: completed
+**What was done**:
+- Created stub `HfBucketSinkNode` at `crates/polars-stream/src/nodes/io_sinks/hf_bucket_sink.rs` (~58 lines)
+  - Implements `SinkNode` trait with `spawn_sink` that consumes and discards morsels
+  - Uses `FileSinkOptions` directly — no new options type needed
+  - `initialize()` and `finalize()` use default no-op implementations
+- Registered module in `crates/polars-stream/src/nodes/io_sinks/mod.rs`
+- Added `PhysNodeKind::HfBucketSink` variant in `crates/polars-stream/src/physical_plan/mod.rs`
+  - Also added match arm in `visit_node_inputs_mut` for graph traversal
+- Added visualization match arm in `crates/polars-stream/src/physical_plan/fmt.rs`
+- Added `hf://buckets/` URL routing in `crates/polars-stream/src/physical_plan/lower_ir.rs`
+  - Checks `SinkTarget::Path` for `hf://buckets/` prefix, routes to `HfBucketSink` instead of `FileSink`
+- Wired graph node in `crates/polars-stream/src/physical_plan/to_graph.rs`
+  - Creates `SinkComputeNode::from(HfBucketSinkNode::new(options))` — same pattern as other sinks
+**Key findings**:
+- Cannot use `#[cfg(...)]` on `|` arms in Rust match patterns — needed separate match arm for `HfBucketSink` in `visit_node_inputs_mut`
+- `fmt.rs` (`visualize_plan_rec`) also has exhaustive match on `PhysNodeKind` — needed arm there too (not in original plan)
+- The `lower_ir.rs` routing returns early with `PhysStream::first(phys_sm.insert(...))` since the match arm is inside the `lower_ir!` macro expansion
+**Verification**:
+- `cargo check -p polars-stream --features parquet,hf_bucket_sink` ✅ — zero errors
+- `cargo check -p polars-stream --features parquet` ✅ — zero errors (no leakage without feature flag)
+- All new code gated behind `#[cfg(feature = "hf_bucket_sink")]`
+**Artifacts produced**:
+- Created `crates/polars-stream/src/nodes/io_sinks/hf_bucket_sink.rs`
+- Modified `crates/polars-stream/src/nodes/io_sinks/mod.rs`
+- Modified `crates/polars-stream/src/physical_plan/mod.rs`
+- Modified `crates/polars-stream/src/physical_plan/fmt.rs`
+- Modified `crates/polars-stream/src/physical_plan/lower_ir.rs`
+- Modified `crates/polars-stream/src/physical_plan/to_graph.rs`
+- Updated `PHASE1_SINK_INTERFACE.md` — marked Steps 4-8 as DONE
+- Updated `BUCKET_SINK_PLAN.md` — this session log
+**Next steps**:
+- Phase 2.4: Shard writer — pipe parquet encoder output to `BucketWriter::new_writer()` for streaming XET upload
+- Fill in `initialize()`: parse URL, fetch XET token, create `BucketWriter`
+- Fill in `spawn_sink()`: encode morsels to parquet bytes, stream to `XetWriter`
+- Fill in `finalize()`: call `bucket_batch()` to register uploaded files
+- Python end-to-end test: `df.sink_parquet("hf://buckets/ns/name/file.parquet")`

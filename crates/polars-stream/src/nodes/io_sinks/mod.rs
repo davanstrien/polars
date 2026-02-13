@@ -32,6 +32,8 @@ pub mod ipc;
 pub mod json;
 #[cfg(feature = "parquet")]
 pub mod parquet;
+#[cfg(feature = "hf_bucket_sink")]
+pub mod hf_bucket_sink;
 pub mod partition;
 
 // This needs to be low to increase the backpressure.

@@ -213,6 +213,12 @@ pub enum PhysNodeKind {
         finish_callback: Option<SinkFinishCallback>,
     },
 
+    #[cfg(feature = "hf_bucket_sink")]
+    HfBucketSink {
+        input: PhysStream,
+        options: FileSinkOptions,
+    },
+
     PartitionedSink2 {
         input: PhysStream,
         options: PartitionedSinkOptionsIR,
@@ -591,6 +597,12 @@ fn visit_node_inputs_mut(
             | PhysNodeKind::EwmStd { input, options: _ } => {
                 rec!(input.node);
                 visit(input)
+            },
+
+            #[cfg(feature = "hf_bucket_sink")]
+            PhysNodeKind::HfBucketSink { input, .. } => {
+                rec!(input.node);
+                visit(input);
             },
         }
     }

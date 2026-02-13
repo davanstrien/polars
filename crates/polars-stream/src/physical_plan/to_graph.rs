@@ -342,6 +342,17 @@ fn to_graph_rec<'a>(
                 .add_node(IOSinkNode::new(config), [(input_key, input.port)])
         },
 
+        #[cfg(feature = "hf_bucket_sink")]
+        HfBucketSink { input, options } => {
+            let input_key = to_graph_rec(input.node, ctx)?;
+            let sink_node =
+                crate::nodes::io_sinks::hf_bucket_sink::HfBucketSinkNode::new(options.clone());
+            ctx.graph.add_node(
+                SinkComputeNode::from(sink_node),
+                [(input_key, input.port)],
+            )
+        },
+
         PartitionedSink2 {
             input,
             options:

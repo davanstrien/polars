@@ -289,6 +289,10 @@ fn visualize_plan_rec(
                 _ => todo!(),
             }
         },
+        #[cfg(feature = "hf_bucket_sink")]
+        PhysNodeKind::HfBucketSink { input, .. } => {
+            ("hf-bucket-sink".to_string(), from_ref(input))
+        },
         PhysNodeKind::FileSink { input, options } => match options.file_format {
             #[cfg(feature = "parquet")]
             FileWriteFormat::Parquet(_) => ("parquet-sink".to_string(), from_ref(input)),

@@ -374,11 +374,12 @@ The `to_graph.rs` match arm should create `SinkComputeNode::from(HfBucketSinkNod
 | 2 | `polars-stream/Cargo.toml` | Add `hf_bucket_sink` feature forwarding to polars-io | **DONE** |
 | 3 | `polars-io/src/path_utils/hugging_face.rs:135` | Add `"buckets"` to BUCKETS const | **DONE** |
 | 3a | `polars-io/src/cloud/hf_bucket/` | XET upload + batch API wrappers (mod.rs, xet_upload.rs, batch.rs) | **DONE** |
-| 4 | `polars-stream/src/nodes/io_sinks/mod.rs` | Add `#[cfg(feature = "hf_bucket_sink")] pub mod hf_bucket_sink;` | TODO |
-| 5 | `polars-stream/src/nodes/io_sinks/hf_bucket_sink/mod.rs` | Implement `SinkNode` trait | TODO |
-| 6 | `polars-stream/src/physical_plan/mod.rs` | Add `HfBucketSink` variant to `PhysNodeKind` | TODO |
-| 7 | `polars-stream/src/physical_plan/lower_ir.rs` | Route `hf://buckets/` URLs to `HfBucketSink` | TODO |
-| 8 | `polars-stream/src/physical_plan/to_graph.rs` | Match arm creating `SinkComputeNode::from(HfBucketSinkNode)` | TODO |
+| 4 | `polars-stream/src/nodes/io_sinks/mod.rs` | Add `#[cfg(feature = "hf_bucket_sink")] pub mod hf_bucket_sink;` | **DONE** |
+| 5 | `polars-stream/src/nodes/io_sinks/hf_bucket_sink.rs` | Implement `SinkNode` trait (stub) | **DONE** |
+| 6 | `polars-stream/src/physical_plan/mod.rs` | Add `HfBucketSink` variant to `PhysNodeKind` | **DONE** |
+| 6a | `polars-stream/src/physical_plan/fmt.rs` | Add visualization match arm for `HfBucketSink` | **DONE** |
+| 7 | `polars-stream/src/physical_plan/lower_ir.rs` | Route `hf://buckets/` URLs to `HfBucketSink` | **DONE** |
+| 8 | `polars-stream/src/physical_plan/to_graph.rs` | Match arm creating `SinkComputeNode::from(HfBucketSinkNode)` | **DONE** |
 
 All changes are feature-gated behind `hf_bucket_sink` — zero impact on normal Polars builds.
 

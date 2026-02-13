@@ -271,6 +271,21 @@ pub fn lower_ir(
             SinkTypeIR::File(options) => {
                 let options = options.clone();
                 let input = lower_ir!(*input)?;
+
+                #[cfg(feature = "hf_bucket_sink")]
+                {
+                    if let polars_plan::dsl::SinkTarget::Path(ref p) = options.target {
+                        if p.as_str().starts_with("hf://buckets/") {
+                            return Ok(PhysStream::first(phys_sm.insert(
+                                PhysNode::new(
+                                    output_schema,
+                                    PhysNodeKind::HfBucketSink { input, options },
+                                ),
+                            )));
+                        }
+                    }
+                }
+
                 PhysNodeKind::FileSink { input, options }
             },
 
