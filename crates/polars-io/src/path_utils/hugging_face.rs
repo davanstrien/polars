@@ -132,7 +132,7 @@ impl HFPathParts {
             polars_bail!(ComputeError: "invalid Hugging Face path: {}", uri);
         };
 
-        const BUCKETS: [&str; 2] = ["datasets", "spaces"];
+        const BUCKETS: [&str; 3] = ["datasets", "spaces", "buckets"];
         if !BUCKETS.contains(&this.bucket.as_str()) {
             polars_bail!(ComputeError: "hugging face uri bucket must be one of {:?}, got {} instead.", BUCKETS, this.bucket);
         }

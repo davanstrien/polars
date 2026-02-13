@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "xet-upload-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+xet-data = { package = "data", git = "https://github.com/kszucs/xet-core.git", branch = "download_bytes" }
+xet-utils = { package = "utils", git = "https://github.com/kszucs/xet-core.git", branch = "download_bytes" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bytes = "1"
