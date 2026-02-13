@@ -373,6 +373,7 @@ The `to_graph.rs` match arm should create `SinkComputeNode::from(HfBucketSinkNod
 | 1 | `polars-io/Cargo.toml` | Add `hf_bucket_sink` feature + xet-core deps | **DONE** |
 | 2 | `polars-stream/Cargo.toml` | Add `hf_bucket_sink` feature forwarding to polars-io | **DONE** |
 | 3 | `polars-io/src/path_utils/hugging_face.rs:135` | Add `"buckets"` to BUCKETS const | **DONE** |
+| 3a | `polars-io/src/cloud/hf_bucket/` | XET upload + batch API wrappers (mod.rs, xet_upload.rs, batch.rs) | **DONE** |
 | 4 | `polars-stream/src/nodes/io_sinks/mod.rs` | Add `#[cfg(feature = "hf_bucket_sink")] pub mod hf_bucket_sink;` | TODO |
 | 5 | `polars-stream/src/nodes/io_sinks/hf_bucket_sink/mod.rs` | Implement `SinkNode` trait | TODO |
 | 6 | `polars-stream/src/physical_plan/mod.rs` | Add `HfBucketSink` variant to `PhysNodeKind` | TODO |
@@ -383,8 +384,7 @@ All changes are feature-gated behind `hf_bucket_sink` — zero impact on normal 
 
 ### Revised execution order
 
-Before proceeding to Steps 4-8, a **standalone XET upload test** (Phase 2.1a in `BUCKET_SINK_PLAN.md`) will validate the xet-core fork's upload path end-to-end. This de-risks the biggest unknown (third-party fork API stability) before committing to the full Polars integration.
-
-1. **Standalone XET upload test** — `scratch/xet_upload_test/` (next)
-2. **Rebase onto latest `main`** — fix pre-existing `polars-core` build issue
-3. **Steps 4-8 above** — polars-io modules, sink node, pipeline wiring
+1. ~~**Standalone XET upload test** — `scratch/xet_upload_test/`~~ **DONE** (all 5 steps passed)
+2. ~~**`polars-io/src/cloud/hf_bucket/` module** — XET upload + batch API wrappers (Phase 2.2)~~ **DONE**
+3. **Rebase onto latest `main`** — fix pre-existing `polars-core` build issue
+4. **Steps 4-8 above** — sink node, pipeline wiring

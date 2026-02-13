@@ -234,7 +234,7 @@ src/huggingface_hub/utils/_xet.py  (XET connection info)
 
 **All work on `feature/hf-bucket-sink` branch** (created from synced `main`).
 
-### 2.1 Set Up Module Structure *(deps + feature flags: DONE, module files: TODO)*
+### 2.1 Set Up Module Structure *(DONE — deps, feature flags, and module files)*
 
 Create minimal module structure:
 ```
@@ -250,7 +250,7 @@ crates/polars-stream/src/nodes/io_sinks/hf_bucket_sink/
 └── mod.rs              # Streaming sink node
 ```
 
-### 2.1a Standalone XET Upload Test *(NEXT — de-risk before full integration)*
+### 2.1a Standalone XET Upload Test *(DONE — all 5 steps passed)*
 
 **Why**: The xet-core fork (`kszucs/xet-core` branch `download_bytes`) is the biggest unknown. Its `streaming` module doesn't exist in main xet-core. If the API has changed, if the token endpoint returns something unexpected, or if `bucket_batch()` needs a different payload — we want to discover that in a ~100-line test, not after writing ~520 lines of Polars integration code.
 
@@ -546,3 +546,38 @@ If upload fails mid-stream, bucket has whatever shards completed. User re-runs a
 - Proceed to Phase 2.2: Implement XET upload path in `crates/polars-io/src/cloud/hf_bucket/`
 - Use confirmed import paths and API formats directly
 - Consider token refresh for long-running uploads (expiry was ~1hr from request time)
+
+### 2026-02-13 — [Phase 2.2] polars-io HF bucket module created
+**Branch**: feature/hf-bucket-sink
+**Status**: completed
+**What was done**:
+- Created `crates/polars-io/src/cloud/hf_bucket/` module with three files:
+  - `mod.rs` (~45 lines) — Module root, exports, and `HfBucketConfig` struct with builder pattern
+  - `xet_upload.rs` (~100 lines) — `XetToken`, `fetch_xet_write_token()`, `create_xet_client()`, `BucketWriter` with `new_writer()` and `upload_bytes()` helpers
+  - `batch.rs` (~70 lines) — `BucketOperation` enum (AddFile/DeleteFile with serde NDJSON serialization), `bucket_batch()` function
+- Registered module in `crates/polars-io/src/cloud/mod.rs` with `#[cfg(feature = "hf_bucket_sink")]`
+- Updated stale status markers in `BUCKET_SINK_PLAN.md` (2.1a: NEXT → DONE) and `PHASE1_SINK_INTERFACE.md` (revised execution order, added checklist row 3a)
+**Key findings**:
+- `polars_bail!` macro needs explicit import (`use polars_error::polars_bail;`) — not automatically in scope in new modules
+- All dependencies needed (`reqwest`, `serde`, `serde_json`, `bytes`, `tokio`) are transitively enabled via the `cloud` feature, which `hf_bucket_sink` already depends on
+- Error handling pattern: `to_compute_err` for converting external errors (reqwest, serde_json, xet-core), `polars_bail!(ComputeError: ...)` for custom error messages
+- Zero warnings from new code
+**Compiler issues**:
+- Initial: `cannot find macro polars_bail in this scope` in both `xet_upload.rs` and `batch.rs` — fixed by adding `use polars_error::polars_bail;`
+- After fix: clean compilation with no errors or warnings from new code
+**Verification**:
+- `cargo check -p polars-stream --features parquet,hf_bucket_sink` ✅ — passes with zero errors
+- No warnings from `hf_bucket` module files
+- All new code gated behind `#[cfg(feature = "hf_bucket_sink")]` — zero impact on normal builds
+**Artifacts produced**:
+- Created `crates/polars-io/src/cloud/hf_bucket/mod.rs`
+- Created `crates/polars-io/src/cloud/hf_bucket/xet_upload.rs`
+- Created `crates/polars-io/src/cloud/hf_bucket/batch.rs`
+- Modified `crates/polars-io/src/cloud/mod.rs` — added module declaration
+- Updated `BUCKET_SINK_PLAN.md` — status markers + this session log
+- Updated `PHASE1_SINK_INTERFACE.md` — execution order + checklist
+**Next steps**:
+- Phase 2.4: Shard writer — pipe parquet encoder output to `BucketWriter::new_writer()` for streaming upload
+- Phase 2.5: Sink node — implement `SinkNode` trait for `HfBucketSinkNode` in `polars-stream`
+- Phase 2.6: Pipeline wiring — `PhysNodeKind::HfBucketSink` variant, `lower_ir.rs` dispatch, `to_graph.rs` match arm
+- Rebase onto latest `main` before Phase 2.5 to fix pre-existing `polars-core` build issue
