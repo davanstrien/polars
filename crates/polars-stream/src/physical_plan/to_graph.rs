@@ -344,9 +344,12 @@ fn to_graph_rec<'a>(
 
         #[cfg(feature = "hf_bucket_sink")]
         HfBucketSink { input, options } => {
+            let input_schema = ctx.phys_sm[input.node].output_schema.clone();
             let input_key = to_graph_rec(input.node, ctx)?;
-            let sink_node =
-                crate::nodes::io_sinks::hf_bucket_sink::HfBucketSinkNode::new(options.clone());
+            let sink_node = crate::nodes::io_sinks::hf_bucket_sink::HfBucketSinkNode::new(
+                options.clone(),
+                input_schema,
+            );
             ctx.graph.add_node(
                 SinkComputeNode::from(sink_node),
                 [(input_key, input.port)],

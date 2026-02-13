@@ -375,7 +375,7 @@ The `to_graph.rs` match arm should create `SinkComputeNode::from(HfBucketSinkNod
 | 3 | `polars-io/src/path_utils/hugging_face.rs:135` | Add `"buckets"` to BUCKETS const | **DONE** |
 | 3a | `polars-io/src/cloud/hf_bucket/` | XET upload + batch API wrappers (mod.rs, xet_upload.rs, batch.rs) | **DONE** |
 | 4 | `polars-stream/src/nodes/io_sinks/mod.rs` | Add `#[cfg(feature = "hf_bucket_sink")] pub mod hf_bucket_sink;` | **DONE** |
-| 5 | `polars-stream/src/nodes/io_sinks/hf_bucket_sink.rs` | Implement `SinkNode` trait (stub) | **DONE** |
+| 5 | `polars-stream/src/nodes/io_sinks/hf_bucket_sink.rs` | Implement `SinkNode` trait (full: parquet + XET upload) | **DONE** |
 | 6 | `polars-stream/src/physical_plan/mod.rs` | Add `HfBucketSink` variant to `PhysNodeKind` | **DONE** |
 | 6a | `polars-stream/src/physical_plan/fmt.rs` | Add visualization match arm for `HfBucketSink` | **DONE** |
 | 7 | `polars-stream/src/physical_plan/lower_ir.rs` | Route `hf://buckets/` URLs to `HfBucketSink` | **DONE** |
@@ -388,4 +388,5 @@ All changes are feature-gated behind `hf_bucket_sink` — zero impact on normal 
 1. ~~**Standalone XET upload test** — `scratch/xet_upload_test/`~~ **DONE** (all 5 steps passed)
 2. ~~**`polars-io/src/cloud/hf_bucket/` module** — XET upload + batch API wrappers (Phase 2.2)~~ **DONE**
 3. **Rebase onto latest `main`** — fix pre-existing `polars-core` build issue
-4. **Steps 4-8 above** — sink node, pipeline wiring
+4. ~~**Steps 4-8 above** — sink node, pipeline wiring~~ **DONE**
+5. ~~**Fill in sink implementation** — parquet encoding + XET upload + batch API~~ **DONE** (Phase 3)

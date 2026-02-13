@@ -621,3 +621,43 @@ If upload fails mid-stream, bucket has whatever shards completed. User re-runs a
 - Fill in `spawn_sink()`: encode morsels to parquet bytes, stream to `XetWriter`
 - Fill in `finalize()`: call `bucket_batch()` to register uploaded files
 - Python end-to-end test: `df.sink_parquet("hf://buckets/ns/name/file.parquet")`
+
+---
+
+### Session 4 — Phase 3: Fill in HfBucketSinkNode with real parquet + XET upload
+
+**Date**: 2026-02-13
+
+**Goal**: Replace the stub `HfBucketSinkNode` with real logic: parquet encoding of incoming
+DataFrames, XET upload of the encoded bytes, and batch API registration.
+
+**Approach**: Simple buffered PoC — consume all morsels serially, vstack into one DataFrame,
+encode as a single parquet file, then upload via the XET protocol and register via batch API.
+
+**Changes**:
+1. `crates/polars-io/src/cloud/hf_bucket/mod.rs`:
+   - Added `parse_hf_bucket_url()` — parses `hf://buckets/ns/name/path` into components
+   - Added `extract_hf_token()` — resolves HF token from CloudOptions, HF_TOKEN env, or cached file
+   - Added `upload_and_register_file()` — high-level async helper: XET upload + batch registration
+2. `crates/polars-stream/src/nodes/io_sinks/hf_bucket_sink.rs`:
+   - Full `SinkNode` implementation with `initialize()`, `spawn_sink()`, `finalize()`
+   - `initialize()`: parses URL, extracts token, creates `HfBucketConfig`
+   - `spawn_sink()`: serial consumer, vstacks all morsels, encodes to parquet
+   - `finalize()`: uploads encoded bytes via tokio runtime using `upload_and_register_file()`
+3. `crates/polars-stream/src/physical_plan/to_graph.rs`:
+   - Updated `HfBucketSink` match arm to pass `input_schema` to constructor
+
+**Verification**:
+- `cargo check -p polars-stream --features hf_bucket_sink,parquet` — PASS
+- `cargo check -p polars-stream --features parquet` — PASS (no regression)
+
+**Architecture notes**:
+- Used serial consumption (`is_sink_input_parallel = false`) for simplicity
+- Each morsel is vstacked into a single combined DataFrame, then encoded as one parquet file
+- Upload logic lives in polars-io to avoid adding reqwest/bytes deps to polars-stream
+- Shared `Arc<Mutex<Option<Vec<u8>>>>` bridges spawn_sink (encoding) → finalize (upload)
+
+**Next steps**:
+- Python end-to-end test: `df.sink_parquet("hf://buckets/ns/name/file.parquet")`
+- Streaming XET upload (write parquet row groups incrementally instead of buffering all)
+- Parallel morsel encoding with batched parquet writer
