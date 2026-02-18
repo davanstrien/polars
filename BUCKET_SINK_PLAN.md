@@ -334,6 +334,9 @@ True streaming: parquet bytes flow through XetWriter to XET storage. Memory ≈ 
 ### Error handling
 If upload fails mid-stream, bucket has whatever shards completed. User re-runs and we skip already-uploaded files (compare with `list_bucket_tree`). No checkpoint file needed.
 
+### Core polars footprint (audited 2026-02-18)
+92% of code (666 of 727 lines) is in HF-specific modules (`polars-io/cloud/hf_bucket/` and `hf_bucket_sink.rs`). The remaining 52 lines touch 7 core files — all `#[cfg(feature = "hf_bucket_sink")]` gated except one 1-line change adding `"buckets"` to the allowed HF URL schemes. The core touches are the minimum wiring any new sink type requires: enum variant, IR routing, graph wiring, fmt. Nothing to refactor.
+
 ---
 
 ## Session Log
