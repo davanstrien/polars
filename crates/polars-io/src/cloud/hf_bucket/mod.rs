@@ -10,9 +10,11 @@ use crate::cloud::CloudOptions;
 use crate::cloud::options::CloudConfig;
 
 mod batch;
+mod streaming_upload;
 mod xet_upload;
 
 pub use batch::*;
+pub use streaming_upload::*;
 pub use xet_upload::*;
 
 /// Configuration for connecting to an HF bucket.
@@ -134,6 +136,27 @@ pub async fn upload_and_register_file(
     let bucket_writer = BucketWriter::new(&client, config).await?;
     let file_info = bucket_writer.upload_bytes(bytes::Bytes::from(data)).await?;
     let xet_hash = file_info.hash().to_string();
+    bucket_batch(
+        &client,
+        config,
+        &[BucketOperation::AddFile {
+            path: file_path,
+            xet_hash,
+        }],
+    )
+    .await
+}
+
+/// Register an already-uploaded file in an HF bucket via the batch API.
+///
+/// This is the second half of the upload flow — call it after
+/// [`StreamingBucketUploader::finish`] returns the XET hash.
+pub async fn register_file(
+    config: &HfBucketConfig,
+    file_path: String,
+    xet_hash: String,
+) -> PolarsResult<()> {
+    let client = reqwest::Client::new();
     bucket_batch(
         &client,
         config,

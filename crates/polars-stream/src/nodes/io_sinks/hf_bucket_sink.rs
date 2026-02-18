@@ -1,13 +1,12 @@
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use polars_core::frame::DataFrame;
 use polars_core::schema::SchemaRef;
 use polars_error::PolarsResult;
 use polars_io::cloud::hf_bucket::{
-    HfBucketConfig, extract_hf_token, parse_hf_bucket_url, upload_and_register_file,
+    HfBucketConfig, StreamingBucketUploader, UploadedFileInfo, extract_hf_token,
+    parse_hf_bucket_url, register_file,
 };
-use polars_io::parquet::write::ParquetWriter;
 use polars_plan::dsl::FileSinkOptions;
 
 use super::{SinkInputPort, SinkNode};
@@ -19,8 +18,8 @@ use crate::nodes::{JoinHandle, TaskPriority};
 
 /// Sink node for HF Bucket uploads.
 ///
-/// Consumes all incoming morsels, encodes the combined DataFrame as a single
-/// parquet file, then uploads via XET and registers via the batch API.
+/// Streams parquet row groups incrementally to XET as morsels arrive,
+/// keeping memory at O(row_group_size) instead of O(total_dataset).
 pub struct HfBucketSinkNode {
     options: FileSinkOptions,
     input_schema: SchemaRef,
@@ -28,8 +27,8 @@ pub struct HfBucketSinkNode {
     // Set during initialize(), consumed during finalize()
     config: Option<HfBucketConfig>,
     file_path: Option<String>,
-    // Shared buffer for encoded parquet bytes, written by spawn_sink, read by finalize
-    encoded_bytes: Arc<Mutex<Option<Vec<u8>>>>,
+    // Written by spawn_sink (upload result), read by finalize (registration)
+    file_info: Arc<Mutex<Option<UploadedFileInfo>>>,
 }
 
 impl HfBucketSinkNode {
@@ -39,7 +38,7 @@ impl HfBucketSinkNode {
             input_schema,
             config: None,
             file_path: None,
-            encoded_bytes: Arc::new(Mutex::new(None)),
+            file_info: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -50,7 +49,7 @@ impl SinkNode for HfBucketSinkNode {
     }
 
     fn is_sink_input_parallel(&self) -> bool {
-        false // Serial consumption — we vstack all morsels into one DataFrame
+        false // Serial consumption — one morsel at a time
     }
 
     fn do_maintain_order(&self) -> bool {
@@ -58,7 +57,6 @@ impl SinkNode for HfBucketSinkNode {
     }
 
     fn initialize(&mut self, _state: &StreamingExecutionState) -> PolarsResult<()> {
-        // Parse URL
         let url = match &self.options.target {
             polars_plan::dsl::SinkTarget::Path(p) => p.to_string(),
             _ => polars_error::polars_bail!(
@@ -68,7 +66,6 @@ impl SinkNode for HfBucketSinkNode {
 
         let (namespace, bucket_name, file_path) = parse_hf_bucket_url(&url)?;
 
-        // Extract token
         let hf_token = extract_hf_token(
             self.options
                 .unified_sink_args
@@ -90,41 +87,51 @@ impl SinkNode for HfBucketSinkNode {
     ) {
         let input_schema = self.input_schema.clone();
         let file_format = self.options.file_format.clone();
-        let encoded_bytes = self.encoded_bytes.clone();
+        let config = self.config.clone().expect("initialize() must be called first");
+        let file_info_slot = self.file_info.clone();
 
-        // Single serial task: consume all morsels, vstack, encode to parquet
         join_handles.push(spawn(TaskPriority::High, async move {
-            let mut combined = DataFrame::empty_with_schema(&input_schema);
+            // Extract parquet options from the file format.
+            #[cfg(feature = "parquet")]
+            let parquet_opts = match &file_format {
+                polars_plan::dsl::FileWriteFormat::Parquet(opts) => (**opts).clone(),
+                _ => Default::default(),
+            };
+            #[cfg(not(feature = "parquet"))]
+            let parquet_opts = Default::default();
 
+            // Create the streaming uploader (connects to XET, starts upload task).
+            // Pass owned values so the future is 'static for tokio::spawn.
+            let schema = input_schema.as_ref().clone();
+            let mut uploader = polars_io::pl_async::get_runtime()
+                .spawn(StreamingBucketUploader::new(
+                    config,
+                    schema,
+                    parquet_opts,
+                ))
+                .await
+                .unwrap_or_else(|e| Err(std::io::Error::from(e).into()))?;
+
+            // Stream morsels through the uploader.
             while let Ok((outcome, rx)) = recv_port_rx.recv().await {
                 let mut rx = rx.serial();
                 while let Ok(morsel) = rx.recv().await {
                     let (df, _seq, _, consume_token) = morsel.into_inner();
-                    combined.vstack_mut_owned(df)?;
+                    if df.height() > 0 {
+                        uploader.write_batch(&df)?;
+                    }
                     drop(consume_token);
                 }
                 outcome.stopped();
             }
 
-            if combined.height() > 0 {
-                // Encode to parquet
-                let mut buffer = Vec::new();
-                let mut writer = ParquetWriter::new(&mut buffer);
+            // Finalize: write parquet footer + close XET writer.
+            let info = polars_io::pl_async::get_runtime()
+                .spawn(uploader.finish())
+                .await
+                .unwrap_or_else(|e| Err(std::io::Error::from(e).into()))?;
 
-                #[cfg(feature = "parquet")]
-                if let polars_plan::dsl::FileWriteFormat::Parquet(opts) = &file_format {
-                    writer = writer
-                        .with_compression(opts.compression)
-                        .with_statistics(opts.statistics)
-                        .with_row_group_size(opts.row_group_size)
-                        .with_data_page_size(opts.data_page_size);
-                }
-
-                writer.finish(&mut combined)?;
-
-                // Store encoded bytes for finalize to upload
-                *encoded_bytes.lock().unwrap() = Some(buffer);
-            }
+            *file_info_slot.lock().unwrap() = Some(info);
 
             PolarsResult::Ok(())
         }));
@@ -136,15 +143,14 @@ impl SinkNode for HfBucketSinkNode {
     ) -> Option<Pin<Box<dyn Future<Output = PolarsResult<()>> + Send>>> {
         let config = self.config.take()?;
         let file_path = self.file_path.take()?;
-        let encoded_bytes = self.encoded_bytes.clone();
+        let file_info_slot = self.file_info.clone();
 
         Some(Box::pin(async move {
-            let data = encoded_bytes.lock().unwrap().take();
+            let info = file_info_slot.lock().unwrap().take();
 
-            if let Some(data) = data {
-                // Upload on the tokio runtime
+            if let Some(info) = info {
                 let handle = polars_io::pl_async::get_runtime().spawn(async move {
-                    upload_and_register_file(&config, file_path, data).await
+                    register_file(&config, file_path, info.xet_hash).await
                 });
                 handle
                     .await

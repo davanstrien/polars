@@ -228,102 +228,60 @@ src/huggingface_hub/utils/_xet.py  (XET connection info)
 
 ---
 
-## Phase 2: Implementation
+## Phase 2: Implementation — Status
 
-**Prerequisite**: Phase 1 deliverables complete and reviewed.
+**All work on `feature/hf-bucket-sink` branch.**
 
-**All work on `feature/hf-bucket-sink` branch** (created from synced `main`).
+### Completed
 
-### 2.1 Set Up Module Structure *(DONE — deps, feature flags, and module files)*
+- [x] **2.1** Module structure + deps + feature flags (polars-io, polars-stream)
+- [x] **2.1a** Standalone XET upload test — validated xet-core fork, token flow, batch API
+- [x] **2.2** XET upload path in `polars-io/src/cloud/hf_bucket/xet_upload.rs`
+- [x] **2.3** Bucket batch client in `polars-io/src/cloud/hf_bucket/batch.rs`
+- [x] **2.4** Buffered parquet encoding in sink node (vstack all morsels → encode → upload)
+- [x] **2.5** `HfBucketSinkNode` implementing `SinkNode` trait
+- [x] **2.6a** Pipeline wiring: `PhysNodeKind::HfBucketSink`, `lower_ir.rs`, `to_graph.rs`, `fmt.rs`
+- [x] **2.6b** Feature flag wiring: polars-lazy → polars → polars-python → polars-runtime-32
+- [x] **2.7a** Python e2e test: `sink_parquet("hf://buckets/...")` uploads 1000 rows in 1.7s ✓
 
-Create minimal module structure:
-```
-crates/polars-io/src/cloud/hf_bucket/
-├── mod.rs              # Module exports
-├── options.rs          # BucketSinkOptions (simplified)
-├── auth.rs             # Token handling
-├── url.rs              # Parse hf://buckets/ URLs
-├── xet_upload.rs       # XetClient + XetWriter wrapper
-└── batch.rs            # Bucket batch API (simple HTTP POST, ~50 lines)
+---
 
-crates/polars-stream/src/nodes/io_sinks/hf_bucket_sink/
-└── mod.rs              # Streaming sink node
-```
+## Phase 3: Hardening & Optimization — Next Steps
 
-### 2.1a Standalone XET Upload Test *(DONE — all 5 steps passed)*
+The PoC works end-to-end. These are the remaining tasks to make it production-ready, roughly in priority order.
 
-**Why**: The xet-core fork (`kszucs/xet-core` branch `download_bytes`) is the biggest unknown. Its `streaming` module doesn't exist in main xet-core. If the API has changed, if the token endpoint returns something unexpected, or if `bucket_batch()` needs a different payload — we want to discover that in a ~100-line test, not after writing ~520 lines of Polars integration code.
+### 3.1 Migrate from xet-core fork to `subxet` (HIGH PRIORITY)
+**Why**: Our current deps (`xet-data`, `xet-utils`, `cas_types` from `kszucs/xet-core`) pull ~420 transitive crates. OpenDAL has migrated to [`subxet`](https://github.com/kszucs/subxet), a tree-shaken single crate that cuts this by ~75%.
+**What**: Replace the three git deps in `crates/polars-io/Cargo.toml` with one `subxet` dep. Update import paths (`xet_data::` → `subxet::data::`). API surface is identical — no logic changes.
+**Estimated scope**: 2 files (Cargo.toml + xet_upload.rs import paths)
 
-**What**: A standalone Rust integration test (binary or `#[test]`) that exercises the full upload path end-to-end:
+### 3.2 Streaming XET upload ~~(HIGH PRIORITY)~~ DONE
+**Why**: Current implementation buffers all morsels into one DataFrame, encodes the full parquet file in memory, then uploads. This defeats the purpose of streaming for large datasets.
+**What**: Added `StreamingBucketUploader` in polars-io that owns a `BatchedWriter<ChannelWriter>` for incremental parquet encoding and an async upload task that streams bytes to `XetWriter`. Memory stays at O(row_group_size).
+**Scope**: 1 new file (`streaming_upload.rs`), 2 modified files (`mod.rs`, `hf_bucket_sink.rs`)
 
-1. **Auth**: Fetch XET write token from `GET /api/buckets/{namespace}/{name}/xet-write-token` using `HF_TOKEN`
-2. **XET client**: Create `XetClient` with the token and CAS URL
-3. **Upload**: Create `XetWriter`, write a small parquet buffer (~100 rows), call `close()` → `XetFileInfo`
-4. **Register**: Call `bucket_batch()` with `AddFile { path, xet_hash }` to register the file in the bucket
-5. **Verify**: Confirm the file appears (e.g. `GET /api/buckets/{namespace}/{name}/tree` or similar)
+### 3.3 Add token refresh (MEDIUM PRIORITY)
+**Why**: We pass `None` for the `TokenRefresher` when creating `XetClient`. XET tokens expire (~1hr). Long-running uploads on large datasets will fail.
+**What**: Implement the `TokenRefresher` trait (re-fetch from `/api/buckets/{id}/xet-write-token`), pass to `XetClient::new()`. Follow OpenDAL's pattern in `core.rs:179-217`.
+**Estimated scope**: ~30 lines in `xet_upload.rs`
 
-**Location**: `scratch/xet_upload_test/` (standalone Cargo project, not part of polars workspace)
+### 3.4 Multi-file / sharded output (MEDIUM PRIORITY)
+**Why**: Currently writes a single parquet file. Large datasets should be sharded (e.g. `part-00000.parquet`, `part-00001.parquet`) to enable parallel reads and avoid huge files.
+**What**: Add shard size threshold. When exceeded, close current XetWriter, start new one with next filename. Accumulate all file infos, register all in one `bucket_batch()` call at finalize.
+**Estimated scope**: ~50 lines in `hf_bucket_sink.rs`
 
-**Validates**:
-- xet-core fork compiles and links correctly
-- `XetClient` construction with our token works
-- `XetWriter::write()` → `close()` produces a valid XET hash
-- Bucket batch API accepts the hash and registers the file
-- Token format/refresh assumptions are correct
+### 3.5 Add unit tests (MEDIUM PRIORITY)
+**Why**: Only have the Python e2e script. Need Rust-level tests for `xet_upload.rs`, `batch.rs`, and URL parsing.
+**What**: Add `#[cfg(test)]` modules. Mock HTTP for batch API tests. Integration tests (behind feature flag + env var) for real uploads.
+**Estimated scope**: ~200 lines across 2-3 files
 
-**Prerequisites**:
-- An HF bucket to test with (create via `huggingface_hub` CLI or API)
-- `HF_TOKEN` environment variable set
+### 3.6 Error handling & user experience (LOW PRIORITY)
+**Why**: Current errors are raw (HTTP status codes, xet-core errors). Users need actionable messages.
+**What**: Wrap errors with context (bucket name, file path, operation). Handle common failures: bucket doesn't exist (404), bad token (401), rate limit (429).
+**Estimated scope**: ~50 lines
 
-**Does NOT require**:
-- Polars compilation (bypasses `polars-core` build issue)
-- Rebase onto main
-- Any changes to polars-stream
-
-### 2.2 Implement XET Upload Path
-
-Following the OpenDAL pattern:
-1. XET token fetcher: GET `/api/buckets/{id}/xet-write-token`
-2. XET client creation with token refresh
-3. Streaming write wrapper: `XetWriter::write(bytes)` + `close() → XetFileInfo`
-4. Unit test: upload a small file to a test bucket
-
-### 2.3 Implement Bucket Batch Client
-
-Simple HTTP POST — ~50 lines:
-```rust
-async fn bucket_batch(endpoint: &str, bucket_id: &str, token: &str, ops: Vec<BucketOp>) -> Result<()> {
-    // Serialize ops as NDJSON, POST to /api/buckets/{bucket_id}/batch
-}
-```
-
-### 2.4 Implement Shard Writer with XET Streaming
-
-Adapt shard_writer.rs from existing branch (study on `feature/hf-hub-sink`, implement on `feature/hf-bucket-sink`):
-- Pipe parquet encoder output directly to `XetWriter::write()`
-- On shard complete: `XetWriter::close()` → `XetFileInfo`
-- No local buffering, no SHA256, no temp files
-
-### 2.5 Implement Streaming Sink Node
-
-Build `HfBucketSinkNode`:
-- Receive morsels from streaming engine
-- Feed to shard writer → XetWriter
-- When shard completes: record XetFileInfo
-- On finalize: call bucket batch API
-
-### 2.6 Wire Into Polars Pipeline
-
-- Add sink target to logical plan
-- Add dispatch in `lower_ir.rs` and `to_graph.rs`
-- Add Python bindings for `sink_parquet("hf://buckets/...")`
-
-### 2.7 Testing
-
-- E2E: create bucket → stream data → verify files
-- Test with real Hub bucket
-- Test failure recovery (partial upload)
-- Memory profiling: verify constant-memory streaming
+### Out of scope (for now): Read support for `hf://buckets/`
+Reading from buckets (`pl.read_parquet("hf://buckets/...")`) is a separate concern from the write path we're building. [huggingface/huggingface_hub#3807](https://github.com/huggingface/huggingface_hub/pull/3807) adds bucket support to HfFileSystem/fsspec — once landed, worth checking if it works with polars' existing cloud read path out of the box. Tracked separately from this write-focused project.
 
 ---
 
@@ -726,3 +684,70 @@ encode as a single parquet file, then upload via the XET protocol and register v
 - **Rust-native sink (ours)**: Performance-critical bulk writes via `sink_parquet()`. Designed for large-scale data pipelines where streaming and memory efficiency matter.
 
 They are complementary: fsspec for the read path and general interop, our sink for the write-heavy data engineering path.
+
+---
+
+## TODO: Review OpenDAL HF Service Changes (Feb 2026)
+
+OpenDAL's HF service (`opendal/core/services/hf/`) has been updated since our initial reference analysis. Key changes identified on 2026-02-18:
+
+### Migration to `subxet` (HIGH PRIORITY)
+OpenDAL has migrated from the `kszucs/xet-core` fork (3 crates: `xet-data`, `xet-utils`, `cas_types`) to [`subxet`](https://github.com/kszucs/subxet) — a tree-shaken single-crate version of xet-core. This reduced their Cargo.lock from 511 to 127 entries (~75% reduction). Our Polars deps still pull ~420 transitive crates from the xet-core fork.
+
+**Action**: Migrate `crates/polars-io/Cargo.toml` from `xet-data`/`xet-utils`/`cas_types` to `subxet`. Import paths change from `xet_data::streaming::XetClient` → `subxet::data::streaming::XetClient` (etc). The API surface is identical — this is a dependency swap, not a rewrite.
+
+### Token refresh support (MEDIUM PRIORITY)
+OpenDAL now implements `TokenRefresher` trait for automatic XET token renewal during long uploads. We currently pass `None` for the refresher, which works for short uploads but may fail on multi-hour jobs.
+
+**Action**: Implement `TokenRefresher` for long-running sink operations.
+
+### No breaking API changes
+The core APIs are confirmed unchanged:
+- `XetClient::new()` — same signature
+- `XetWriter::write()` / `close()` — same lifecycle
+- `BucketOperation` / `bucket_batch()` — same NDJSON format
+- HTTP endpoints — unchanged
+
+### Other improvements to consider
+- OpenDAL has comprehensive tests (16 test cases for writer) — we should add unit tests for `xet_upload.rs` and `batch.rs`
+- OpenDAL's `HfWriter` enum supports both regular (base64 inline) and XET modes — not needed for buckets (always XET) but relevant if we ever support repo writes
+
+---
+
+### 2026-02-18 — [Phase 3.2] Streaming XET upload
+**Branch**: feature/hf-bucket-sink
+**Status**: completed
+**What was done**:
+- Created `crates/polars-io/src/cloud/hf_bucket/streaming_upload.rs` (~160 lines):
+  - `ChannelWriter`: sync `Write` impl that sends byte chunks over a bounded `std::sync::mpsc::sync_channel(16)` for backpressure
+  - `StreamingBucketUploader`: owns `BatchedWriter<ChannelWriter>` + async upload task. Uses bridge pattern: `spawn_blocking` drains std channel → tokio mpsc channel → async XET writes
+  - `UploadedFileInfo`: returned from `finish()` with xet_hash + file_size
+- Added `register_file()` helper to `crates/polars-io/src/cloud/hf_bucket/mod.rs` — wraps `bucket_batch()` so polars-stream doesn't need reqwest dependency
+- Rewrote `crates/polars-stream/src/nodes/io_sinks/hf_bucket_sink.rs`:
+  - Replaced `encoded_bytes: Arc<Mutex<Option<Vec<u8>>>>` (buffer everything) with `file_info: Arc<Mutex<Option<UploadedFileInfo>>>` (streaming)
+  - `spawn_sink()`: creates `StreamingBucketUploader`, calls `write_batch(&df)` per morsel, calls `finish()` at end
+  - `finalize()`: just calls `register_file()` to register the XET hash with the bucket API
+- Registered `mod streaming_upload` + `pub use streaming_upload::*` in `mod.rs`
+**Key design decisions**:
+- All HF/XET logic stays in polars-io — sink node in polars-stream is thin glue
+- `StreamingBucketUploader::new()` takes owned values (not refs) so the future is `'static` for `tokio::spawn`
+- Bridge pattern (std::sync channel → spawn_blocking → tokio channel) avoids unsafe code and works regardless of caller's thread context
+- `ParquetWriteOptions::to_writer(channel_writer).batched(&schema)` reuses existing polars API
+**Verification**:
+- `cargo check -p polars-io --features hf_bucket_sink,parquet` — PASS
+- `cargo check -p polars-stream --features parquet,hf_bucket_sink` — PASS
+- `cargo check -p polars-stream --features parquet` — PASS (no regression without feature)
+**Memory model**:
+- Before: O(total_dataset) — vstack all morsels, encode full parquet, then upload
+- After: O(row_group_size) — each morsel encoded as row group(s), bytes streamed to XET via channel
+**Artifacts produced**:
+- Created `crates/polars-io/src/cloud/hf_bucket/streaming_upload.rs`
+- Modified `crates/polars-io/src/cloud/hf_bucket/mod.rs` (module registration + `register_file()`)
+- Rewritten `crates/polars-stream/src/nodes/io_sinks/hf_bucket_sink.rs`
+- Updated `BUCKET_SINK_PLAN.md` — Phase 3.2 marked done + this session log
+**Next steps**:
+- Build wheel + e2e test with `scratch/test_hf_bucket_sink.py`
+- Test with larger dataset (1M+ rows) to confirm memory doesn't spike
+- Phase 3.1: Migrate from xet-core fork to `subxet` (reduce 420 transitive crates)
+- Phase 3.3: Token refresh for long-running uploads
+- Phase 3.4: Multi-file / sharded output
