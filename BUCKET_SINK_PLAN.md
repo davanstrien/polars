@@ -661,3 +661,68 @@ encode as a single parquet file, then upload via the XET protocol and register v
 - Python end-to-end test: `df.sink_parquet("hf://buckets/ns/name/file.parquet")`
 - Streaming XET upload (write parquet row groups incrementally instead of buffering all)
 - Parallel morsel encoding with batched parquet writer
+
+---
+
+### 2026-02-18 — [Phase 2.6] Feature flag wiring + Python e2e test
+**Branch**: feature/hf-bucket-sink
+**Status**: completed
+**What was done**:
+- Wired `hf_bucket_sink` feature flag through the full crate chain (4 files):
+  - `crates/polars-lazy/Cargo.toml`: `hf_bucket_sink = ["polars-stream?/hf_bucket_sink"]`
+  - `crates/polars/Cargo.toml`: `hf_bucket_sink = ["polars-lazy?/hf_bucket_sink"]`
+  - `crates/polars-python/Cargo.toml`: `hf_bucket_sink = ["polars/hf_bucket_sink"]`
+  - `py-polars/runtime/polars-runtime-32/Cargo.toml`: `hf_bucket_sink = ["polars-python/hf_bucket_sink"]`
+- Built local Python wheel: `maturin develop -m py-polars/runtime/polars-runtime-32/Cargo.toml --features hf_bucket_sink`
+- Created e2e test script at `scratch/test_hf_bucket_sink.py`
+- Created HF bucket `davanstrien/test-polars-bucket` via `hf buckets create` CLI (from `huggingface_hub@buckets-api` branch)
+- Ran e2e test successfully:
+  - `sink_parquet("hf://buckets/davanstrien/test-polars-bucket/test-f22bceae.parquet")` uploaded 1000 rows in 1.7s
+  - File confirmed on HF (5,885 bytes) via `hf buckets tree`
+  - Read-back not yet supported (`hf://buckets/` read path not wired in polars-io) — expected
+**Verification**:
+- `cargo check --manifest-path py-polars/runtime/polars-runtime-32/Cargo.toml --features hf_bucket_sink` — PASS
+- `HF_TOKEN=... python scratch/test_hf_bucket_sink.py` — PASS (upload succeeds, file appears in bucket)
+**Artifacts produced**:
+- Modified 4 Cargo.toml files (feature flag wiring)
+- Created `scratch/test_hf_bucket_sink.py` — e2e test script
+- Updated `BUCKET_SINK_PLAN.md` — this session log
+**Next steps**:
+- Streaming XET upload (write parquet row groups incrementally instead of buffering all)
+- Parallel morsel encoding
+- Wire `hf://buckets/` read support so round-trip works
+- Commit all changes
+
+---
+
+## Comparison: Rust-native Sink vs HfFileSystem/fsspec (PR #3807)
+
+**Context**: [huggingface/huggingface_hub#3807](https://github.com/huggingface/huggingface_hub/pull/3807) (draft) adds `hf://buckets/` support to `HfFileSystem`, the Python fsspec backend. [huggingface/huggingface_hub#3796](https://github.com/huggingface/huggingface_hub/issues/3796) documents the full Buckets API (CLI + Python). These are complementary to our approach, not competing.
+
+### How PR #3807 works (fsspec approach)
+- `HfFileSystemFile._upload_chunk()` writes data to a **local temp file**, then on `final=True` calls `api.batch_bucket_files(add=[(temp_path, remote_path)])` to upload
+- Upload goes through the Python `huggingface_hub` client (which internally uses XET via `hf-xet`)
+- All data must be buffered to disk before upload begins
+- Standard fsspec interface: `open()`, `read()`, `write()`, `glob()`, `ls()`
+
+### How our Rust-native sink works
+- Parquet encoding happens **in-memory** inside the polars streaming pipeline
+- Encoded bytes go directly to `XetWriter` via xet-core Rust crate — no temp files, no Python
+- `bucket_batch()` registers files after XET upload completes
+- Runs inside the streaming engine, processing data morsel-by-morsel
+
+### Key efficiency advantages of Rust-native sink
+| Aspect | fsspec (PR #3807) | Rust-native sink (ours) |
+|--------|-------------------|------------------------|
+| **Encoding** | Python-level (or delegates to polars then copies) | In-engine, zero-copy from streaming pipeline |
+| **Temp files** | Yes — writes to disk, then uploads | No — parquet bytes go straight to XET |
+| **Memory** | Must buffer full file before upload | O(row_group_size), streams morsel-by-morsel |
+| **GIL** | Held during encoding/coordination | No Python involvement — pure Rust |
+| **XET deduplication** | Via hf-xet Python wrapper | Direct xet-core Rust — block-level dedup |
+| **Large datasets** | Limited by disk space for temp files | Arbitrarily large lazy frames, constant memory |
+
+### When to use which
+- **fsspec (PR #3807)**: General-purpose access — read, list, glob, small writes, interactive use. Great for convenience and ecosystem interop.
+- **Rust-native sink (ours)**: Performance-critical bulk writes via `sink_parquet()`. Designed for large-scale data pipelines where streaming and memory efficiency matter.
+
+They are complementary: fsspec for the read path and general interop, our sink for the write-heavy data engineering path.

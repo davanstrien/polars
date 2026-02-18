@@ -93,6 +93,7 @@ parquet = [
 ]
 async = ["polars-lazy?/async"]
 cloud = ["polars-lazy?/cloud", "polars-io/cloud"]
+hf_bucket_sink = ["polars-lazy?/hf_bucket_sink"]
 aws = ["async", "cloud", "polars-io/aws"]
 http = ["async", "cloud", "polars-io/http"]
 azure = ["async", "cloud", "polars-io/azure"]
