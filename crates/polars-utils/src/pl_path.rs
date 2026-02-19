@@ -13,7 +13,11 @@ use crate::pl_str::PlRefStr;
 /// <https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation?tabs=registry>
 pub const WINDOWS_EXTPATH_PREFIX: &str = r#"\\?\"#;
 
-/// UTF-8 path. Not to be constructed directly; use [`PlRefPath::new`] instead.
+/// Path represented as a UTF-8 string.
+///
+/// Equality and ordering are based on the string value, which can be sensitive to duplicate
+/// separators. `as_std_path()` can be used to return a `&std::path::Path` for comparisons / API
+/// access.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct PlPath {
@@ -21,9 +25,8 @@ pub struct PlPath {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-// TODO: Derive after DSL unfreeze
-// #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-// #[cfg_attr(feature = "dsl-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "dsl-schema", derive(schemars::JsonSchema))]
 /// Reference-counted [`PlPath`].
 ///
 /// # Windows paths invariant
@@ -35,16 +38,16 @@ pub struct PlRefPath {
 
 impl PlPath {
     // Note: Do not expose the following constructors, they do not normalize paths.
-    fn new<S: AsRef<str> + ?Sized>(s: &S) -> &PlPath {
+    fn _new<S: AsRef<str> + ?Sized>(s: &S) -> &PlPath {
         let s: &str = s.as_ref();
         // Safety: `PlPath` is `repr(transparent)` on `str`.
         unsafe { &*(s as *const str as *const PlPath) }
     }
 
-    fn try_from_path(path: &Path) -> PolarsResult<&PlPath> {
+    fn _try_from_path(path: &Path) -> PolarsResult<&PlPath> {
         path.to_str()
             .ok_or_else(|| polars_err!(non_utf8_path))
-            .map(Self::new)
+            .map(Self::_new)
     }
 
     pub fn as_str(&self) -> &str {
@@ -64,7 +67,7 @@ impl PlPath {
     }
 
     pub fn to_ref_path(&self) -> PlRefPath {
-        PlRefPath::new(self.as_str())
+        PlRefPath::_new_no_normalize(self.as_str().into())
     }
 
     pub fn scheme(&self) -> Option<CloudScheme> {
@@ -99,7 +102,7 @@ impl PlPath {
 
     /// Slices the path.
     pub fn sliced(&self, range: Range<usize>) -> &PlPath {
-        Self::new(&self.as_str()[range])
+        Self::_new(&self.as_str()[range])
     }
 
     /// Strips the scheme, then returns the authority component, and the remaining
@@ -117,21 +120,13 @@ impl PlPath {
     /// (authority, remaining).
     pub fn strip_scheme_split_authority(&self) -> Option<(&'_ str, &'_ str)> {
         match self.scheme() {
-            None => Some(("", self.strip_scheme())),
-            // FIXME: Remove this, it's not correct.
-            Some(CloudScheme::File | CloudScheme::FileNoHostname) => {
-                Some(("", self.strip_scheme()))
-            },
+            None | Some(CloudScheme::FileNoHostname) => Some(("", self.strip_scheme())),
             Some(scheme) => {
                 let path_str = self.as_str();
                 let position = self.authority_end_position();
 
                 if position < path_str.len() {
-                    assert!(
-                        path_str[position..].starts_with('/')
-                            || path_str[position..].is_empty()
-                            || matches!(scheme, CloudScheme::FileNoHostname)
-                    );
+                    assert!(path_str[position..].starts_with('/'));
                 }
 
                 (position < path_str.len()).then_some((
@@ -237,16 +232,21 @@ impl PlRefPath {
         Self::default()
     }
 
+    /// Normalizes Windows paths.
     pub fn new(path: impl AsRef<str> + Into<PlRefStr>) -> Self {
         if let Some(path) = PlPath::normalize_windows_path(path.as_ref()) {
             return path;
         }
 
-        Self { inner: path.into() }
+        Self::_new_no_normalize(path.into())
+    }
+
+    const fn _new_no_normalize(path: PlRefStr) -> Self {
+        Self { inner: path }
     }
 
     pub fn try_from_path(path: &Path) -> PolarsResult<PlRefPath> {
-        Ok(PlPath::try_from_path(path)?.to_ref_path())
+        Ok(Self::new(PlPath::_try_from_path(path)?.as_str()))
     }
 
     pub fn try_from_pathbuf(path: PathBuf) -> PolarsResult<PlRefPath> {
@@ -270,7 +270,7 @@ impl PlRefPath {
         if range == (0..self.as_str().len()) {
             self.clone()
         } else {
-            PlPath::sliced(self, range).to_ref_path()
+            Self::_new_no_normalize(PlPath::sliced(self, range).as_str().into())
         }
     }
 
@@ -312,7 +312,7 @@ impl Deref for PlRefPath {
     type Target = PlPath;
 
     fn deref(&self) -> &Self::Target {
-        PlPath::new(self)
+        PlPath::_new(self)
     }
 }
 
@@ -333,6 +333,12 @@ impl ToOwned for PlPath {
 impl Borrow<PlPath> for PlRefPath {
     fn borrow(&self) -> &PlPath {
         self
+    }
+}
+
+impl From<&str> for PlRefPath {
+    fn from(value: &str) -> Self {
+        Self::new(value)
     }
 }
 
@@ -365,8 +371,6 @@ macro_rules! impl_cloud_scheme {
     };
 }
 
-/// This must be at least the length of the longest scheme listed below.
-const MAX_SCHEME_LEN: usize = 8;
 impl_cloud_scheme! {
     Abfs = "abfs",
     Abfss = "abfss",
@@ -385,17 +389,13 @@ impl_cloud_scheme! {
 }
 
 impl CloudScheme {
-    pub fn from_path(mut path: &str) -> Option<Self> {
+    pub fn from_path(path: &str) -> Option<Self> {
         if let Some(stripped) = path.strip_prefix("file:") {
             return Some(if stripped.starts_with("//") {
                 Self::File
             } else {
                 Self::FileNoHostname
             });
-        }
-
-        if path.len() > MAX_SCHEME_LEN {
-            path = &path[..MAX_SCHEME_LEN]
         }
 
         Self::from_scheme_str(&path[..path.find("://")?])
@@ -443,50 +443,6 @@ pub fn format_file_uri(absolute_local_path: &str) -> PlRefPath {
     }
 }
 
-#[cfg(feature = "serde")]
-mod _serde_impl {
-    use serde::{Deserialize, Serialize};
-
-    use super::super::plpath::PlPath as LegacyPlPath;
-    use crate::pl_path::PlRefPath;
-
-    impl Serialize for PlRefPath {
-        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: serde::Serializer,
-        {
-            LegacyPlPath::serialize(&self.clone().into(), serializer)
-        }
-    }
-
-    impl<'de> Deserialize<'de> for PlRefPath {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            LegacyPlPath::deserialize(deserializer).map(Into::into)
-        }
-    }
-}
-
-#[cfg(feature = "dsl-schema")]
-use super::plpath::PlPath as LegacyPlPath;
-
-#[cfg(feature = "dsl-schema")]
-impl schemars::JsonSchema for PlRefPath {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        LegacyPlPath::schema_name()
-    }
-
-    fn schema_id() -> std::borrow::Cow<'static, str> {
-        LegacyPlPath::schema_id()
-    }
-
-    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        LegacyPlPath::json_schema(generator)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,6 +482,48 @@ mod tests {
         );
 
         assert_eq!(PlRefPath::new("file://").scheme(), Some(CloudScheme::File));
+
+        assert_eq!(
+            PlRefPath::new("file://").strip_scheme_split_authority(),
+            None
+        );
+
+        assert_eq!(
+            PlRefPath::new("file:///").strip_scheme_split_authority(),
+            Some(("", "/"))
+        );
+
+        assert_eq!(
+            PlRefPath::new("file:///path").strip_scheme_split_authority(),
+            Some(("", "/path"))
+        );
+
+        assert_eq!(
+            PlRefPath::new("file://hostname:80/path").strip_scheme_split_authority(),
+            Some(("hostname:80", "/path"))
+        );
+
+        assert_eq!(
+            PlRefPath::new("file:").scheme(),
+            Some(CloudScheme::FileNoHostname)
+        );
+        assert_eq!(
+            PlRefPath::new("file:/").scheme(),
+            Some(CloudScheme::FileNoHostname)
+        );
+        assert_eq!(
+            PlRefPath::new("file:").strip_scheme_split_authority(),
+            Some(("", ""))
+        );
+        assert_eq!(
+            PlRefPath::new("file:/Local/path").strip_scheme_split_authority(),
+            Some(("", "/Local/path"))
+        );
+
+        assert_eq!(
+            PlRefPath::new(r#"\\?\C:\Windows\system32"#).as_str(),
+            "C:/Windows/system32"
+        );
     }
 
     #[test]
