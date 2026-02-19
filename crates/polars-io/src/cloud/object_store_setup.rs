@@ -177,7 +177,12 @@ impl PolarsObjectStoreBuilder {
                 #[cfg(not(feature = "http"))]
                 return err_missing_feature("http", &cloud_location.scheme);
             },
-            CloudType::Hf => panic!("impl error: unresolved hf:// path"),
+            CloudType::Hf => polars_bail!(
+                ComputeError:
+                "hf:// paths are not supported by the generic cloud writer. \
+                 For hf://buckets/ URLs, ensure the 'hf_bucket_sink' feature is enabled. \
+                 For hf://datasets/ URLs, paths should be resolved to HTTPS before reaching this point."
+            ),
         }?;
 
         Ok(store)

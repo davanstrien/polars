@@ -54,8 +54,8 @@ pub async fn fetch_xet_write_token(
 /// Create an `XetClient` from a write token.
 pub fn create_xet_client(
     token: &XetToken,
-) -> PolarsResult<xet_data::streaming::XetClient> {
-    xet_data::streaming::XetClient::new(
+) -> PolarsResult<subxet::data::streaming::XetClient> {
+    subxet::data::streaming::XetClient::new(
         Some(token.cas_url.clone()),
         Some((token.access_token.clone(), token.exp)),
         None, // no token refresher — simple single-token approach
@@ -68,7 +68,7 @@ pub fn create_xet_client(
 ///
 /// Provides helpers to create writers, upload bytes, and close files.
 pub struct BucketWriter {
-    client: xet_data::streaming::XetClient,
+    client: subxet::data::streaming::XetClient,
 }
 
 impl BucketWriter {
@@ -85,7 +85,7 @@ impl BucketWriter {
     /// `writer.close().await?` to get the `XetFileInfo` (hash + size).
     pub async fn new_writer(
         &self,
-    ) -> PolarsResult<xet_data::streaming::XetWriter> {
+    ) -> PolarsResult<subxet::data::streaming::XetWriter> {
         self.client.write(None).await.map_err(to_compute_err)
     }
 
@@ -95,7 +95,7 @@ impl BucketWriter {
     pub async fn upload_bytes(
         &self,
         data: Bytes,
-    ) -> PolarsResult<xet_data::XetFileInfo> {
+    ) -> PolarsResult<subxet::data::XetFileInfo> {
         let mut writer = self.new_writer().await?;
         writer.write(data).await.map_err(to_compute_err)?;
         writer.close().await.map_err(to_compute_err)
