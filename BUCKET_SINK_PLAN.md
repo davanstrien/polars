@@ -823,9 +823,11 @@ The core APIs are confirmed unchanged:
 - CI artifacts: `wheel-linux-x64` and `wheel-linux-arm64` on `davanstrien/polars` Actions
 - Test files on HF bucket `davanstrien/test-polars-bucket`: `colab-test.parquet` (8.8MB), `colab-filtered-50k.parquet` (434MB), `colab-remote-source-medical-sft.parquet` (2.7GB)
 
-**Next steps**:
-- Phase 3.1: Migrate from xet-core fork to `subxet` (reduce ~420 transitive crates by ~75%)
-- Phase 3.3: Token refresh — needed for multi-hour uploads (current tokens expire ~1hr)
-- Phase 3.4: Multi-file / sharded output — large datasets should produce multiple parquet files
+**Next steps (priority order)**:
+1. **Merge upstream main (BLOCKING)** — branch is 257 commits behind `upstream/main` (as of 2026-02-18). All 13 files we touched were also modified upstream, but our changes are small and `#[cfg]` gated. Conflicts expected in Cargo.toml files (version bumps) and streaming engine files (`lower_ir.rs`, `to_graph.rs`, `mod.rs`) if `PhysNodeKind` or sink dispatch was refactored. Estimate ~30 min. Run with full git access outside Docker. After merge: rebuild CI wheels and re-validate on Colab.
+2. **Share PoC publicly** — write a short demo notebook/blog snippet with disclaimers: "PoC, single-file output, no token refresh, requires HF Buckets (beta API), install from CI wheel artifacts."
+3. Phase 3.1: Migrate from xet-core fork to `subxet` (reduce ~420 transitive crates by ~75%)
+4. Phase 3.3: Token refresh — needed for multi-hour uploads (current tokens expire ~1hr)
+5. Phase 3.4: Multi-file / sharded output — large datasets should produce multiple parquet files
 - Investigate read-side `Invalid thrift: transport error` on large multi-shard HF dataset globs (not a sink issue but affects the scan→sink pipeline for large sources)
 - Consider publishing wheels to a HF repo or GitHub Release for easier Colab install (currently requires manual upload)
