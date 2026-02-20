@@ -147,6 +147,112 @@ pub async fn upload_and_register_file(
     .await
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_hf_bucket_url ──────────────────────────────────────────
+
+    #[test]
+    fn parse_valid_url() {
+        let (ns, bucket, path) =
+            parse_hf_bucket_url("hf://buckets/myorg/mybucket/data/file.parquet").unwrap();
+        assert_eq!(ns, "myorg");
+        assert_eq!(bucket, "mybucket");
+        assert_eq!(path, "data/file.parquet");
+    }
+
+    #[test]
+    fn parse_nested_path() {
+        let (ns, bucket, path) =
+            parse_hf_bucket_url("hf://buckets/org/bkt/a/b/c/d.parquet").unwrap();
+        assert_eq!(ns, "org");
+        assert_eq!(bucket, "bkt");
+        assert_eq!(path, "a/b/c/d.parquet");
+    }
+
+    #[test]
+    fn parse_minimal_path() {
+        let (ns, bucket, path) =
+            parse_hf_bucket_url("hf://buckets/user/bucket/file.parquet").unwrap();
+        assert_eq!(ns, "user");
+        assert_eq!(bucket, "bucket");
+        assert_eq!(path, "file.parquet");
+    }
+
+    #[test]
+    fn parse_missing_file_path() {
+        // Only namespace + bucket, no file path component
+        assert!(parse_hf_bucket_url("hf://buckets/org/bucket").is_err());
+    }
+
+    #[test]
+    fn parse_missing_bucket() {
+        assert!(parse_hf_bucket_url("hf://buckets/org").is_err());
+    }
+
+    #[test]
+    fn parse_empty_segments() {
+        assert!(parse_hf_bucket_url("hf://buckets//bucket/file.parquet").is_err());
+        assert!(parse_hf_bucket_url("hf://buckets/org//file.parquet").is_err());
+    }
+
+    #[test]
+    fn parse_bare_path_without_prefix() {
+        // The function also handles bare paths (without hf:// prefix)
+        let (ns, bucket, path) = parse_hf_bucket_url("buckets/org/bkt/file.parquet").unwrap();
+        assert_eq!(ns, "org");
+        assert_eq!(bucket, "bkt");
+        assert_eq!(path, "file.parquet");
+    }
+
+    #[test]
+    fn parse_empty_input() {
+        assert!(parse_hf_bucket_url("").is_err());
+    }
+
+    // ── extract_hf_token ─────────────────────────────────────────────
+
+    #[test]
+    fn token_from_env_var() {
+        // Safety: test-only env var mutation (same pattern as polars-core tests).
+        unsafe { std::env::set_var("HF_TOKEN", "test-token-env") };
+        let token = extract_hf_token(None).unwrap();
+        assert_eq!(token, "test-token-env");
+        unsafe { std::env::remove_var("HF_TOKEN") };
+    }
+
+    #[test]
+    fn token_from_cached_file() {
+        // Clear env so we fall through to the file path.
+        unsafe { std::env::remove_var("HF_TOKEN") };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let hf_home = tmp.path();
+        unsafe { std::env::set_var("HF_HOME", hf_home.as_os_str()) };
+
+        std::fs::write(hf_home.join("token"), "cached-token-value\n").unwrap();
+
+        let token = extract_hf_token(None).unwrap();
+        assert_eq!(token, "cached-token-value");
+
+        unsafe { std::env::remove_var("HF_HOME") };
+    }
+
+    #[test]
+    fn token_missing_returns_error() {
+        unsafe { std::env::remove_var("HF_TOKEN") };
+
+        let tmp = tempfile::tempdir().unwrap();
+        // Point HF_HOME to empty dir (no token file).
+        unsafe { std::env::set_var("HF_HOME", tmp.path().as_os_str()) };
+
+        assert!(extract_hf_token(None).is_err());
+
+        unsafe { std::env::remove_var("HF_HOME") };
+    }
+}
+
 /// Register an already-uploaded file in an HF bucket via the batch API.
 ///
 /// This is the second half of the upload flow — call it after

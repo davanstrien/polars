@@ -297,12 +297,34 @@ pub fn lower_ir(
                 {
                     if let polars_plan::dsl::SinkTarget::Path(ref p) = options.target {
                         if p.as_str().starts_with("hf://buckets/") {
-                            return Ok(PhysStream::first(phys_sm.insert(
-                                PhysNode::new(
-                                    output_schema,
-                                    PhysNodeKind::HfBucketSink { input, options },
-                                ),
-                            )));
+                            if !matches!(
+                                options.file_format,
+                                polars_plan::dsl::FileWriteFormat::Parquet(_)
+                            ) {
+                                polars_bail!(
+                                    ComputeError:
+                                    "HF bucket sink only supports parquet format, \
+                                     got '.{}' file",
+                                    options.file_format.extension()
+                                );
+                            }
+                            return Ok(PhysStream::first(phys_sm.insert(PhysNode::new(
+                                output_schema,
+                                PhysNodeKind::HfBucketSink { input, options },
+                            ))));
+                        }
+                    }
+                }
+
+                #[cfg(not(feature = "hf_bucket_sink"))]
+                {
+                    if let polars_plan::dsl::SinkTarget::Path(ref p) = options.target {
+                        if p.as_str().starts_with("hf://buckets/") {
+                            polars_bail!(
+                                ComputeError:
+                                "sink to hf://buckets/ requires the 'hf_bucket_sink' feature, \
+                                 which is not enabled in this build"
+                            );
                         }
                     }
                 }

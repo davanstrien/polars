@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use polars_core::frame::DataFrame;
 use polars_core::schema::SchemaRef;
 use polars_error::{PolarsResult, polars_ensure};
@@ -65,12 +63,7 @@ impl HfBucketSinkNode {
             ),
         };
         let (namespace, bucket_name, file_path) = parse_hf_bucket_url(&url)?;
-        let hf_token = extract_hf_token(
-            self.options
-                .unified_sink_args
-                .cloud_options
-                .as_deref(),
-        )?;
+        let hf_token = extract_hf_token(self.options.unified_sink_args.cloud_options.as_deref())?;
 
         let config =
             polars_io::cloud::hf_bucket::HfBucketConfig::new(namespace, bucket_name, hf_token);
@@ -109,51 +102,52 @@ impl HfBucketSinkNode {
 
         // Spawn the upload task: reads morsels from multi_phase_rx, streams
         // them through StreamingBucketUploader, then registers the file.
-        let task_handle = async_executor::AbortOnDropHandle::new(
-            async_executor::spawn(TaskPriority::High, async move {
-            // Extract parquet options from the file format.
-            #[cfg(feature = "parquet")]
-            let parquet_opts = match &file_format {
-                polars_plan::dsl::FileWriteFormat::Parquet(opts) => (**opts).clone(),
-                _ => Default::default(),
-            };
-            #[cfg(not(feature = "parquet"))]
-            let parquet_opts = Default::default();
+        let task_handle = async_executor::AbortOnDropHandle::new(async_executor::spawn(
+            TaskPriority::High,
+            async move {
+                // Extract parquet options (format validated in lower_ir).
+                let parquet_opts = match &file_format {
+                    polars_plan::dsl::FileWriteFormat::Parquet(opts) => (**opts).clone(),
+                    _ => {
+                        unreachable!("HF bucket sink only supports parquet (validated in lower_ir)")
+                    },
+                };
 
-            // Create the streaming uploader (connects to XET, starts upload task).
-            let schema = input_schema.as_ref().clone();
-            let mut uploader = pl_async::get_runtime()
-                .spawn(StreamingBucketUploader::new(
-                    config.clone(),
-                    schema,
-                    parquet_opts,
-                ))
-                .await
-                .unwrap_or_else(|e| Err(std::io::Error::from(e).into()))?;
+                // Create the streaming uploader (connects to XET, starts upload task).
+                let schema = input_schema.as_ref().clone();
+                let mut uploader = pl_async::get_runtime()
+                    .spawn(StreamingBucketUploader::new(
+                        config.clone(),
+                        schema,
+                        parquet_opts,
+                    ))
+                    .await
+                    .unwrap_or_else(|e| Err(std::io::Error::from(e).into()))?;
 
-            // Stream morsels through the uploader.
-            while let Ok(morsel) = multi_phase_rx.recv().await {
-                let df = morsel.into_df();
-                if df.height() > 0 {
-                    uploader.write_batch(&df)?;
+                // Stream morsels through the uploader.
+                while let Ok(morsel) = multi_phase_rx.recv().await {
+                    let df = morsel.into_df();
+                    if df.height() > 0 {
+                        uploader.write_batch(&df)?;
+                    }
                 }
-            }
 
-            // Finalize: write parquet footer + close XET writer.
-            let info = pl_async::get_runtime()
-                .spawn(uploader.finish())
-                .await
-                .unwrap_or_else(|e| Err(std::io::Error::from(e).into()))?;
+                // Finalize: write parquet footer + close XET writer.
+                let info = pl_async::get_runtime()
+                    .spawn(uploader.finish())
+                    .await
+                    .unwrap_or_else(|e| Err(std::io::Error::from(e).into()))?;
 
-            // Register the uploaded file with the HF bucket batch API.
-            let xet_hash = info.xet_hash;
-            pl_async::get_runtime()
-                .spawn(async move { register_file(&config, file_path, xet_hash).await })
-                .await
-                .unwrap_or_else(|e| Err(std::io::Error::from(e).into()))?;
+                // Register the uploaded file with the HF bucket batch API.
+                let xet_hash = info.xet_hash;
+                pl_async::get_runtime()
+                    .spawn(async move { register_file(&config, file_path, xet_hash).await })
+                    .await
+                    .unwrap_or_else(|e| Err(std::io::Error::from(e).into()))?;
 
-            Ok(())
-        }));
+                Ok(())
+            },
+        ));
 
         self.state = HfBucketSinkState::Initialized {
             phase_channel_tx,

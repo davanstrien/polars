@@ -148,7 +148,7 @@ http = ["object_store/http", "cloud"]
 temporal = ["dtype-datetime", "dtype-date", "dtype-time"]
 simd = []
 python = ["pyo3", "polars-error/python", "polars-utils/python"]
-hf_bucket_sink = ["cloud", "dep:subxet"]
+hf_bucket_sink = ["cloud", "parquet", "dep:subxet"]
 allow_unused = []
 
 [package.metadata.docs.rs]

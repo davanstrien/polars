@@ -3,7 +3,7 @@
 //! Ports the validated patterns from `scratch/xet_upload_test/src/main.rs`.
 
 use bytes::Bytes;
-use polars_error::{polars_bail, to_compute_err, PolarsResult};
+use polars_error::{PolarsResult, polars_bail, to_compute_err};
 use reqwest::Client;
 use serde::Deserialize;
 
@@ -52,9 +52,7 @@ pub async fn fetch_xet_write_token(
 }
 
 /// Create an `XetClient` from a write token.
-pub fn create_xet_client(
-    token: &XetToken,
-) -> PolarsResult<subxet::data::streaming::XetClient> {
+pub fn create_xet_client(token: &XetToken) -> PolarsResult<subxet::data::streaming::XetClient> {
     subxet::data::streaming::XetClient::new(
         Some(token.cas_url.clone()),
         Some((token.access_token.clone(), token.exp)),
@@ -83,19 +81,14 @@ impl BucketWriter {
     ///
     /// Write bytes with `writer.write(bytes).await?`, then call
     /// `writer.close().await?` to get the `XetFileInfo` (hash + size).
-    pub async fn new_writer(
-        &self,
-    ) -> PolarsResult<subxet::data::streaming::XetWriter> {
+    pub async fn new_writer(&self) -> PolarsResult<subxet::data::streaming::XetWriter> {
         self.client.write(None).await.map_err(to_compute_err)
     }
 
     /// Convenience: upload a complete byte buffer and return file info.
     ///
     /// For streaming use, prefer `new_writer()` and write incrementally.
-    pub async fn upload_bytes(
-        &self,
-        data: Bytes,
-    ) -> PolarsResult<subxet::data::XetFileInfo> {
+    pub async fn upload_bytes(&self, data: Bytes) -> PolarsResult<subxet::data::XetFileInfo> {
         let mut writer = self.new_writer().await?;
         writer.write(data).await.map_err(to_compute_err)?;
         writer.close().await.map_err(to_compute_err)

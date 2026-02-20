@@ -4,7 +4,7 @@
 
 A streaming Polars sink that writes parquet directly to HuggingFace Buckets via the XET protocol. Replaces the ~5000-line LFS-based approach with a dramatically simpler bucket-based sink. Memory stays at O(row_group_size) — parquet bytes stream directly to XET storage with no temp files or full-dataset buffering.
 
-**Status**: PoC works end-to-end. Validated up to 2.7 GB on Colab. Now in hardening phase.
+**Status**: PoC works end-to-end. Validated up to 2.7 GB on Colab. Re-validated 2026-02-20 after upstream merge + subxet migration.
 
 **Branch**: `feature/hf-bucket-sink` (all work here)
 
@@ -55,8 +55,8 @@ Python: df.sink_parquet("hf://buckets/namespace/bucket/file.parquet")
 | `physical_plan/to_graph.rs` | Graph wiring for `HfBucketSinkNode` |
 | `physical_plan/fmt.rs` | Display arm for plan visualization |
 
-### Feature flag chain (6 Cargo.toml files)
-`polars-io` → `polars-stream` → `polars-lazy` → `polars` → `polars-python` → `polars-runtime-32`
+### Feature flag chain (8 Cargo.toml files)
+`polars-io` → `polars-stream` → `polars-lazy` → `polars` → `polars-python` → `polars-runtime-{32,64,compat}`
 
 ### Other
 | File | What |
@@ -69,8 +69,10 @@ Python: df.sink_parquet("hf://buckets/namespace/bucket/file.parquet")
 
 ## Next Steps (priority order)
 
-### 1. Rebuild CI wheels + re-validate on Colab
-The upstream merge (2026-02-19) rewrote `hf_bucket_sink.rs` for the new `ComputeNode` architecture. Need to confirm the e2e flow still works with release wheels.
+### 1. ~~Rebuild CI wheels + re-validate on Colab~~ — DONE
+Re-validated on Colab (2026-02-20) after upstream merge + subxet migration. All writes pass. Streaming memory model confirmed (constant RSS up to 100K rows, 1M rows in 4.5s). Scan→filter→sink from HF dataset works.
+
+**Key finding**: Install order matters — must use `pip install --no-deps --force-reinstall` to prevent pip from replacing the custom `polars-runtime-32` wheel with the upstream PyPI version (which lacks `hf_bucket_sink`). Without `--no-deps`, pip resolves the `polars-runtime-32 == 1.38.1` dependency from PyPI.
 
 ### 2. Share PoC publicly
 Write a short demo notebook/blog snippet. Disclaimers: "PoC, single-file output, no token refresh, requires HF Buckets (beta API), install from CI wheel artifacts."
@@ -83,9 +85,8 @@ XET tokens expire ~1hr. Long uploads will fail. Implement `TokenRefresher` trait
 Currently writes a single parquet file. Large datasets should shard (e.g. `part-00000.parquet`). Close current XetWriter at threshold, start new one, register all in one `bucket_batch()` call.
 **Scope**: ~50 lines in `hf_bucket_sink.rs`
 
-### 5. Unit tests (MEDIUM PRIORITY)
-Only have Python e2e scripts. Need `#[cfg(test)]` modules for URL parsing, batch API (mock HTTP), and integration tests (behind env var).
-**Scope**: ~200 lines across 2-3 files
+### 5. ~~Unit tests~~ — DONE (partial)
+Added `#[cfg(test)] mod tests` to `hf_bucket/mod.rs` covering `parse_hf_bucket_url` (8 tests) and `extract_hf_token` (3 tests: env var, cached file, missing-token error). Mock HTTP tests for batch API deferred.
 
 ### 6. Error handling (LOW PRIORITY)
 Wrap raw errors with context (bucket name, file path). Handle common failures: 404 (bucket missing), 401 (bad token), 429 (rate limit).
@@ -93,14 +94,27 @@ Wrap raw errors with context (bucket name, file path). Handle common failures: 4
 
 ### Backlog
 - Investigate read-side `Invalid thrift: transport error` on large multi-shard HF dataset globs (not a sink issue but affects scan→sink pipeline)
-- Read support for `hf://buckets/` — separate concern, see [huggingface_hub#3807](https://github.com/huggingface/huggingface_hub/pull/3807)
+- Read support for `hf://buckets/` — `pl.read_parquet("hf://buckets/...")` doesn't work (read path doesn't handle bucket URLs). Separate concern, see [huggingface_hub#3807](https://github.com/huggingface/huggingface_hub/pull/3807). Workaround: use `huggingface_hub` to download, then read locally.
 - Publish wheels to HF repo or GitHub Release for easier install
+- Consider bumping version to avoid `polars-runtime-32 == 1.38.1` collision with PyPI upstream (root cause of the Colab install issue)
 
 ---
 
-## Validation Results (2026-02-18)
+## Validation Results
 
-Tested on Colab with release wheels (ARM64):
+### 2026-02-20 — Post-merge + subxet migration (x86_64)
+
+| Test | Source | Rows | Time | Result |
+|------|--------|------|------|--------|
+| Synthetic sink | In-memory | 1K | 2.0s | PASS |
+| Synthetic sink | In-memory | 10K | 2.1s | PASS |
+| Synthetic sink | In-memory | 100K | 2.6s | PASS |
+| Synthetic sink | In-memory | 1M | 4.5s | PASS |
+| Scan→filter→sink | `wikimedia/wikipedia` | 1K filtered | 8.6s | PASS |
+
+Streaming memory model confirmed: RSS stays constant (~156 MB) from 1K to 100K rows.
+
+### 2026-02-18 — Initial validation (ARM64)
 
 | Test | Source | Output | Time | Result |
 |------|--------|--------|------|--------|
@@ -109,6 +123,15 @@ Tested on Colab with release wheels (ARM64):
 | Full dataset filter | `OpenMed/Medical-Reasoning-SFT-Mega` | 2.7 GB | 167s | PASS |
 
 The full "Hub is your disk" pattern works: `scan_parquet("hf://datasets/...")` → filter → `sink_parquet("hf://buckets/...")` with constant memory.
+
+### Install instructions (Colab)
+
+```bash
+# IMPORTANT: --no-deps prevents pip from replacing custom wheel with upstream PyPI version
+pip uninstall polars polars-runtime-32 -y
+pip install --no-deps --force-reinstall polars-*.whl polars_runtime_32-*.whl
+# Then restart runtime
+```
 
 ---
 
@@ -169,11 +192,39 @@ The full "Hub is your disk" pattern works: `scan_parquet("hf://datasets/...")` �
 - Created Colab validation script (`scratch/colab_post_merge_validation.py`)
 **Next**: Download wheels once CI completes, run Colab validation (smoke test + 10K scan→filter→sink), update status here
 
+### 2026-02-20 — Colab re-validation + install fix
+**Status**: completed
+**What**:
+- Root-caused Colab failure: pip was replacing custom `polars-runtime-32` wheel with upstream PyPI version (same version `1.38.1`). Fix: `--no-deps` flag.
+- Re-validated all writes on Colab (1K–1M synthetic rows + scan→filter→sink from Wikipedia). All pass.
+- Streaming memory model confirmed: constant RSS from 1K to 100K rows.
+- Cleaned up `lower_ir.rs`: removed debug `eprintln!`, added `#[cfg(not(feature = "hf_bucket_sink"))]` block with clear error for missing feature.
+- Removed unused `use std::sync::Arc` from `hf_bucket_sink.rs`.
+- Updated install instructions across all scripts to use `--no-deps --force-reinstall`.
+- Known limitation: `pl.read_parquet("hf://buckets/...")` doesn't work (read path doesn't handle bucket URLs).
+**Next**: Share PoC publicly, consider version bump to avoid PyPI collision
+
 ### 2026-02-19 — Migrate xet-core → subxet
 **Status**: completed
 **What**:
 - Replaced 3 xet-core git deps (`xet-data`, `xet-utils`, `cas_types`) with single `subxet` crate in `polars-io/Cargo.toml`
 - Updated `hf_bucket_sink` feature flag: `["cloud", "dep:subxet"]`
 - Updated 4 type paths in `xet_upload.rs`: `xet_data::` → `subxet::data::`
+- Replaced `panic!()` with `polars_bail!()` in `object_store_setup.rs` for unresolved hf:// paths
 - Matches OpenDAL's migration pattern; cuts transitive deps from ~15 crates to 1
-**Next**: Push to `feature/hf-bucket-sink`, trigger CI wheel build, validate on Colab
+- Committed as `fcc5692`, pushed, CI wheel build triggered (run `22192141325`)
+**Next**: Wait for CI wheels (~30min), download artifacts, run Colab validation (smoke test + scan→filter→sink)
+**Cleanup**: Remove debug `eprintln!` statements in `lower_ir.rs` before sharing publicly
+
+### 2026-02-20 — Review fixes (5 findings)
+**Status**: completed
+**What**:
+Fresh-eyes review found 5 issues. All fixed, all behind `#[cfg(feature = "hf_bucket_sink")]`:
+
+1. **Finding 1 (HIGH) — Non-parquet sinks silently produce parquet**: Added `FileWriteFormat::Parquet(_)` check in `lower_ir.rs` before routing to `HfBucketSink`. Non-parquet formats now bail with `ComputeError`. Simplified `hf_bucket_sink.rs` to use `unreachable!()` for non-parquet arm.
+2. **Finding 2 (HIGH) — Upload task detached, errors lost**: Added `AbortOnDropHandle<T>` wrapper in `streaming_upload.rs`. If `StreamingBucketUploader` is dropped without calling `finish()`, the tokio upload task is aborted instead of orphaned.
+3. **Finding 3 (MEDIUM) — Feature chain incomplete**: Added `hf_bucket_sink = ["polars-python/hf_bucket_sink"]` to `polars-runtime-64`, `polars-runtime-compat`, and `template/Cargo.template.toml`. Was already in `polars-runtime-32`.
+4. **Finding 4 (MEDIUM) — Feature doesn't declare parquet dependency**: Changed `hf_bucket_sink = ["cloud", "dep:subxet"]` → `["cloud", "parquet", "dep:subxet"]` in `polars-io/Cargo.toml`. `streaming_upload.rs` has unguarded `use crate::parquet::write::*`.
+5. **Finding 5 (MEDIUM) — No unit tests**: Added `#[cfg(test)] mod tests` in `hf_bucket/mod.rs` with 11 tests for `parse_hf_bucket_url` and `extract_hf_token`.
+
+**Note**: `cargo check` blocked by nightly ICE (`rustc 1.94.0-nightly 31cd367b9`) in `futures-executor`/`tower` crates. Code verified via `cargo fmt` (syntax-clean) and manual review. Full compilation needs a newer nightly or stable channel.

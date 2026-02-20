@@ -2,7 +2,7 @@
 //!
 //! Ports step 4 from `scratch/xet_upload_test/src/main.rs`.
 
-use polars_error::{polars_bail, to_compute_err, PolarsResult};
+use polars_error::{PolarsResult, polars_bail, to_compute_err};
 use reqwest::Client;
 use serde::Serialize;
 

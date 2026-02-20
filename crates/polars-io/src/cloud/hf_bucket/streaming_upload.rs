@@ -13,9 +13,39 @@ use polars_core::schema::Schema;
 use polars_error::{PolarsResult, to_compute_err};
 use tokio::task::JoinHandle;
 
-use super::xet_upload::BucketWriter;
 use super::HfBucketConfig;
+use super::xet_upload::BucketWriter;
 use crate::parquet::write::{BatchedWriter, ParquetWriteOptions};
+
+/// Wrapper around [`JoinHandle`] that aborts the task when dropped.
+///
+/// Prevents orphaned upload tasks when the uploader is dropped early
+/// (e.g. on error in `write_batch`). Mirrors the pattern used by
+/// `async_executor::AbortOnDropHandle` in `polars-stream`.
+struct AbortOnDropHandle<T> {
+    handle: Option<JoinHandle<T>>,
+}
+
+impl<T> AbortOnDropHandle<T> {
+    fn new(handle: JoinHandle<T>) -> Self {
+        Self {
+            handle: Some(handle),
+        }
+    }
+
+    /// Consume the wrapper and await the inner task.
+    async fn join(mut self) -> Result<T, tokio::task::JoinError> {
+        self.handle.take().unwrap().await
+    }
+}
+
+impl<T> Drop for AbortOnDropHandle<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = &self.handle {
+            handle.abort();
+        }
+    }
+}
 
 /// Information about a completed XET upload (hash + size).
 pub struct UploadedFileInfo {
@@ -71,7 +101,7 @@ impl Write for ChannelWriter {
 /// ```
 pub struct StreamingBucketUploader {
     batched_writer: BatchedWriter<ChannelWriter>,
-    upload_handle: JoinHandle<PolarsResult<UploadedFileInfo>>,
+    upload_handle: AbortOnDropHandle<PolarsResult<UploadedFileInfo>>,
 }
 
 impl StreamingBucketUploader {
@@ -98,12 +128,11 @@ impl StreamingBucketUploader {
         // A bridge pattern is used: a `spawn_blocking` task drains the
         // std::sync channel (blocking recv) into a tokio mpsc channel,
         // which the main async loop consumes to feed XET.
-        let upload_handle: JoinHandle<PolarsResult<UploadedFileInfo>> =
-            tokio::spawn(async move {
+        let upload_handle: AbortOnDropHandle<PolarsResult<UploadedFileInfo>> =
+            AbortOnDropHandle::new(tokio::spawn(async move {
                 let mut xet_writer = xet_writer;
 
-                let (bridge_tx, mut bridge_rx) =
-                    tokio::sync::mpsc::channel::<Vec<u8>>(4);
+                let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
 
                 // Drain std::sync::mpsc → tokio::sync::mpsc in a blocking thread.
                 tokio::task::spawn_blocking(move || {
@@ -128,7 +157,7 @@ impl StreamingBucketUploader {
                     xet_hash: file_info.hash().to_string(),
                     file_size: file_info.file_size(),
                 })
-            });
+            }));
 
         // Build the parquet BatchedWriter with our ChannelWriter.
         let channel_writer = ChannelWriter::new(tx);
@@ -158,6 +187,6 @@ impl StreamingBucketUploader {
         // upload task sees the channel close and can finalize.
         drop(self.batched_writer);
         // Await the upload task.
-        self.upload_handle.await.map_err(to_compute_err)?
+        self.upload_handle.join().await.map_err(to_compute_err)?
     }
 }
