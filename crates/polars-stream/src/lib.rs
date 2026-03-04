@@ -12,15 +12,13 @@ pub use dispatch::build_streaming_query_executor;
 pub(crate) mod expression;
 mod graph;
 pub use graph::{GraphNodeKey, LogicalPipe, LogicalPipeKey};
-pub use skeleton::{QueryResult, StreamingQuery};
+pub use skeleton::StreamingQuery;
 mod metrics;
 pub use metrics::{GraphMetrics, NodeMetrics};
 mod morsel;
 mod nodes;
 mod physical_plan;
-#[cfg(feature = "physical_plan_visualization")]
-pub use physical_plan::visualization as physical_plan_visualization;
-pub use physical_plan::{PhysNode, PhysNodeKey, PhysNodeKind, ZipBehavior};
+pub use physical_plan::{NodeStyle, PhysNode, PhysNodeKey, PhysNodeKind, ZipBehavior};
 mod pipe;
 mod utils;
 

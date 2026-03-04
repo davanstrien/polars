@@ -461,16 +461,6 @@ impl Display for ExprIRDisplay<'_> {
                             write!(f, ".max()")
                         }
                     },
-                    MinBy { input, by } => {
-                        let input = self.with_root(input);
-                        let by = self.with_root(by);
-                        write!(f, "{input}.min_by({by})",)
-                    },
-                    MaxBy { input, by } => {
-                        let input = self.with_root(input);
-                        let by = self.with_root(by);
-                        write!(f, "{input}.max_by({by})",)
-                    },
                     Median(expr) => write!(f, "{}.median()", self.with_root(expr)),
                     Mean(expr) => write!(f, "{}.mean()", self.with_root(expr)),
                     First(expr) => write!(f, "{}.first()", self.with_root(expr)),
@@ -545,8 +535,7 @@ impl Display for ExprIRDisplay<'_> {
                     write!(f, ".{function}()")
                 }
             },
-            AnonymousFunction { input, fmt_str, .. }
-            | AnonymousStreamingAgg { input, fmt_str, .. } => {
+            AnonymousFunction { input, fmt_str, .. } | AnonymousAgg { input, fmt_str, .. } => {
                 let fst = self.with_root(&input[0]);
                 fst.fmt(f)?;
                 if input.len() >= 2 {
@@ -862,8 +851,12 @@ pub fn write_ir_non_recursive(
                 f.write_char('[')?;
 
                 let mut comma = false;
-                if let Some((o, l)) = slice {
-                    write!(f, "slice: ({o}, {l})")?;
+                if let Some((o, l, dyn_pred)) = slice {
+                    if let Some(dyn_pred) = &dyn_pred {
+                        write!(f, "slice: ({o}, {l}, {dyn_pred:?})")?;
+                    } else {
+                        write!(f, "slice: ({o}, {l})")?;
+                    }
                     comma = true;
                 }
                 if sort_options.maintain_order {

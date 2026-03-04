@@ -50,6 +50,7 @@ pub mod udf;
 use std::fmt::Debug;
 use std::sync::Arc;
 
+mod iter;
 mod plan;
 pub use arity::*;
 #[cfg(feature = "dtype-array")]
@@ -197,7 +198,7 @@ impl Expr {
         .into()
     }
 
-    /// GroupBy the group to a Series.
+    /// Implode into a list scalar.
     pub fn implode(self) -> Self {
         AggExpr::Implode(Arc::new(self)).into()
     }
@@ -218,6 +219,10 @@ impl Expr {
     }
 
     /// Alias for `explode`.
+    #[deprecated(
+        since = "0.53.0",
+        note = "Use `explode()` with `ExplodeOptions { empty_as_null: false, keep_nulls: false }` instead. Will be removed in version 2.0."
+    )]
     pub fn flatten(self) -> Self {
         self.explode(ExplodeOptions {
             empty_as_null: true,
@@ -289,7 +294,6 @@ impl Expr {
     pub fn arg_max(self) -> Self {
         self.map_unary(FunctionExpr::ArgMax)
     }
-
     /// Get the index values that would sort this expression.
     pub fn arg_sort(self, descending: bool, nulls_last: bool) -> Self {
         self.map_unary(FunctionExpr::ArgSort {
@@ -706,6 +710,12 @@ impl Expr {
     #[cfg(feature = "round_series")]
     pub fn round_sig_figs(self, digits: i32) -> Self {
         self.map_unary(FunctionExpr::RoundSF { digits })
+    }
+
+    /// Truncate underlying floating point array toward zero to given decimal.
+    #[cfg(feature = "round_series")]
+    pub fn truncate(self, decimals: u32) -> Self {
+        self.map_unary(FunctionExpr::Truncate { decimals })
     }
 
     /// Floor underlying floating point array to the lowest integers smaller or equal to the float value.

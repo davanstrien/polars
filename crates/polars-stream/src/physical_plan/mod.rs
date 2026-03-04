@@ -2,7 +2,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use polars_core::frame::DataFrame;
-use polars_core::prelude::{IdxSize, InitHashMaps, PlHashMap, SortMultipleOptions};
+use polars_core::prelude::{IdxSize, InitHashMaps, PlHashMap, PlIndexMap, SortMultipleOptions};
 use polars_core::schema::{Schema, SchemaRef};
 use polars_error::PolarsResult;
 use polars_io::RowIndex;
@@ -11,12 +11,11 @@ use polars_ops::frame::JoinArgs;
 use polars_plan::dsl::deletion::DeletionFilesList;
 use polars_plan::dsl::{
     CastColumnsPolicy, FileSinkOptions, JoinTypeOptionsIR, MissingColumnsPolicy,
-    PartitionTargetCallback, PartitionVariantIR, PartitionedSinkOptionsIR, PredicateFileSkip,
-    ScanSources, SinkFinishCallback, SinkOptions, SortColumnIR, TableStatistics,
+    PartitionedSinkOptionsIR, PredicateFileSkip, ScanSources, TableStatistics,
 };
+use polars_plan::plans::expr_ir::ExprIR;
 use polars_plan::plans::hive::HivePartitionsDf;
-use polars_plan::plans::{AExpr, DataFrameUdf, IR};
-use polars_plan::prelude::expr_ir::ExprIR;
+use polars_plan::plans::{AExpr, DataFrameUdf, DynamicPred, IR};
 
 mod fmt;
 mod io;
@@ -24,16 +23,13 @@ mod lower_expr;
 mod lower_group_by;
 mod lower_ir;
 mod to_graph;
-#[cfg(feature = "physical_plan_visualization")]
-pub mod visualization;
 
-pub use fmt::visualize_plan;
-use polars_plan::prelude::{FileWriteFormat, PlanCallback};
+pub use fmt::{NodeStyle, visualize_plan};
+use polars_plan::prelude::PlanCallback;
 #[cfg(feature = "dynamic_group_by")]
 use polars_time::DynamicGroupOptions;
 use polars_time::{ClosedWindow, Duration};
 use polars_utils::arena::{Arena, Node};
-use polars_utils::pl_path::PlRefPath;
 use polars_utils::pl_str::PlSmallStr;
 use polars_utils::slice_enum::Slice;
 use slotmap::{SecondaryMap, SlotMap};
@@ -103,10 +99,7 @@ impl PhysStream {
 /// Behaviour when handling multiple DataFrames with different heights.
 
 #[derive(Clone, Debug, Copy)]
-#[cfg_attr(
-    feature = "physical_plan_visualization",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(
     feature = "physical_plan_visualization_schema",
     derive(schemars::JsonSchema)
@@ -121,13 +114,10 @@ pub enum ZipBehavior {
 }
 
 #[derive(Clone, Debug)]
-#[cfg_attr(
-    feature = "physical_plan_visualization",
-    derive(strum_macros::IntoStaticStr)
-)]
 pub enum PhysNodeKind {
     InMemorySource {
         df: Arc<DataFrame>,
+        disable_morsel_split: bool,
     },
 
     Select {
@@ -182,7 +172,8 @@ pub enum PhysNodeKind {
 
     SimpleProjection {
         input: PhysStream,
-        columns: Vec<PlSmallStr>,
+        // Key: output column, value: input column.
+        columns: PlIndexMap<PlSmallStr, PlSmallStr>,
     },
 
     InMemorySink {
@@ -202,18 +193,6 @@ pub enum PhysNodeKind {
     },
 
     PartitionedSink {
-        input: PhysStream,
-        base_path: Arc<PlRefPath>,
-        file_path_cb: Option<PartitionTargetCallback>,
-        sink_options: SinkOptions,
-        variant: PartitionVariantIR,
-        file_type: FileWriteFormat,
-        cloud_options: Option<CloudOptions>,
-        per_partition_sort_by: Option<Vec<SortColumnIR>>,
-        finish_callback: Option<SinkFinishCallback>,
-    },
-
-    PartitionedSink2 {
         input: PhysStream,
         options: PartitionedSinkOptionsIR,
     },
@@ -261,6 +240,7 @@ pub enum PhysNodeKind {
         by_column: Vec<ExprIR>,
         reverse: Vec<bool>,
         nulls_last: Vec<bool>,
+        dyn_pred: Option<DynamicPred>,
     },
 
     Repeat {
@@ -288,6 +268,10 @@ pub enum PhysNodeKind {
     },
 
     OrderedUnion {
+        inputs: Vec<PhysStream>,
+    },
+
+    UnorderedUnion {
         inputs: Vec<PhysStream>,
     },
 
@@ -328,6 +312,7 @@ pub enum PhysNodeKind {
 
         /// Schema of columns contained in the file. Does not contain external columns (e.g. hive / row_index).
         file_schema: SchemaRef,
+        disable_morsel_split: bool,
     },
 
     #[cfg(feature = "python")]
@@ -370,6 +355,19 @@ pub enum PhysNodeKind {
         args: JoinArgs,
     },
 
+    MergeJoin {
+        input_left: PhysStream,
+        input_right: PhysStream,
+        left_on: Vec<PlSmallStr>,
+        right_on: Vec<PlSmallStr>,
+        tmp_left_key_col: Option<PlSmallStr>,
+        tmp_right_key_col: Option<PlSmallStr>,
+        descending: bool,
+        nulls_last: bool,
+        keys_row_encoded: bool,
+        args: JoinArgs,
+    },
+
     SemiAntiJoin {
         input_left: PhysStream,
         input_right: PhysStream,
@@ -382,6 +380,16 @@ pub enum PhysNodeKind {
     CrossJoin {
         input_left: PhysStream,
         input_right: PhysStream,
+        args: JoinArgs,
+    },
+
+    AsOfJoin {
+        input_left: PhysStream,
+        input_right: PhysStream,
+        left_on: PlSmallStr,
+        right_on: PlSmallStr,
+        tmp_left_key_col: Option<PlSmallStr>,
+        tmp_right_key_col: Option<PlSmallStr>,
         args: JoinArgs,
     },
 
@@ -456,7 +464,6 @@ fn visit_node_inputs_mut(
             | PhysNodeKind::CallbackSink { input, .. }
             | PhysNodeKind::FileSink { input, .. }
             | PhysNodeKind::PartitionedSink { input, .. }
-            | PhysNodeKind::PartitionedSink2 { input, .. }
             | PhysNodeKind::InMemoryMap { input, .. }
             | PhysNodeKind::SortedGroupBy { input, .. }
             | PhysNodeKind::Map { input, .. }
@@ -497,12 +504,22 @@ fn visit_node_inputs_mut(
                 input_right,
                 ..
             }
+            | PhysNodeKind::MergeJoin {
+                input_left,
+                input_right,
+                ..
+            }
             | PhysNodeKind::SemiAntiJoin {
                 input_left,
                 input_right,
                 ..
             }
             | PhysNodeKind::CrossJoin {
+                input_left,
+                input_right,
+                ..
+            }
+            | PhysNodeKind::AsOfJoin {
                 input_left,
                 input_right,
                 ..
@@ -571,6 +588,7 @@ fn visit_node_inputs_mut(
 
             PhysNodeKind::GroupBy { inputs, .. }
             | PhysNodeKind::OrderedUnion { inputs }
+            | PhysNodeKind::UnorderedUnion { inputs }
             | PhysNodeKind::Zip { inputs, .. } => {
                 for input in inputs {
                     rec!(input.node);
@@ -642,6 +660,7 @@ pub fn build_physical_plan(
         &mut expr_cache,
         &mut cache_nodes,
         ctx,
+        None,
     )?;
     insert_multiplexers(vec![phys_root.node], phys_sm);
     Ok(phys_root.node)
