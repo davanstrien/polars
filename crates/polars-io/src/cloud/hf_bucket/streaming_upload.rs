@@ -190,3 +190,62 @@ impl StreamingBucketUploader {
         self.upload_handle.join().await.map_err(to_compute_err)?
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::mpsc::sync_channel;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn abort_on_drop_cancels_task() {
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            42
+        });
+        let raw = handle.abort_handle();
+        let wrapper = AbortOnDropHandle::new(handle);
+        assert!(!raw.is_finished());
+        drop(wrapper);
+        // Give the runtime a moment to process the abort.
+        tokio::task::yield_now().await;
+        assert!(raw.is_finished());
+    }
+
+    #[tokio::test]
+    async fn abort_on_drop_join_returns_value() {
+        let handle = tokio::spawn(async { 99u64 });
+        let wrapper = AbortOnDropHandle::new(handle);
+        let val = wrapper.join().await.unwrap();
+        assert_eq!(val, 99);
+    }
+
+    #[test]
+    fn channel_writer_sends_bytes() {
+        let (tx, rx) = sync_channel::<Vec<u8>>(4);
+        let mut w = ChannelWriter::new(tx);
+        let n = w.write(b"hello").unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(rx.recv().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn channel_writer_empty_write_is_noop() {
+        let (tx, rx) = sync_channel::<Vec<u8>>(4);
+        let mut w = ChannelWriter::new(tx);
+        let n = w.write(b"").unwrap();
+        assert_eq!(n, 0);
+        // Nothing should have been sent.
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn channel_writer_broken_pipe_on_closed_channel() {
+        let (tx, rx) = sync_channel::<Vec<u8>>(4);
+        drop(rx);
+        let mut w = ChannelWriter::new(tx);
+        let err = w.write(b"data").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+    }
+}
