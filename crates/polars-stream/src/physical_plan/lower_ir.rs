@@ -6,7 +6,7 @@ use polars_core::prelude::{DataType, PlHashMap, PlHashSet};
 use polars_core::scalar::Scalar;
 use polars_core::schema::Schema;
 use polars_core::{SchemaExtPl, config};
-use polars_error::PolarsResult;
+use polars_error::{PolarsResult, polars_bail, polars_err};
 use polars_expr::state::ExecutionState;
 use polars_mem_engine::create_physical_plan;
 use polars_ops::frame::JoinType;
