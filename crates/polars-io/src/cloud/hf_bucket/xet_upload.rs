@@ -2,10 +2,14 @@
 //!
 //! Ports the validated patterns from `scratch/xet_upload_test/src/main.rs`.
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 use polars_error::{PolarsResult, polars_bail, to_compute_err};
 use reqwest::Client;
 use serde::Deserialize;
+use subxet::utils::auth::TokenRefresher;
+use subxet::utils::errors::AuthError;
 
 use super::HfBucketConfig;
 
@@ -51,12 +55,35 @@ pub async fn fetch_xet_write_token(
     resp.json::<XetToken>().await.map_err(to_compute_err)
 }
 
-/// Create an `XetClient` from a write token.
-pub fn create_xet_client(token: &XetToken) -> PolarsResult<subxet::data::streaming::XetClient> {
+/// Refreshes XET write tokens for long-running uploads.
+///
+/// HF XET tokens typically expire after ~1 hour. For large streaming uploads
+/// that exceed this window, the refresher re-fetches a token from the HF API.
+struct HfTokenRefresher {
+    http: Client,
+    config: HfBucketConfig,
+}
+
+#[async_trait::async_trait]
+impl TokenRefresher for HfTokenRefresher {
+    async fn refresh(&self) -> Result<(String, u64), AuthError> {
+        let token = fetch_xet_write_token(&self.http, &self.config)
+            .await
+            .map_err(AuthError::token_refresh_failure)?;
+        Ok((token.access_token, token.exp))
+    }
+}
+
+/// Create an `XetClient` from a write token, with an optional token refresher
+/// for long-running uploads.
+pub fn create_xet_client(
+    token: &XetToken,
+    token_refresher: Option<Arc<dyn TokenRefresher>>,
+) -> PolarsResult<subxet::data::streaming::XetClient> {
     subxet::data::streaming::XetClient::new(
         Some(token.cas_url.clone()),
         Some((token.access_token.clone(), token.exp)),
-        None, // no token refresher — simple single-token approach
+        token_refresher,
         "polars-hf-bucket/0.1".to_string(),
     )
     .map_err(to_compute_err)
@@ -71,9 +98,16 @@ pub struct BucketWriter {
 
 impl BucketWriter {
     /// Create a new `BucketWriter` by fetching a token and constructing the client.
+    ///
+    /// The client is configured with a token refresher so that long-running
+    /// uploads automatically re-fetch XET tokens before they expire.
     pub async fn new(http: &Client, config: &HfBucketConfig) -> PolarsResult<Self> {
         let token = fetch_xet_write_token(http, config).await?;
-        let client = create_xet_client(&token)?;
+        let refresher: Arc<dyn TokenRefresher> = Arc::new(HfTokenRefresher {
+            http: http.clone(),
+            config: config.clone(),
+        });
+        let client = create_xet_client(&token, Some(refresher))?;
         Ok(Self { client })
     }
 
