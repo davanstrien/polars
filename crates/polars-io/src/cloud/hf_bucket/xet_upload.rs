@@ -46,7 +46,9 @@ pub async fn fetch_xet_write_token(
         let body = resp.text().await.unwrap_or_default();
         polars_bail!(
             ComputeError:
-            "HF bucket XET write token request failed (HTTP {}): {}",
+            "HF bucket XET write token request failed for '{}/{}' (HTTP {}): {}",
+            config.namespace,
+            config.bucket_name,
             status,
             body
         );

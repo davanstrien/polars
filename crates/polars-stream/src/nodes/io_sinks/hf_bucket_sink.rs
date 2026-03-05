@@ -26,6 +26,8 @@ pub struct HfBucketSinkNode {
     options: FileSinkOptions,
     input_schema: SchemaRef,
     state: HfBucketSinkState,
+    /// Target URL for error context (set during initialize).
+    target_url: String,
 }
 
 enum HfBucketSinkState {
@@ -46,6 +48,7 @@ impl HfBucketSinkNode {
             options,
             input_schema,
             state: HfBucketSinkState::Uninitialized,
+            target_url: String::new(),
         }
     }
 
@@ -63,6 +66,7 @@ impl HfBucketSinkNode {
             ),
         };
         let (namespace, bucket_name, file_path) = parse_hf_bucket_url(&url)?;
+        self.target_url = url.clone();
         let hf_token = extract_hf_token(self.options.unified_sink_args.cloud_options.as_deref())?;
 
         let config =
@@ -182,7 +186,14 @@ impl ComputeNode for HfBucketSinkNode {
                     task_handle,
                 } => {
                     drop(phase_channel_tx);
-                    pl_async::get_runtime().block_on(task_handle)?;
+                    let url = self.target_url.clone();
+                    pl_async::get_runtime()
+                        .block_on(task_handle)
+                        .map_err(|e| {
+                            e.wrap_msg(|msg| {
+                                format!("HF bucket sink failed for '{}': {}", url, msg)
+                            })
+                        })?;
                 },
                 HfBucketSinkState::Finished => {},
                 HfBucketSinkState::Uninitialized => unreachable!(),
@@ -236,7 +247,11 @@ impl ComputeNode for HfBucketSinkNode {
                 };
 
                 drop(phase_channel_tx);
-                return Err(task_handle.await.unwrap_err());
+                let err = task_handle.await.unwrap_err();
+                let url = self.target_url.clone();
+                return Err(err.wrap_msg(|msg| {
+                    format!("HF bucket sink failed for '{}': {}", url, msg)
+                }));
             }
 
             Ok(())

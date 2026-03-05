@@ -56,11 +56,32 @@ pub async fn bucket_batch(
     let status = resp.status();
     if !status.is_success() {
         let resp_body = resp.text().await.unwrap_or_default();
+
+        // Build a bounded summary of operations for the error message.
+        let op_summary: String = {
+            let max_show = 3;
+            let mut parts: Vec<String> = operations
+                .iter()
+                .take(max_show)
+                .map(|op| match op {
+                    BucketOperation::AddFile { path, .. } => format!("add:{path}"),
+                    BucketOperation::DeleteFile { path } => format!("delete:{path}"),
+                })
+                .collect();
+            if operations.len() > max_show {
+                parts.push(format!("(+{} more)", operations.len() - max_show));
+            }
+            parts.join(", ")
+        };
+
         polars_bail!(
             ComputeError:
-            "HF bucket batch API request failed (HTTP {}): {}",
+            "HF bucket batch API request failed for '{}/{}' (HTTP {}): {}; operations: [{}]",
+            config.namespace,
+            config.bucket_name,
             status,
-            resp_body
+            resp_body,
+            op_summary
         );
     }
 

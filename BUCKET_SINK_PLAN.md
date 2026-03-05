@@ -217,7 +217,7 @@ pip install --no-deps --force-reinstall polars-*.whl polars_runtime_32-*.whl
 **Cleanup**: Remove debug `eprintln!` statements in `lower_ir.rs` before sharing publicly
 
 ### 2026-02-20 — Review fixes (5 findings)
-**Status**: completed
+**Status**: partially completed
 **What**:
 Fresh-eyes review found 5 issues. All fixed, all behind `#[cfg(feature = "hf_bucket_sink")]`:
 
@@ -228,3 +228,16 @@ Fresh-eyes review found 5 issues. All fixed, all behind `#[cfg(feature = "hf_buc
 5. **Finding 5 (MEDIUM) — No unit tests**: Added `#[cfg(test)] mod tests` in `hf_bucket/mod.rs` with 11 tests for `parse_hf_bucket_url` and `extract_hf_token`.
 
 **Note**: `cargo check` blocked by nightly ICE (`rustc 1.94.0-nightly 31cd367b9`) in `futures-executor`/`tower` crates. Code verified via `cargo fmt` (syntax-clean) and manual review. Full compilation needs a newer nightly or stable channel.
+
+**Post-commit audit gaps**:
+- Finding 4: `polars-io/Cargo.toml` was fixed but `polars-stream/Cargo.toml:130` was missed — `hf_bucket_sink` there still lacked `parquet`, so `polars-plan/parquet` stays off and `FileWriteFormat::Parquet(_)` doesn't exist, causing compile failures in `lower_ir.rs` and `hf_bucket_sink.rs`.
+- Finding 5: Tests cover `parse_hf_bucket_url` and `extract_hf_token` but nothing for `AbortOnDropHandle` or `ChannelWriter` in `streaming_upload.rs`.
+
+### 2026-02-20 — Fix remaining review regressions (Finding 4 compile + Finding 5 tests)
+**Status**: completed
+**What**:
+Follow-up to post-commit audit of `2c17c8e969`:
+
+1. **Finding 4 fix**: Added `"parquet"` to `hf_bucket_sink` feature in `polars-stream/Cargo.toml` so the feature chain enables `polars-plan/parquet` and `FileWriteFormat::Parquet(_)` compiles.
+2. **Finding 5 fix**: Added 5 unit tests in `streaming_upload.rs` for `AbortOnDropHandle` (abort-on-drop, join-returns-value) and `ChannelWriter` (sends bytes, empty write noop, broken pipe on closed channel).
+3. **Import fix**: Added `polars_bail` and `polars_err` imports to `lower_ir.rs:9` — the `polars_bail!` macro at line 304 (added in Finding 1) was used without being imported, causing a compile error.
