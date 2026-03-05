@@ -1,0 +1,7 @@
+# Large artifacts — do not commit
+memray-*.bin
+memray-*.html
+api-*.json
+xet_upload_test/
+reference_repos/
+*.whl
