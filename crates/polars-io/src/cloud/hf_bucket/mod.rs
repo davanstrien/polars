@@ -124,20 +124,30 @@ pub fn extract_hf_token(cloud_options: Option<&CloudOptions>) -> PolarsResult<St
 /// Upload a file to an HF bucket via XET and register it with the batch API.
 ///
 /// This is a high-level helper that encapsulates the entire upload flow:
-/// 1. Fetch XET write token
-/// 2. Upload data via XET protocol
+/// 1. Fetch XET write token and create session
+/// 2. Upload data via XET protocol (using `xet-session`)
 /// 3. Register file via batch API
 pub async fn upload_and_register_file(
     config: &HfBucketConfig,
     file_path: String,
     data: Vec<u8>,
 ) -> PolarsResult<()> {
-    let client = reqwest::Client::new();
-    let bucket_writer = BucketWriter::new(&client, config).await?;
-    let file_info = bucket_writer.upload_bytes(bytes::Bytes::from(data)).await?;
+    let http = reqwest::Client::new();
+    let token = fetch_xet_write_token(&http, config).await?;
+    let session = create_xet_session(&token, None)?;
+    let commit = session.new_upload_commit().map_err(polars_error::to_compute_err)?;
+    let (_handle, mut cleaner) = commit
+        .upload_file(Some(file_path.clone()), data.len() as u64)
+        .map_err(polars_error::to_compute_err)?;
+    cleaner
+        .add_data(&data)
+        .await
+        .map_err(polars_error::to_compute_err)?;
+    let (file_info, _) = cleaner.finish().await.map_err(polars_error::to_compute_err)?;
+
     let xet_hash = file_info.hash().to_string();
     bucket_batch(
-        &client,
+        &http,
         config,
         &[BucketOperation::AddFile {
             path: file_path,

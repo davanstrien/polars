@@ -1,15 +1,14 @@
-//! XET upload path — token fetch, client creation, and `BucketWriter`.
+//! XET upload path — token fetch, session creation, and token refresh.
 //!
-//! Ports the validated patterns from `scratch/xet_upload_test/src/main.rs`.
+//! Uses the `xet-session` crate for the high-level upload API.
 
 use std::sync::Arc;
 
-use bytes::Bytes;
 use polars_error::{PolarsResult, polars_bail, to_compute_err};
 use reqwest::Client;
 use serde::Deserialize;
-use subxet::utils::auth::TokenRefresher;
-use subxet::utils::errors::AuthError;
+use xet_utils::auth::TokenRefresher;
+use xet_utils::errors::AuthError;
 
 use super::HfBucketConfig;
 
@@ -61,9 +60,9 @@ pub async fn fetch_xet_write_token(
 ///
 /// HF XET tokens typically expire after ~1 hour. For large streaming uploads
 /// that exceed this window, the refresher re-fetches a token from the HF API.
-struct HfTokenRefresher {
-    http: Client,
-    config: HfBucketConfig,
+pub(crate) struct HfTokenRefresher {
+    pub(crate) http: Client,
+    pub(crate) config: HfBucketConfig,
 }
 
 #[async_trait::async_trait]
@@ -76,57 +75,17 @@ impl TokenRefresher for HfTokenRefresher {
     }
 }
 
-/// Create an `XetClient` from a write token, with an optional token refresher
+/// Create an [`XetSession`] from a write token, with an optional token refresher
 /// for long-running uploads.
-pub fn create_xet_client(
+pub fn create_xet_session(
     token: &XetToken,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-) -> PolarsResult<subxet::data::streaming::XetClient> {
-    subxet::data::streaming::XetClient::new(
-        Some(token.cas_url.clone()),
-        Some((token.access_token.clone(), token.exp)),
-        token_refresher,
-        "polars-hf-bucket/0.1".to_string(),
-    )
-    .map_err(to_compute_err)
-}
-
-/// Wraps an `XetClient` to manage the upload lifecycle.
-///
-/// Provides helpers to create writers, upload bytes, and close files.
-pub struct BucketWriter {
-    client: subxet::data::streaming::XetClient,
-}
-
-impl BucketWriter {
-    /// Create a new `BucketWriter` by fetching a token and constructing the client.
-    ///
-    /// The client is configured with a token refresher so that long-running
-    /// uploads automatically re-fetch XET tokens before they expire.
-    pub async fn new(http: &Client, config: &HfBucketConfig) -> PolarsResult<Self> {
-        let token = fetch_xet_write_token(http, config).await?;
-        let refresher: Arc<dyn TokenRefresher> = Arc::new(HfTokenRefresher {
-            http: http.clone(),
-            config: config.clone(),
-        });
-        let client = create_xet_client(&token, Some(refresher))?;
-        Ok(Self { client })
+) -> PolarsResult<xet_session::XetSession> {
+    let mut builder = xet_session::XetSessionBuilder::new()
+        .with_endpoint(token.cas_url.clone())
+        .with_token_info(token.access_token.clone(), token.exp);
+    if let Some(refresher) = token_refresher {
+        builder = builder.with_token_refresher(refresher);
     }
-
-    /// Open a new XET writer for a single file upload.
-    ///
-    /// Write bytes with `writer.write(bytes).await?`, then call
-    /// `writer.close().await?` to get the `XetFileInfo` (hash + size).
-    pub async fn new_writer(&self) -> PolarsResult<subxet::data::streaming::XetWriter> {
-        self.client.write(None).await.map_err(to_compute_err)
-    }
-
-    /// Convenience: upload a complete byte buffer and return file info.
-    ///
-    /// For streaming use, prefer `new_writer()` and write incrementally.
-    pub async fn upload_bytes(&self, data: Bytes) -> PolarsResult<subxet::data::XetFileInfo> {
-        let mut writer = self.new_writer().await?;
-        writer.write(data).await.map_err(to_compute_err)?;
-        writer.close().await.map_err(to_compute_err)
-    }
+    builder.build().map_err(to_compute_err)
 }
