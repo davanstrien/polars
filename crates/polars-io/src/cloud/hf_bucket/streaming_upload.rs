@@ -92,19 +92,29 @@ impl StreamingBucketUploader {
         let (tx, rx) = sync_channel::<Vec<u8>>(16);
 
         // Create XetSession with token refresher for long-running uploads.
+        //
+        // XetSession internally creates its own tokio runtime, so we must
+        // build it outside the current async context to avoid a nested
+        // runtime panic.
         let http = reqwest::Client::new();
         let token = fetch_xet_write_token(&http, &config).await?;
         let refresher: Arc<dyn TokenRefresher> = Arc::new(HfTokenRefresher {
             http: http.clone(),
             config: config.clone(),
         });
-        let session = create_xet_session(&token, Some(refresher))?;
-
-        // Create upload commit and get streaming cleaner.
-        let commit = session.new_upload_commit().map_err(to_compute_err)?;
-        let (_task_handle, cleaner) = commit
-            .upload_file(Some("upload.parquet".to_string()), 0)
-            .map_err(to_compute_err)?;
+        let (commit, cleaner, _task_handle) = tokio::task::spawn_blocking(move || {
+            let session = create_xet_session(&token, Some(refresher))?;
+            let commit = session.new_upload_commit().map_err(to_compute_err)?;
+            let (task_handle, cleaner) = commit
+                // file_size 0 = unknown (streaming). xet-core uses this for
+                // progress tracking only; debug builds may hit a benign
+                // assertion — release builds are unaffected.
+                .upload_file(Some("upload.parquet".to_string()), 0)
+                .map_err(to_compute_err)?;
+            Ok::<_, polars_error::PolarsError>((commit, cleaner, task_handle))
+        })
+        .await
+        .map_err(to_compute_err)??;
 
         // Spawn the async upload task that drains the channel into the cleaner.
         //
@@ -136,6 +146,15 @@ impl StreamingBucketUploader {
 
                 // Finalize the XET upload.
                 let (file_info, _metrics) = cleaner.finish().await.map_err(to_compute_err)?;
+
+                // Commit the upload — this finalizes the data in XET storage.
+                // Must run outside async context since it calls block_on internally.
+                tokio::task::spawn_blocking(move || {
+                    commit.commit().map_err(to_compute_err)
+                })
+                .await
+                .map_err(to_compute_err)??;
+
                 Ok(UploadedFileInfo {
                     xet_hash: file_info.hash().to_string(),
                     file_size: file_info.file_size(),

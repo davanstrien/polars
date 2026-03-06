@@ -134,16 +134,36 @@ pub async fn upload_and_register_file(
 ) -> PolarsResult<()> {
     let http = reqwest::Client::new();
     let token = fetch_xet_write_token(&http, config).await?;
-    let session = create_xet_session(&token, None)?;
-    let commit = session.new_upload_commit().map_err(polars_error::to_compute_err)?;
-    let (_handle, mut cleaner) = commit
-        .upload_file(Some(file_path.clone()), data.len() as u64)
-        .map_err(polars_error::to_compute_err)?;
+
+    // XetSession internally creates its own tokio runtime, so we must
+    // build it outside the current async context to avoid a nested
+    // runtime panic.
+    let file_path_clone = file_path.clone();
+    let data_len = data.len() as u64;
+    let (commit, _handle, mut cleaner) = tokio::task::spawn_blocking(move || {
+        let session = create_xet_session(&token, None)?;
+        let commit = session.new_upload_commit().map_err(polars_error::to_compute_err)?;
+        let (handle, cleaner) = commit
+            .upload_file(Some(file_path_clone), data_len)
+            .map_err(polars_error::to_compute_err)?;
+        Ok::<_, polars_error::PolarsError>((commit, handle, cleaner))
+    })
+    .await
+    .map_err(polars_error::to_compute_err)??;
+
     cleaner
         .add_data(&data)
         .await
         .map_err(polars_error::to_compute_err)?;
     let (file_info, _) = cleaner.finish().await.map_err(polars_error::to_compute_err)?;
+
+    // Commit the upload — finalizes data in XET storage.
+    // Must run outside async context since it calls block_on internally.
+    tokio::task::spawn_blocking(move || {
+        commit.commit().map_err(polars_error::to_compute_err)
+    })
+    .await
+    .map_err(polars_error::to_compute_err)??;
 
     let xet_hash = file_info.hash().to_string();
     bucket_batch(
