@@ -242,9 +242,13 @@ mod tests {
     }
 
     // ── extract_hf_token ─────────────────────────────────────────────
+    // These tests mutate shared env vars (HF_TOKEN, HF_HOME), so they
+    // must not run concurrently. We use a shared mutex to serialize them.
+    static TOKEN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn token_from_env_var() {
+        let _guard = TOKEN_TEST_LOCK.lock().unwrap();
         // Safety: test-only env var mutation (same pattern as polars-core tests).
         unsafe { std::env::set_var("HF_TOKEN", "test-token-env") };
         let token = extract_hf_token(None).unwrap();
@@ -254,6 +258,7 @@ mod tests {
 
     #[test]
     fn token_from_cached_file() {
+        let _guard = TOKEN_TEST_LOCK.lock().unwrap();
         // Clear env so we fall through to the file path.
         unsafe { std::env::remove_var("HF_TOKEN") };
 
@@ -271,6 +276,7 @@ mod tests {
 
     #[test]
     fn token_missing_returns_error() {
+        let _guard = TOKEN_TEST_LOCK.lock().unwrap();
         unsafe { std::env::remove_var("HF_TOKEN") };
 
         let tmp = tempfile::tempdir().unwrap();
