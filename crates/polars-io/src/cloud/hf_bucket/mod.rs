@@ -124,20 +124,50 @@ pub fn extract_hf_token(cloud_options: Option<&CloudOptions>) -> PolarsResult<St
 /// Upload a file to an HF bucket via XET and register it with the batch API.
 ///
 /// This is a high-level helper that encapsulates the entire upload flow:
-/// 1. Fetch XET write token
-/// 2. Upload data via XET protocol
+/// 1. Fetch XET write token and create session
+/// 2. Upload data via XET protocol (using `xet-session`)
 /// 3. Register file via batch API
 pub async fn upload_and_register_file(
     config: &HfBucketConfig,
     file_path: String,
     data: Vec<u8>,
 ) -> PolarsResult<()> {
-    let client = reqwest::Client::new();
-    let bucket_writer = BucketWriter::new(&client, config).await?;
-    let file_info = bucket_writer.upload_bytes(bytes::Bytes::from(data)).await?;
+    let http = reqwest::Client::new();
+    let token = fetch_xet_write_token(&http, config).await?;
+
+    // XetSession internally creates its own tokio runtime, so we must
+    // build it outside the current async context to avoid a nested
+    // runtime panic.
+    let file_path_clone = file_path.clone();
+    let data_len = data.len() as u64;
+    let (commit, _handle, mut cleaner) = tokio::task::spawn_blocking(move || {
+        let session = create_xet_session(&token, None)?;
+        let commit = session.new_upload_commit().map_err(polars_error::to_compute_err)?;
+        let (handle, cleaner) = commit
+            .upload_file(Some(file_path_clone), data_len)
+            .map_err(polars_error::to_compute_err)?;
+        Ok::<_, polars_error::PolarsError>((commit, handle, cleaner))
+    })
+    .await
+    .map_err(polars_error::to_compute_err)??;
+
+    cleaner
+        .add_data(&data)
+        .await
+        .map_err(polars_error::to_compute_err)?;
+    let (file_info, _) = cleaner.finish().await.map_err(polars_error::to_compute_err)?;
+
+    // Commit the upload — finalizes data in XET storage.
+    // Must run outside async context since it calls block_on internally.
+    tokio::task::spawn_blocking(move || {
+        commit.commit().map_err(polars_error::to_compute_err)
+    })
+    .await
+    .map_err(polars_error::to_compute_err)??;
+
     let xet_hash = file_info.hash().to_string();
     bucket_batch(
-        &client,
+        &http,
         config,
         &[BucketOperation::AddFile {
             path: file_path,
@@ -212,9 +242,13 @@ mod tests {
     }
 
     // ── extract_hf_token ─────────────────────────────────────────────
+    // These tests mutate shared env vars (HF_TOKEN, HF_HOME), so they
+    // must not run concurrently. We use a shared mutex to serialize them.
+    static TOKEN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn token_from_env_var() {
+        let _guard = TOKEN_TEST_LOCK.lock().unwrap();
         // Safety: test-only env var mutation (same pattern as polars-core tests).
         unsafe { std::env::set_var("HF_TOKEN", "test-token-env") };
         let token = extract_hf_token(None).unwrap();
@@ -224,6 +258,7 @@ mod tests {
 
     #[test]
     fn token_from_cached_file() {
+        let _guard = TOKEN_TEST_LOCK.lock().unwrap();
         // Clear env so we fall through to the file path.
         unsafe { std::env::remove_var("HF_TOKEN") };
 
@@ -241,6 +276,7 @@ mod tests {
 
     #[test]
     fn token_missing_returns_error() {
+        let _guard = TOKEN_TEST_LOCK.lock().unwrap();
         unsafe { std::env::remove_var("HF_TOKEN") };
 
         let tmp = tempfile::tempdir().unwrap();
