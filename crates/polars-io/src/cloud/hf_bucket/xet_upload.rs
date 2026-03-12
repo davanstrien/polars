@@ -7,8 +7,8 @@ use std::sync::Arc;
 use polars_error::{PolarsResult, polars_bail, to_compute_err};
 use reqwest::Client;
 use serde::Deserialize;
-use xet_utils::auth::TokenRefresher;
-use xet_utils::errors::AuthError;
+use xet_client::cas_client::auth::TokenRefresher;
+use xet_client::cas_client::auth::AuthError;
 
 use super::HfBucketConfig;
 
@@ -80,8 +80,8 @@ impl TokenRefresher for HfTokenRefresher {
 pub fn create_xet_session(
     token: &XetToken,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-) -> PolarsResult<xet_session::XetSession> {
-    let mut builder = xet_session::XetSessionBuilder::new()
+) -> PolarsResult<xet::xet_session::XetSession> {
+    let mut builder = xet::xet_session::XetSessionBuilder::new()
         .with_endpoint(token.cas_url.clone())
         .with_token_info(token.access_token.clone(), token.exp);
     if let Some(refresher) = token_refresher {

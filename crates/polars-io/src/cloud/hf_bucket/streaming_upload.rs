@@ -13,7 +13,7 @@ use polars_core::frame::DataFrame;
 use polars_core::schema::Schema;
 use polars_error::{PolarsResult, to_compute_err};
 use tokio::task::JoinHandle;
-use xet_utils::auth::TokenRefresher;
+use xet_client::cas_client::auth::TokenRefresher;
 
 use super::HfBucketConfig;
 use super::xet_upload::{HfTokenRefresher, create_xet_session, fetch_xet_write_token};

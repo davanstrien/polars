@@ -53,9 +53,8 @@ tokio = { workspace = true, features = ["fs", "net", "rt-multi-thread", "time", 
 zmij = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 
-xet-session = { git = "https://github.com/huggingface/xet-core", rev = "70807bf", optional = true }
-xet-data = { git = "https://github.com/huggingface/xet-core", rev = "70807bf", package = "data", optional = true }
-xet-utils = { git = "https://github.com/huggingface/xet-core", rev = "70807bf", package = "utils", optional = true }
+hf-xet = { git = "https://github.com/huggingface/xet-core", rev = "cacd713", optional = true }
+xet-client = { git = "https://github.com/huggingface/xet-core", rev = "cacd713", optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 fs4 = { version = "0.13", features = ["sync"], optional = true }
@@ -150,7 +149,7 @@ http = ["object_store/http", "cloud"]
 temporal = ["dtype-datetime", "dtype-date", "dtype-time"]
 simd = []
 python = ["pyo3", "polars-error/python", "polars-utils/python"]
-hf_bucket_sink = ["cloud", "parquet", "dep:xet-session", "dep:xet-data", "dep:xet-utils"]
+hf_bucket_sink = ["cloud", "parquet", "dep:hf-xet", "dep:xet-client"]
 allow_unused = []
 
 [package.metadata.docs.rs]
