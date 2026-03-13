@@ -1011,7 +1011,7 @@ def test_apply_list_out() -> None:
     assert out[2].to_list() == [2, 2]
 
 
-def test_reinterpret() -> None:
+def test_reinterpret_signed() -> None:
     s = pl.Series("a", [1, 1, 2], dtype=pl.UInt64)
     assert s.reinterpret(signed=True).dtype == pl.Int64
     df = pl.DataFrame([s])
@@ -1269,6 +1269,21 @@ def test_comparisons_int_series_to_float_scalar() -> None:
 
     assert_series_equal(srs_int < 1.5, pl.Series([True, False, False, False]))
     assert_series_equal(srs_int > 1.5, pl.Series([False, True, True, True]))
+
+
+def test_comparisons_uint128_series_to_scalar() -> None:
+    boundary = 1 << 100
+    srs_u128 = pl.Series(
+        [boundary - 1, boundary, boundary + 1, None],
+        dtype=pl.UInt128,
+    )
+
+    assert_series_equal(srs_u128 == boundary, pl.Series([False, True, False, None]))
+    assert_series_equal(srs_u128 != boundary, pl.Series([True, False, True, None]))
+    assert_series_equal(srs_u128 < boundary, pl.Series([True, False, False, None]))
+    assert_series_equal(srs_u128 <= boundary, pl.Series([True, True, False, None]))
+    assert_series_equal(srs_u128 > boundary, pl.Series([False, False, True, None]))
+    assert_series_equal(srs_u128 >= boundary, pl.Series([False, True, True, None]))
 
 
 def test_comparisons_datetime_series_to_date_scalar() -> None:
@@ -1849,6 +1864,51 @@ def test_ceil() -> None:
     assert_series_equal(s.ceil(), expected)
 
 
+def test_truncate() -> None:
+    a = pl.Series("f", [1.003, 2.003])
+    b = a.truncate(2)
+    assert b.to_list() == [1.00, 2.00]
+
+    b = a.truncate()
+    assert b.to_list() == [1.0, 2.0]
+
+
+def test_truncate_negative() -> None:
+    s = pl.Series("f", [-1.78, -2.56, -3.99])
+    assert s.truncate(1).to_list() == [-1.7, -2.5, -3.9]
+    assert s.truncate(0).to_list() == [-1.0, -2.0, -3.0]
+
+
+def test_truncate_int() -> None:
+    s = pl.Series([1, 2, 3])
+    assert_series_equal(s, s.truncate())
+
+
+def test_truncate_special_values() -> None:
+    # NaN values should remain NaN
+    s = pl.Series([1.5, float("nan"), 2.5])
+    result = s.truncate(1)
+    assert result[0] == 1.5
+    assert math.isnan(result[1])
+    assert result[2] == 2.5
+
+    # Inf values should remain inf
+    s = pl.Series([float("inf"), float("-inf"), 1.234])
+    result = s.truncate(2)
+    assert result[0] == float("inf")
+    assert result[1] == float("-inf")
+    assert result[2] == 1.23
+
+    # Null values should remain null
+    s = pl.Series("a", [1.234, None, 3.456], dtype=pl.Float64)
+    result = s.truncate(1)
+    assert result.to_list() == [1.2, None, 3.4]
+
+    # Empty series
+    s = pl.Series(dtype=pl.Float64)
+    assert_series_equal(s.truncate(2), s)
+
+
 def test_duration_arithmetic() -> None:
     # apply some basic duration math to series
     s = pl.Series([datetime(2022, 1, 1, 10, 20, 30), datetime(2022, 1, 2, 20, 40, 50)])
@@ -1974,9 +2034,24 @@ def test_repr_html(df: pl.DataFrame) -> None:
 @pytest.mark.parametrize(
     ("value", "time_unit", "exp", "exp_type"),
     [
-        (13285, "d", date(2006, 5, 17), pl.Date),
-        (1147880044, "s", datetime(2006, 5, 17, 15, 34, 4), pl.Datetime),
-        (1147880044 * 1_000, "ms", datetime(2006, 5, 17, 15, 34, 4), pl.Datetime("ms")),
+        (
+            13285,
+            "d",
+            date(2006, 5, 17),
+            pl.Date,
+        ),
+        (
+            1147880044,
+            "s",
+            datetime(2006, 5, 17, 15, 34, 4),
+            pl.Datetime("us"),
+        ),
+        (
+            1147880044 * 1_000,
+            "ms",
+            datetime(2006, 5, 17, 15, 34, 4),
+            pl.Datetime("us"),
+        ),
         (
             1147880044 * 1_000_000,
             "us",
@@ -2284,7 +2359,7 @@ def test_series_from_numpy_with_dtype() -> None:
 
 
 def test_raise_invalid_is_between() -> None:
-    with pytest.raises(pl.exceptions.InvalidOperationError):
+    with pytest.raises(pl.exceptions.ComputeError):
         pl.select(pl.lit(2).is_between(pl.lit("11"), pl.lit("33")))
 
 
@@ -2359,3 +2434,27 @@ def test_comparisons_structs_raise() -> None:
             match=r"Series of type Struct\(\{'x': Int64\}\) does not have eq operator",
         ):
             s == rhs  # noqa: B015
+
+
+def test_multiply_series_by_timedelta_26205() -> None:
+    result = pl.Series([1.0, 2.0, 3.0]) * timedelta(seconds=5)
+    expected = pl.Series(
+        [timedelta(seconds=5), timedelta(seconds=10), timedelta(seconds=15)]
+    )
+    assert_series_equal(expected, result)
+
+
+def test_multiply_timedelta_by_series_26205() -> None:
+    result = timedelta(seconds=5) * pl.Series([1.0, 2.0, 3.0])
+    expected = pl.Series(
+        [timedelta(seconds=5), timedelta(seconds=10), timedelta(seconds=15)]
+    )
+    assert_series_equal(expected, result)
+
+
+def test_multiply_int_series_by_timedelta_26205() -> None:
+    result = pl.Series([1, 2, 3]) * timedelta(seconds=5)
+    expected = pl.Series(
+        [timedelta(seconds=5), timedelta(seconds=10), timedelta(seconds=15)]
+    )
+    assert_series_equal(expected, result)

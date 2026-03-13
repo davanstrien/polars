@@ -509,7 +509,7 @@ pub fn to_alp_impl(lp: DslPlan, ctxt: &mut DslConversionContext) -> PolarsResult
             let lp = IR::Sort {
                 input,
                 by_column,
-                slice,
+                slice: slice.map(|t| (t.0, t.1, None)),
                 sort_options,
             };
 
@@ -815,7 +815,10 @@ pub fn to_alp_impl(lp: DslPlan, ctxt: &mut DslConversionContext) -> PolarsResult
             agg,
             maintain_order,
             separator,
+            column_naming,
         } => {
+            use polars_core::frame::PivotColumnNaming;
+
             let input =
                 to_alp_impl(owned(input), ctxt).map_err(|e| e.context(failed_here!(unique)))?;
             let input_schema = ctxt.lp_arena.get(input).schema(ctxt.lp_arena);
@@ -882,7 +885,11 @@ pub fn to_alp_impl(lp: DslPlan, ctxt: &mut DslConversionContext) -> PolarsResult
 
                 for i in 0..on_columns.height() {
                     let mut name = String::new();
-                    if values.len() > 1 {
+                    let combine = match column_naming {
+                        PivotColumnNaming::Combine => true,
+                        PivotColumnNaming::Auto => values.len() > 1,
+                    };
+                    if combine {
                         name.push_str(value.as_str());
                         name.push_str(separator.as_str());
                     }
@@ -1328,18 +1335,17 @@ pub fn to_alp_impl(lp: DslPlan, ctxt: &mut DslConversionContext) -> PolarsResult
             let payload = match payload {
                 SinkType::Memory => SinkTypeIR::Memory,
                 SinkType::Callback(f) => SinkTypeIR::Callback(f),
-                SinkType::File(options) => {
+                SinkType::File(mut options) => {
                     let mut compression_opt = None::<ExternalCompression>;
 
                     #[cfg(feature = "parquet")]
-                    if let FileWriteFormat::Parquet(options) = &options.file_format
-                        && let Some(arrow_schema) = &options.arrow_schema
+                    if let FileWriteFormat::Parquet(options) = &mut options.file_format
+                        && let Some(arrow_schema) = &mut Arc::make_mut(options).arrow_schema
                     {
-                        validate_arrow_schema_conversion(
-                            input_schema.as_ref(),
-                            arrow_schema,
-                            options.compat_level(),
-                        )?;
+                        let new_schema =
+                            validate_arrow_schema_conversion(input_schema.as_ref(), arrow_schema)?;
+
+                        *Arc::make_mut(arrow_schema) = new_schema;
                     }
 
                     #[cfg(feature = "csv")]
@@ -1415,7 +1421,7 @@ pub fn to_alp_impl(lp: DslPlan, ctxt: &mut DslConversionContext) -> PolarsResult
                         PartitionStrategy::FileSize => PartitionStrategyIR::FileSize,
                     };
 
-                    let options = PartitionedSinkOptionsIR {
+                    let mut options = PartitionedSinkOptionsIR {
                         base_path,
                         file_path_provider: file_path_provider.unwrap_or_else(|| {
                             FileProviderType::Hive(HivePathProvider {
@@ -1430,17 +1436,22 @@ pub fn to_alp_impl(lp: DslPlan, ctxt: &mut DslConversionContext) -> PolarsResult
                     };
 
                     #[cfg(feature = "parquet")]
-                    if let FileWriteFormat::Parquet(parquet_options) = &options.file_format
-                        && let Some(arrow_schema) = &parquet_options.arrow_schema
                     {
+                        let input_schema = input_schema.into_owned();
                         let file_schema =
                             options.file_output_schema(&input_schema, ctxt.expr_arena)?;
 
-                        validate_arrow_schema_conversion(
-                            file_schema.as_ref(),
-                            arrow_schema,
-                            parquet_options.compat_level(),
-                        )?;
+                        if let FileWriteFormat::Parquet(parquet_options) = &mut options.file_format
+                            && let Some(arrow_schema) =
+                                &mut Arc::make_mut(parquet_options).arrow_schema
+                        {
+                            let new_schema = validate_arrow_schema_conversion(
+                                file_schema.as_ref(),
+                                arrow_schema,
+                            )?;
+
+                            *Arc::make_mut(arrow_schema) = new_schema;
+                        }
                     }
 
                     ctxt.conversion_optimizer
