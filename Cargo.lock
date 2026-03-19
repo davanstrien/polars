@@ -3513,6 +3513,7 @@ dependencies = [
  "recursive",
  "serde_json",
  "tikv-jemallocator",
+ "uuid",
  "version_check",
 ]
 
