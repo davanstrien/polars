@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import io
 import os
-import random
 from collections import defaultdict
 from collections.abc import (
     Generator,
@@ -11415,7 +11414,7 @@ class DataFrame:
             neither stable nor fully random.
         seed
             Seed for the random number generator. If set to None (default), a
-            random seed is generated for each sample operation.
+            random seed is generated for each time the sample is called.
 
         Examples
         --------
@@ -11440,9 +11439,6 @@ class DataFrame:
         if n is not None and fraction is not None:
             msg = "cannot specify both `n` and `fraction`"
             raise ValueError(msg)
-
-        if seed is None:
-            seed = random.randint(0, 10000)
 
         if n is None and fraction is not None:
             if not isinstance(fraction, pl.Series):
