@@ -19,6 +19,7 @@ pub(crate) use join_utils::ExprOrigin;
 mod expand_datasets;
 #[cfg(feature = "python")]
 pub use expand_datasets::ExpandedPythonScan;
+mod collapse_sort;
 mod predicate_pushdown;
 mod projection_pushdown;
 pub mod set_order;
@@ -225,6 +226,10 @@ pub fn optimize(
         rules.push(Box::new(SimpleProjectionAndCollapse::new(
             opt_flags.eager(),
         )));
+    }
+
+    if opt_flags.contains(OptFlags::SORT_COLLAPSE) {
+        rules.push(Box::new(collapse_sort::CollapseSort {}));
     }
 
     if !opt_flags.eager() {
