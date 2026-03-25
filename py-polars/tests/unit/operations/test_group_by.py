@@ -68,6 +68,16 @@ def test_group_by() -> None:
     assert result.columns == ["b", "a"]
 
 
+def test_group_by_count_respects_inner_nulls_in_aggregated_list_27031() -> None:
+    df = pl.DataFrame({"g": [1, 1, 1], "x": [1, 2, None]})
+
+    result = df.group_by("g", maintain_order=True).agg(
+        pl.col("x").cum_sum().count().alias("x_count")
+    )
+
+    assert result.rows() == [(1, 2)]
+
+
 @pytest.mark.parametrize(
     ("input", "expected", "input_dtype", "output_dtype"),
     [
