@@ -4,7 +4,6 @@ use polars_core::prelude::*;
 use polars_core::scalar::Scalar;
 use polars_core::series::Series;
 use polars_core::series::ops::NullBehavior;
-use polars_core::utils::try_get_supertype;
 #[cfg(feature = "interpolate")]
 use polars_ops::series::InterpolationMethod;
 #[cfg(feature = "rank")]
@@ -160,24 +159,6 @@ pub(super) fn drop_nulls(s: &Column) -> PolarsResult<Column> {
 
 pub fn rechunk(s: &Column) -> PolarsResult<Column> {
     Ok(s.rechunk())
-}
-
-pub fn append(s: &[Column], upcast: bool) -> PolarsResult<Column> {
-    assert_eq!(s.len(), 2);
-
-    let a = &s[0];
-    let b = &s[1];
-
-    if upcast {
-        let dtype = try_get_supertype(a.dtype(), b.dtype())?;
-        let mut a = a.cast(&dtype)?;
-        a.append_owned(b.cast(&dtype)?)?;
-        Ok(a)
-    } else {
-        let mut a = a.clone();
-        a.append(b)?;
-        Ok(a)
-    }
 }
 
 #[cfg(feature = "mode")]
