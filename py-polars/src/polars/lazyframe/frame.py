@@ -8631,7 +8631,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
 
     def unnest(
         self,
-        columns: ColumnNameOrSelector | Collection[ColumnNameOrSelector],
+        columns: ColumnNameOrSelector | Collection[ColumnNameOrSelector] | None = None,
         *more_columns: ColumnNameOrSelector,
         separator: str | None = None,
     ) -> LazyFrame:
@@ -8640,6 +8640,8 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
 
         The new columns will be inserted into the DataFrame at the location of the
         struct column.
+
+        If no columns are provided, all struct columns are unnested.
 
         Parameters
         ----------
@@ -8683,6 +8685,20 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         │ foo    ┆ 1   ┆ a   ┆ true ┆ [1, 2]    ┆ baz   │
         │ bar    ┆ 2   ┆ b   ┆ null ┆ [3]       ┆ womp  │
         └────────┴─────┴─────┴──────┴───────────┴───────┘
+
+        Unnest all struct columns by calling without arguments:
+
+        >>> df.unnest().collect()
+        shape: (2, 6)
+        ┌────────┬─────┬─────┬──────┬───────────┬───────┐
+        │ before ┆ t_a ┆ t_b ┆ t_c  ┆ t_d       ┆ after │
+        │ ---    ┆ --- ┆ --- ┆ ---  ┆ ---       ┆ ---   │
+        │ str    ┆ i64 ┆ str ┆ bool ┆ list[i64] ┆ str   │
+        ╞════════╪═════╪═════╪══════╪═══════════╪═══════╡
+        │ foo    ┆ 1   ┆ a   ┆ true ┆ [1, 2]    ┆ baz   │
+        │ bar    ┆ 2   ┆ b   ┆ null ┆ [3]       ┆ womp  │
+        └────────┴─────┴─────┴──────┴───────────┴───────┘
+
         >>> df = pl.LazyFrame(
         ...     {
         ...         "before": ["foo", "bar"],
@@ -8708,9 +8724,13 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         │ bar    ┆ 2    ┆ b    ┆ null ┆ [3]       ┆ womp  │
         └────────┴──────┴──────┴──────┴───────────┴───────┘
         """
-        subset = parse_list_into_selector(columns) | parse_list_into_selector(
-            more_columns
-        )
+        if columns is None and not more_columns:
+            subset = cs.struct()
+        else:
+            subset = (
+                cs.empty() if columns is None else parse_list_into_selector(columns)
+            ) | parse_list_into_selector(more_columns)
+
         return self._from_pyldf(self._ldf.unnest(subset._pyselector, separator))
 
     def merge_sorted(self, other: LazyFrame, key: str) -> LazyFrame:
