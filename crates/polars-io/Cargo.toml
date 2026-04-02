@@ -54,6 +54,9 @@ tokio = { workspace = true, features = ["fs", "net", "rt-multi-thread", "time", 
 zmij = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 
+opendal = { workspace = true, features = ["services-hf"], optional = true }
+object_store_opendal = { workspace = true, optional = true }
+
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 fs4 = { version = "0.13", features = ["sync"], optional = true }
 home = "0.5.4"
@@ -147,6 +150,7 @@ http = ["object_store/http", "cloud"]
 temporal = ["dtype-datetime", "dtype-date", "dtype-time"]
 simd = []
 python = ["pyo3", "polars-error/python", "polars-utils/python"]
+hf = ["cloud", "dep:opendal", "dep:object_store_opendal"]
 allow_unused = []
 
 [package.metadata.docs.rs]

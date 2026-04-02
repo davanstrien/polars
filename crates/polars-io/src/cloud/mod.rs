@@ -20,3 +20,5 @@ pub use polars_object_store::*;
 pub mod cloud_writer;
 #[cfg(feature = "cloud")]
 pub mod credential_provider;
+#[cfg(feature = "hf")]
+pub mod hf;

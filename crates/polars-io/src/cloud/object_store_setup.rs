@@ -177,7 +177,15 @@ impl PolarsObjectStoreBuilder {
                 #[cfg(not(feature = "http"))]
                 return err_missing_feature("http", &cloud_location.scheme);
             },
-            CloudType::Hf => panic!("impl error: unresolved hf:// path"),
+            CloudType::Hf => {
+                #[cfg(feature = "hf")]
+                {
+                    let store = super::hf::build_hf(self.path.clone(), self.options.as_ref())?;
+                    Ok::<_, PolarsError>(store)
+                }
+                #[cfg(not(feature = "hf"))]
+                return err_missing_feature("hf", &self.cloud_type);
+            },
         }?;
 
         Ok(store)
@@ -253,7 +261,19 @@ pub async fn build_object_store(
     let cloud_type = path
         .scheme()
         .map_or(CloudType::File, CloudType::from_cloud_scheme);
-    let cloud_location = CloudLocation::new(path.clone(), glob)?;
+    let mut cloud_location = CloudLocation::new(path.clone(), glob)?;
+
+    // For HF URLs, strip the repo_id (namespace/name) from the prefix
+    // since the OpenDAL operator already has repo_id configured.
+    // e.g. prefix "ns/name/path/file.parquet" → "path/file.parquet"
+    if cloud_type == CloudType::Hf {
+        let prefix = &cloud_location.prefix;
+        let file_path = prefix
+            .splitn(3, '/')
+            .nth(2)
+            .unwrap_or("");
+        cloud_location.prefix = file_path.to_string();
+    }
 
     let store = PolarsObjectStoreBuilder {
         path,
