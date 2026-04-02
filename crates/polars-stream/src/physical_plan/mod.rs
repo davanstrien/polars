@@ -192,12 +192,6 @@ pub enum PhysNodeKind {
         options: FileSinkOptions,
     },
 
-    #[cfg(feature = "hf_bucket_sink")]
-    HfBucketSink {
-        input: PhysStream,
-        options: FileSinkOptions,
-    },
-
     PartitionedSink {
         input: PhysStream,
         options: PartitionedSinkOptionsIR,
@@ -537,12 +531,6 @@ fn visit_node_inputs_mut(
 
             #[cfg(feature = "cum_agg")]
             PhysNodeKind::CumAgg { input, .. } => {
-                rec!(input.node);
-                visit(input);
-            },
-
-            #[cfg(feature = "hf_bucket_sink")]
-            PhysNodeKind::HfBucketSink { input, .. } => {
                 rec!(input.node);
                 visit(input);
             },

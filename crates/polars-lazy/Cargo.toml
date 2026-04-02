@@ -62,7 +62,7 @@ cloud = [
   "polars-mem-engine/cloud",
   "polars-stream?/cloud",
 ]
-hf_bucket_sink = ["polars-stream?/hf_bucket_sink"]
+hf = ["polars-stream?/hf"]
 ipc = ["polars-io/ipc", "polars-plan/ipc", "polars-mem-engine/ipc", "polars-stream?/ipc"]
 json = [
   "polars-io/json",

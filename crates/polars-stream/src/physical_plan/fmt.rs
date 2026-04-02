@@ -311,8 +311,6 @@ fn visualize_plan_rec(
             #[cfg(feature = "json")]
             FileWriteFormat::NDJson(_) => ("ndjson-sink".to_string(), from_ref(input)),
         },
-        #[cfg(feature = "hf_bucket_sink")]
-        PhysNodeKind::HfBucketSink { input, .. } => ("hf-bucket-sink".to_string(), from_ref(input)),
         PhysNodeKind::PartitionedSink { input, options } => {
             let variant = match options.partition_strategy {
                 PartitionStrategyIR::Keyed { .. } => "partition-keyed",

@@ -54,8 +54,8 @@ tokio = { workspace = true, features = ["fs", "net", "rt-multi-thread", "time", 
 zmij = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 
-hf-xet = { git = "https://github.com/huggingface/xet-core", rev = "cacd713", optional = true }
-xet-client = { git = "https://github.com/huggingface/xet-core", rev = "cacd713", optional = true }
+opendal = { workspace = true, features = ["services-hf"], optional = true }
+object_store_opendal = { workspace = true, optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 fs4 = { version = "0.13", features = ["sync"], optional = true }
@@ -150,7 +150,7 @@ http = ["object_store/http", "cloud"]
 temporal = ["dtype-datetime", "dtype-date", "dtype-time"]
 simd = []
 python = ["pyo3", "polars-error/python", "polars-utils/python"]
-hf_bucket_sink = ["cloud", "parquet", "dep:hf-xet", "dep:xet-client"]
+hf = ["cloud", "dep:opendal", "dep:object_store_opendal"]
 allow_unused = []
 
 [package.metadata.docs.rs]

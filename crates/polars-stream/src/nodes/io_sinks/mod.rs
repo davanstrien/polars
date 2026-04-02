@@ -21,8 +21,6 @@ use crate::nodes::io_sinks::pipeline_initialization::single_file::start_single_f
 use crate::pipe::PortReceiver;
 pub mod components;
 pub mod config;
-#[cfg(feature = "hf_bucket_sink")]
-pub mod hf_bucket_sink;
 pub mod pipeline_initialization;
 pub mod writers;
 
