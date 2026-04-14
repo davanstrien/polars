@@ -3286,7 +3286,7 @@ dependencies = [
 [[package]]
 name = "object_store_opendal"
 version = "0.55.0"
-source = "git+https://github.com/kszucs/opendal?rev=4c70bd8#4c70bd83486157b44429b1752a0c9d70e625937b"
+source = "git+https://github.com/apache/opendal?rev=8d3dbcc3ef#8d3dbcc3ef6a38a3ed2a6610cf826ef51dbe9013"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3320,7 +3320,7 @@ checksum = "269bca4c2591a28585d6bf10d9ed0332b7d76900a1b02bec41bdc3a2cdcda107"
 [[package]]
 name = "opendal"
 version = "0.55.0"
-source = "git+https://github.com/kszucs/opendal?rev=4c70bd8#4c70bd83486157b44429b1752a0c9d70e625937b"
+source = "git+https://github.com/apache/opendal?rev=8d3dbcc3ef#8d3dbcc3ef6a38a3ed2a6610cf826ef51dbe9013"
 dependencies = [
  "opendal-core",
  "opendal-service-hf",
@@ -3329,7 +3329,7 @@ dependencies = [
 [[package]]
 name = "opendal-core"
 version = "0.55.0"
-source = "git+https://github.com/kszucs/opendal?rev=4c70bd8#4c70bd83486157b44429b1752a0c9d70e625937b"
+source = "git+https://github.com/apache/opendal?rev=8d3dbcc3ef#8d3dbcc3ef6a38a3ed2a6610cf826ef51dbe9013"
 dependencies = [
  "anyhow",
  "base64",
@@ -3356,12 +3356,9 @@ dependencies = [
 [[package]]
 name = "opendal-service-hf"
 version = "0.55.0"
-source = "git+https://github.com/kszucs/opendal?rev=4c70bd8#4c70bd83486157b44429b1752a0c9d70e625937b"
+source = "git+https://github.com/apache/opendal?rev=8d3dbcc3ef#8d3dbcc3ef6a38a3ed2a6610cf826ef51dbe9013"
 dependencies = [
- "async-trait",
- "base64",
  "bytes",
- "futures",
  "hf-xet",
  "http 1.4.0",
  "log",
