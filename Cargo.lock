@@ -2309,7 +2309,6 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.26.4",
  "tower-service",
- "webpki-roots",
 ]
 
 [[package]]
@@ -3285,8 +3284,9 @@ dependencies = [
 
 [[package]]
 name = "object_store_opendal"
-version = "0.55.0"
-source = "git+https://github.com/apache/opendal?rev=8d3dbcc3ef#8d3dbcc3ef6a38a3ed2a6610cf826ef51dbe9013"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08298874eee5935c95bcaa393148834f9c53d904461ca15584a041d8a1c907c2"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3319,8 +3319,9 @@ checksum = "269bca4c2591a28585d6bf10d9ed0332b7d76900a1b02bec41bdc3a2cdcda107"
 
 [[package]]
 name = "opendal"
-version = "0.55.0"
-source = "git+https://github.com/apache/opendal?rev=8d3dbcc3ef#8d3dbcc3ef6a38a3ed2a6610cf826ef51dbe9013"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97b31d3d8e99a85d83b73ec26647f5607b80578ed9375810b6e44ffa3590a236"
 dependencies = [
  "opendal-core",
  "opendal-service-hf",
@@ -3328,8 +3329,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-core"
-version = "0.55.0"
-source = "git+https://github.com/apache/opendal?rev=8d3dbcc3ef#8d3dbcc3ef6a38a3ed2a6610cf826ef51dbe9013"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1849dd2687e173e776d3af5fce1ba3ae47b9dd37a09d1c4deba850ef45fe00ca"
 dependencies = [
  "anyhow",
  "base64",
@@ -3344,7 +3346,7 @@ dependencies = [
  "percent-encoding",
  "quick-xml 0.38.4",
  "reqsign-core",
- "reqwest 0.12.28",
+ "reqwest 0.13.2",
  "serde",
  "serde_json",
  "tokio",
@@ -3355,8 +3357,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-service-hf"
-version = "0.55.0"
-source = "git+https://github.com/apache/opendal?rev=8d3dbcc3ef#8d3dbcc3ef6a38a3ed2a6610cf826ef51dbe9013"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b2ab7a2a8a11dfe257ef4db5c0de798acbcd0d6429c37382dad2154bc06a388"
 dependencies = [
  "bytes",
  "hf-xet",
@@ -3364,7 +3367,7 @@ dependencies = [
  "log",
  "opendal-core",
  "percent-encoding",
- "reqwest 0.12.28",
+ "reqwest 0.13.2",
  "serde",
  "serde_json",
 ]
@@ -4927,7 +4930,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams 0.4.2",
  "web-sys",
- "webpki-roots",
 ]
 
 [[package]]
@@ -6685,15 +6687,6 @@ name = "webpki-root-certs"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "804f18a4ac2676ffb4e8b5b5fa9ae38af06df08162314f96a68d2a363e21a8ca"
-dependencies = [
- "rustls-pki-types",
-]
-
-[[package]]
-name = "webpki-roots"
-version = "1.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22cfaf3c063993ff62e73cb4311efde4db1efb31ab78a3e5c457939ad5cc0bed"
 dependencies = [
  "rustls-pki-types",
 ]
