@@ -5,6 +5,7 @@
     allow(unused, dead_code, irrefutable_let_patterns)
 )] // Maybe be caused by some feature
 #![allow(ambiguous_glob_reexports)]
+#![cfg_attr(feature = "hf", recursion_limit = "256")]
 extern crate core;
 
 #[cfg(feature = "avro")]
