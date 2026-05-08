@@ -43,16 +43,24 @@ impl HFRepoLocation {
         // * DO encode revision - slashes in revisions like "refs/convert/parquet"
         //   are part of the revision name, not path separators.
         //   See: https://github.com/pola-rs/polars/issues/25389
-        let encoded_revision =
-            percent_encoding::percent_encode(revision.as_bytes(), URL_ENCODE_CHARSET);
-        let api_base_path = format!(
-            "https://huggingface.co/api/{}/{}/tree/{}/",
-            bucket, repository, encoded_revision
-        );
-        let download_base_path = format!(
-            "https://huggingface.co/{}/{}/resolve/{}/",
-            bucket, repository, encoded_revision
-        );
+        // * "buckets" URIs have no revision segment in their URLs.
+        let (api_base_path, download_base_path) = if bucket == "buckets" {
+            (
+                format!("https://huggingface.co/api/{bucket}/{repository}/tree/"),
+                format!("https://huggingface.co/{bucket}/{repository}/resolve/"),
+            )
+        } else {
+            let encoded_revision =
+                percent_encoding::percent_encode(revision.as_bytes(), URL_ENCODE_CHARSET);
+            (
+                format!(
+                    "https://huggingface.co/api/{bucket}/{repository}/tree/{encoded_revision}/"
+                ),
+                format!(
+                    "https://huggingface.co/{bucket}/{repository}/resolve/{encoded_revision}/"
+                ),
+            )
+        };
 
         Self {
             api_base_path,
@@ -79,24 +87,25 @@ impl HFRepoLocation {
 
 impl HFPathParts {
     /// Extracts path components from a hugging face path:
-    /// `hf:// [datasets | spaces] / {username} / {reponame} @ {revision} / {path from root}`
+    /// * `hf:// [datasets | spaces] / {username} / {reponame} @ {revision} / {path from root}`
+    /// * `hf:// buckets / {namespace} / {name} / {path from root}` (no `@revision`)
     fn try_from_uri(uri: &str) -> PolarsResult<Self> {
         let Some(this) = (|| {
-            // hf:// [datasets | spaces] / {username} / {reponame} @ {revision} / {path from root}
+            // hf:// [datasets | spaces | buckets] / {namespace} / {name} [@ {revision}] / {path}
             //       !>
             if !uri.starts_with("hf://") {
                 return None;
             }
             let uri = &uri[5..];
 
-            // [datasets | spaces] / {username} / {reponame} @ {revision} / {path from root}
-            // ^-----------------^   !>
+            // [datasets | spaces | buckets] / ...
+            // ^---------------------------^   !>
             let i = memchr::memchr(b'/', uri.as_bytes())?;
             let bucket = uri.get(..i)?.to_string();
             let uri = uri.get(1 + i..)?;
 
-            // {username} / {reponame} @ {revision} / {path from root}
-            // ^----------------------------------^   !>
+            // {namespace} / {name} [@ {revision}] / {path}
+            // ^---------------------------------^   !>
             let i = memchr::memchr(b'/', uri.as_bytes())?;
             let i = {
                 // Also handle if they just give the repository, i.e.:
@@ -110,13 +119,17 @@ impl HFPathParts {
             let repository = uri.get(..i)?;
             let uri = uri.get(1 + i..).unwrap_or("");
 
-            let (repository, revision) =
-                if let Some(i) = memchr::memchr(b'@', repository.as_bytes()) {
-                    (repository[..i].to_string(), repository[1 + i..].to_string())
-                } else {
-                    // No @revision in uri, default to `main`
-                    (repository.to_string(), "main".to_string())
-                };
+            let (repository, revision) = if bucket == "buckets" {
+                // Buckets have no revision concept. If `@` is present, leave it
+                // in `repository` so the post-closure check can emit a specific
+                // error.
+                (repository.to_string(), String::new())
+            } else if let Some(i) = memchr::memchr(b'@', repository.as_bytes()) {
+                (repository[..i].to_string(), repository[1 + i..].to_string())
+            } else {
+                // No @revision in uri, default to `main`
+                (repository.to_string(), "main".to_string())
+            };
 
             // {path from root}
             // ^--------------^
@@ -132,9 +145,13 @@ impl HFPathParts {
             polars_bail!(ComputeError: "invalid Hugging Face path: {}", uri);
         };
 
-        const BUCKETS: [&str; 2] = ["datasets", "spaces"];
+        const BUCKETS: [&str; 3] = ["datasets", "spaces", "buckets"];
         if !BUCKETS.contains(&this.bucket.as_str()) {
             polars_bail!(ComputeError: "hugging face uri bucket must be one of {:?}, got {} instead.", BUCKETS, this.bucket);
+        }
+
+        if this.bucket == "buckets" && this.repository.contains('@') {
+            polars_bail!(ComputeError: "hugging face bucket URIs do not support @revision: {}", uri);
         }
 
         Ok(this)
@@ -381,6 +398,82 @@ mod tests {
             }
             panic!("expected err result for uri {uri} instead of {out:?}");
         }
+    }
+
+    #[test]
+    fn test_hf_bucket_path_from_uri() {
+        use super::HFPathParts;
+
+        // Bucket URI with a path.
+        let uri = "hf://buckets/davanstrien/polars-hf-wheels/smoke-test-full/filtered.parquet";
+        let expect = HFPathParts {
+            bucket: "buckets".into(),
+            repository: "davanstrien/polars-hf-wheels".into(),
+            revision: "".into(),
+            path: "smoke-test-full/filtered.parquet".into(),
+        };
+        assert_eq!(HFPathParts::try_from_uri(uri).unwrap(), expect);
+
+        // Bucket URI without a path.
+        let uri = "hf://buckets/ns/name";
+        let expect = HFPathParts {
+            bucket: "buckets".into(),
+            repository: "ns/name".into(),
+            revision: "".into(),
+            path: "".into(),
+        };
+        assert_eq!(HFPathParts::try_from_uri(uri).unwrap(), expect);
+
+        // Bucket URI with trailing slash and no path.
+        let uri = "hf://buckets/ns/name/";
+        let expect = HFPathParts {
+            bucket: "buckets".into(),
+            repository: "ns/name".into(),
+            revision: "".into(),
+            path: "".into(),
+        };
+        assert_eq!(HFPathParts::try_from_uri(uri).unwrap(), expect);
+
+        // `@revision` is not allowed for buckets.
+        for uri in [
+            "hf://buckets/ns/name@v1/file",
+            "hf://buckets/ns/name@main/file",
+            "hf://buckets/ns/name@main",
+            "hf://buckets/ns@v1/name/file",
+        ] {
+            let out = HFPathParts::try_from_uri(uri);
+            assert!(out.is_err(), "expected err for uri {uri}, got {out:?}");
+        }
+    }
+
+    #[test]
+    fn test_hf_bucket_url_formation() {
+        use super::HFRepoLocation;
+
+        // Buckets omit the `/{revision}/` segment in both the API and resolve URLs.
+        let loc = HFRepoLocation::new("buckets", "ns/name", "");
+        assert_eq!(
+            loc.api_base_path,
+            "https://huggingface.co/api/buckets/ns/name/tree/"
+        );
+        assert_eq!(
+            loc.download_base_path,
+            "https://huggingface.co/buckets/ns/name/resolve/"
+        );
+
+        // File URI: path is appended directly to the resolve base.
+        let file_uri = loc.get_file_uri("smoke-test-full/filtered.parquet");
+        assert_eq!(
+            file_uri,
+            "https://huggingface.co/buckets/ns/name/resolve/smoke-test-full/filtered.parquet"
+        );
+
+        // API URI for a directory prefix.
+        let api_uri = loc.get_api_uri("smoke-test-full");
+        assert_eq!(
+            api_uri,
+            "https://huggingface.co/api/buckets/ns/name/tree/smoke-test-full"
+        );
     }
 
     #[test]
