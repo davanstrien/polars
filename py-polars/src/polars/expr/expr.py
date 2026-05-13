@@ -750,6 +750,45 @@ class Expr:
         """
         return wrap_expr(self._pyexpr.all(ignore_nulls))
 
+    @unstable()
+    def is_empty(self, *, ignore_nulls: bool = False) -> Expr:
+        """
+        Return whether the column is empty.
+
+        .. warning::
+            This functionality is considered **unstable**. It may be changed
+            at any point without it being considered a breaking change.
+
+        Parameters
+        ----------
+        ignore_nulls
+            If true a column containing only nulls will also be considered empty.
+            The default is false.
+
+        Returns
+        -------
+        Expr
+            Expression of data type :class:`Boolean`.
+
+        Examples
+        --------
+        >>> df = pl.DataFrame({"x": [None, None]})
+        >>> df.select(
+        ...     a=pl.col.x.is_empty(),
+        ...     b=pl.col.x.drop_nulls().is_empty(),
+        ...     c=pl.col.x.is_empty(ignore_nulls=True),
+        ... )
+        shape: (1, 3)
+        ┌───────┬──────┬──────┐
+        │ a     ┆ b    ┆ c    │
+        │ ---   ┆ ---  ┆ ---  │
+        │ bool  ┆ bool ┆ bool │
+        ╞═══════╪══════╪══════╡
+        │ false ┆ true ┆ true │
+        └───────┴──────┴──────┘
+        """
+        return wrap_expr(self._pyexpr.is_empty(ignore_nulls))
+
     def arg_true(self) -> Expr:
         """
         Return indices where expression evaluates `True`.
@@ -3941,9 +3980,9 @@ class Expr:
             - group_to_rows
                 If the aggregation results in multiple values per group, map them back
                 to their row position in the DataFrame. This can only be done if each
-                group yields the same elements before aggregation as after. If the
-                aggregation results in one scalar value per group, this value will be
-                mapped to every row.
+                group yields the same number of elements before aggregation as after. If
+                the aggregation results in one scalar value per group, this value will
+                be mapped to every row.
             - join
                 If the aggregation may result in multiple values per group, join the
                 values as 'List<group_dtype>' to each row position. Warning: this can be
@@ -11368,10 +11407,6 @@ Consider using {self}.implode() instead"""
         replace_strict
         str.replace
 
-        Notes
-        -----
-        The global string cache must be enabled when replacing categorical values.
-
         Examples
         --------
         Replace a single value by another value. Values that were not replaced remain
@@ -11543,10 +11578,6 @@ Consider using {self}.implode() instead"""
         --------
         replace
         str.replace
-
-        Notes
-        -----
-        The global string cache must be enabled when replacing categorical values.
 
         Examples
         --------

@@ -4514,7 +4514,7 @@ class DataFrame:
                     raise ModuleUpgradeRequiredError(msg)
                 mode = "replace"
             elif if_table_exists == "append":
-                mode = "append"
+                mode = "append" if driver_manager_version < (0, 7) else "create_append"
             else:
                 msg = (
                     f"unexpected value for `if_table_exists`: {if_table_exists!r}"
@@ -8423,10 +8423,6 @@ class DataFrame:
         │ 3   ┆ 8.0 ┆ c   ┆ y     ┆ b         │
         │ 3   ┆ 8.0 ┆ c   ┆ z     ┆ d         │
         └─────┴─────┴─────┴───────┴───────────┘
-
-        Notes
-        -----
-        For joining on columns with categorical data, see :class:`polars.StringCache`.
         """
         require_same_type(self, other)
 

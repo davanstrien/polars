@@ -7,7 +7,6 @@ use arrow::bitmap::bitmask::BitMask;
 use arrow::trusted_len::TrustMyLength;
 use polars_compute::rolling::QuantileMethod;
 use polars_compute::unique::{AmortizedUnique, amortized_unique_from_dtype};
-use polars_core::POOL;
 use polars_core::error::{PolarsResult, polars_bail, polars_ensure};
 use polars_core::frame::DataFrame;
 use polars_core::prelude::row_encode::encode_rows_unordered;
@@ -15,6 +14,7 @@ use polars_core::prelude::{
     AnyValue, ChunkCast, Column, CompatLevel, Float64Chunked, GroupPositions, GroupsType,
     IDX_DTYPE, IntoColumn,
 };
+use polars_core::runtime::RAYON;
 use polars_core::scalar::Scalar;
 use polars_core::series::{ChunkCompareEq, Series};
 use polars_utils::itertools::Itertools;
@@ -22,6 +22,7 @@ use polars_utils::pl_str::PlSmallStr;
 use polars_utils::{IdxSize, UnitVec};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
+use crate::expressions::evaluate_count_on_ac;
 use crate::prelude::{AggState, AggregationContext, PhysicalExpr, UpdateGroups};
 use crate::state::ExecutionState;
 
@@ -40,7 +41,7 @@ pub fn reverse<'a>(
         return Ok(ac);
     }
 
-    POOL.install(|| {
+    RAYON.install(|| {
         let positions = GroupsType::Idx(match &**ac.groups().as_ref() {
             GroupsType::Idx(idx) => idx
                 .into_par_iter()
@@ -99,7 +100,7 @@ pub fn null_count<'a>(
         return Ok(ac);
     };
 
-    POOL.install(|| {
+    RAYON.install(|| {
         let validity = BitMask::from_bitmap(&validity);
         let null_count: Vec<IdxSize> = match &**ac.groups.as_ref() {
             GroupsType::Idx(idx) => idx
@@ -197,6 +198,29 @@ pub fn all<'a>(
     ac.state = AggState::AggregatedScalar(out.into_column());
 
     Ok(ac)
+}
+
+pub fn is_empty<'a>(
+    inputs: &[Arc<dyn PhysicalExpr>],
+    df: &DataFrame,
+    groups: &'a GroupPositions,
+    state: &ExecutionState,
+    ignore_nulls: bool,
+) -> PolarsResult<AggregationContext<'a>> {
+    assert_eq!(inputs.len(), 1);
+
+    // TODO: dedicated impl.
+    let ac = inputs[0].evaluate_on_groups(df, groups, state)?;
+    let counts = evaluate_count_on_ac(ac, !ignore_nulls)?;
+    let is_empty = counts.equal(&Column::new_scalar(
+        PlSmallStr::EMPTY,
+        Scalar::new_idxsize(0),
+        1,
+    ))?;
+    Ok(AggregationContext::from_agg_state(
+        AggState::AggregatedScalar(is_empty.into_column()),
+        Cow::Borrowed(groups),
+    ))
 }
 
 #[cfg(feature = "bitwise")]
@@ -331,7 +355,7 @@ pub fn drop_items<'a>(
 
     ac.groups();
     let predicate = BitMask::from_bitmap(predicate);
-    POOL.install(|| {
+    RAYON.install(|| {
         let positions = GroupsType::Idx(match &**ac.groups.as_ref() {
             GroupsType::Idx(idxs) => idxs
                 .into_par_iter()
@@ -514,7 +538,7 @@ pub fn moment_agg<'a, S: Default>(
     let ca = ca.rechunk();
     let arr = ca.downcast_as_array();
 
-    let ca = POOL.install(|| match &**ac.groups.as_ref() {
+    let ca = RAYON.install(|| match &**ac.groups.as_ref() {
         GroupsType::Idx(idx) => {
             if let Some(validity) = arr.validity().filter(|v| v.unset_bits() > 0) {
                 idx.into_par_iter()
@@ -641,7 +665,7 @@ pub fn unique<'a>(
         }
     }
 
-    POOL.install(|| {
+    RAYON.install(|| {
         let positions = GroupsType::Idx(match &**ac.groups().as_ref() {
             GroupsType::Idx(idx) => idx
                 .into_par_iter()
@@ -699,7 +723,7 @@ fn fw_bw_fill_null<'a>(
     };
 
     let validity = BitMask::from_bitmap(&validity);
-    POOL.install(|| {
+    RAYON.install(|| {
         let positions = GroupsType::Idx(match &**ac.groups().as_ref() {
             GroupsType::Idx(idx) => idx
                 .into_par_iter()
