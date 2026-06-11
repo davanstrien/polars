@@ -5,6 +5,7 @@ use std::sync::Arc;
 use arrow::array::*;
 use arrow::bitmap::Bitmap;
 use arrow::compute::concatenate::concatenate_unchecked;
+use arrow::compute::utils::combine_validities_and;
 use polars_compute::filter::filter_with_bitmap;
 
 use crate::prelude::{ChunkTakeUnchecked, *};
@@ -597,15 +598,27 @@ where
         unsafe { arr.get_unchecked(arr.len() - 1) }
     }
 
-    pub fn set_validity(&mut self, validity: &Bitmap) {
-        assert_eq!(self.len(), validity.len());
+    pub fn set_validity(&mut self, validity: Option<Bitmap>) {
+        assert!(
+            !self.dtype().is_struct(),
+            "set_outer_validity should be used for struct types"
+        );
+        if let Some(v) = &validity {
+            assert_eq!(self.len(), v.len());
+        }
         let mut i = 0;
         for chunk in unsafe { self.chunks_mut() } {
-            *chunk = chunk.with_validity(Some(validity.clone().sliced(i, chunk.len())));
+            *chunk =
+                chunk.with_validity(validity.as_ref().map(|v| v.clone().sliced(i, chunk.len())));
             i += chunk.len();
         }
-        self.null_count = validity.unset_bits();
+        self.null_count = validity.map(|v| v.unset_bits()).unwrap_or(0);
         self.set_fast_explode_list(false);
+    }
+
+    pub fn with_validity(mut self, validity: Option<Bitmap>) -> Self {
+        self.set_validity(validity);
+        self
     }
 }
 
@@ -618,7 +631,6 @@ where
     pub fn deposit(&self, validity: &Bitmap) -> Self {
         let set_bits = validity.set_bits();
 
-        assert_eq!(self.null_count(), 0);
         assert_eq!(self.len(), set_bits);
 
         if set_bits == validity.len() {
@@ -642,7 +654,10 @@ where
         }));
 
         let mut ca = unsafe { ChunkTakeUnchecked::take_unchecked(self, &gather_idxs) };
-        ca.set_validity(validity);
+        ca.set_validity(combine_validities_and(
+            Some(validity),
+            ca.rechunk_validity().as_ref(),
+        ));
         ca
     }
 }
@@ -730,7 +745,7 @@ impl ArrayChunked {
         length: usize,
     ) -> Self {
         let dtype = DataType::Array(Box::new(inner_dtype.clone()), width);
-        let arrow_dtype = dtype.to_arrow(CompatLevel::newest());
+        let arrow_dtype = dtype.to_arrow(CompatLevel::newest()).to_storage_recursive();
         let field = Arc::new(Field::new(name, dtype));
         if width == 0 {
             use arrow::array::builder::{ArrayBuilder, make_builder};
@@ -742,12 +757,13 @@ impl ArrayChunked {
         }
         let mut total_len = 0;
         let chunks = chunks
-            .into_iter()
+            .iter()
             .map(|chunk| {
                 debug_assert_eq!(chunk.len() % width, 0);
                 let chunk_len = chunk.len() / width;
                 total_len += chunk_len;
-                FixedSizeListArray::new(arrow_dtype.clone(), chunk_len, chunk, None).into_boxed()
+                FixedSizeListArray::new(arrow_dtype.clone(), chunk_len, chunk.clone(), None)
+                    .into_boxed()
             })
             .collect();
         debug_assert_eq!(total_len, length);
@@ -1057,13 +1073,13 @@ pub(crate) mod test {
         let a = Int32Chunked::new(PlSmallStr::from_static("a"), &[1, 9, 3, 2]);
         let b = a
             .sort(false)
-            .into_iter()
+            .iter()
             .map(|opt| opt.unwrap())
             .collect::<Vec<_>>();
         assert_eq!(b, [1, 2, 3, 9]);
         let a = StringChunked::new(PlSmallStr::from_static("a"), &["b", "a", "c"]);
         let a = a.sort(false);
-        let b = a.into_iter().collect::<Vec<_>>();
+        let b = a.iter().collect::<Vec<_>>();
         assert_eq!(b, [Some("a"), Some("b"), Some("c")]);
         assert!(a.is_sorted_ascending_flag());
     }
@@ -1085,7 +1101,7 @@ pub(crate) mod test {
     fn iter() {
         let s1 = get_chunked_array();
         // sum
-        assert_eq!(s1.into_iter().fold(0, |acc, val| { acc + val.unwrap() }), 6)
+        assert_eq!(s1.iter().fold(0, |acc, val| { acc + val.unwrap() }), 6)
     }
 
     #[test]
@@ -1106,7 +1122,7 @@ pub(crate) mod test {
             ))
             .unwrap();
         assert_eq!(b.len(), 1);
-        assert_eq!(b.into_iter().next(), Some(Some(1)));
+        assert_eq!(b.iter().next(), Some(Some(1)));
     }
 
     #[test]
@@ -1168,18 +1184,18 @@ pub(crate) mod test {
         let s: StringChunked = ["b", "a", "z"].iter().collect();
         let sorted = s.sort(false);
         assert_eq!(
-            sorted.into_iter().collect::<Vec<_>>(),
+            sorted.iter().collect::<Vec<_>>(),
             &[Some("a"), Some("b"), Some("z")]
         );
         let sorted = s.sort(true);
         assert_eq!(
-            sorted.into_iter().collect::<Vec<_>>(),
+            sorted.iter().collect::<Vec<_>>(),
             &[Some("z"), Some("b"), Some("a")]
         );
         let s: StringChunked = [Some("b"), None, Some("z")].iter().copied().collect();
         let sorted = s.sort(false);
         assert_eq!(
-            sorted.into_iter().collect::<Vec<_>>(),
+            sorted.iter().collect::<Vec<_>>(),
             &[None, Some("b"), Some("z")]
         );
     }
@@ -1216,7 +1232,7 @@ pub(crate) mod test {
         );
         let ca = ca.cast(&DataType::from_categories(cats)).unwrap();
         let ca = ca.cat32().unwrap();
-        let v: Vec<_> = ca.physical().into_iter().collect();
+        let v: Vec<_> = ca.physical().iter().collect();
         assert_eq!(v, &[Some(0), None, Some(1), Some(2)]);
     }
 

@@ -1,6 +1,7 @@
-use polars_core::POOL;
 use polars_core::prelude::*;
+use polars_core::runtime::RAYON;
 use polars_plan::prelude::*;
+use recursive::recursive;
 
 use super::*;
 use crate::expressions::{AggregationContext, PhysicalExpr};
@@ -84,6 +85,7 @@ impl PhysicalExpr for TernaryExpr {
         Some(&self.expr)
     }
 
+    #[recursive]
     fn evaluate_impl(&self, df: &DataFrame, state: &ExecutionState) -> PolarsResult<Column> {
         let mut state = state.split();
         // Don't cache window functions as they run in parallel.
@@ -94,7 +96,7 @@ impl PhysicalExpr for TernaryExpr {
         let op_truthy = || self.truthy.evaluate(df, &state);
         let op_falsy = || self.falsy.evaluate(df, &state);
         let (truthy, falsy) = if self.run_par {
-            POOL.install(|| rayon::join(op_truthy, op_falsy))
+            RAYON.install(|| rayon::join(op_truthy, op_falsy))
         } else {
             (op_truthy(), op_falsy())
         };
@@ -109,6 +111,7 @@ impl PhysicalExpr for TernaryExpr {
     }
 
     #[allow(clippy::ptr_arg)]
+    #[recursive]
     fn evaluate_on_groups_impl<'a>(
         &self,
         df: &DataFrame,
@@ -119,7 +122,7 @@ impl PhysicalExpr for TernaryExpr {
         let op_truthy = || self.truthy.evaluate_on_groups(df, groups, state);
         let op_falsy = || self.falsy.evaluate_on_groups(df, groups, state);
         let (ac_mask, (ac_truthy, ac_falsy)) = if self.run_par {
-            POOL.install(|| rayon::join(op_mask, || rayon::join(op_truthy, op_falsy)))
+            RAYON.install(|| rayon::join(op_mask, || rayon::join(op_truthy, op_falsy)))
         } else {
             (op_mask(), (op_truthy(), op_falsy()))
         };

@@ -138,6 +138,14 @@ def test_quantile_error_checking() -> None:
         s.quantile([0.0, 1.2])
 
 
+def test_multi_quantile_group_by_unsupported_26956() -> None:
+    df = pl.DataFrame({"g": ["a", "a", "b", "b"], "v": [1, 2, 3, 4]})
+    with pytest.raises(
+        pl.exceptions.SchemaError, match="expected expression of dtype 'numeric'"
+    ):
+        df.group_by("g").agg(pl.col("v").quantile([0.25, 0.75]))
+
+
 def test_quantile_date() -> None:
     s = pl.Series(
         "a", [date(2025, 1, 1), date(2025, 1, 2), date(2025, 1, 3), date(2025, 1, 4)]
@@ -315,13 +323,9 @@ def test_quantile_vs_numpy(tp: type, n: int) -> None:
     except IndexError:
         np_result = None
     if np_result:
-        # nan check
-        if np_result != np_result:
-            np_result = None
-        assert np.isclose(
-            pl.Series(a).quantile(q, interpolation="linear"),  # type: ignore[arg-type]
-            np_result,  # type: ignore[arg-type]
-        )
+        pl_result = pl.Series(a).quantile(q, interpolation="linear")
+        assert pl_result is not None
+        assert np.isclose(pl_result, np_result)
 
     df = pl.DataFrame({"a": a})
 
@@ -335,10 +339,9 @@ def test_quantile_vs_numpy(tp: type, n: int) -> None:
 
 
 def test_mean_overflow() -> None:
-    assert np.isclose(
-        pl.Series([9_223_372_036_854_775_800, 100]).mean(),  # type: ignore[arg-type]
-        4.611686018427388e18,
-    )
+    mean = pl.Series([9_223_372_036_854_775_800, 100]).mean()
+    assert isinstance(mean, float)
+    assert np.isclose(mean, 4.611686018427388e18)
 
 
 def test_mean_null_simd() -> None:
@@ -1028,6 +1031,8 @@ def test_agg_with_slice_then_cast_23682(
     [
         ("any", pl.all().cast(pl.Boolean).any()),
         ("all", pl.all().cast(pl.Boolean).all()),
+        ("is_empty", pl.all().is_empty()),
+        ("is_empty_ignore_nulls", pl.all().is_empty(ignore_nulls=True)),
         ("arg_max", pl.all().arg_max()),
         ("arg_min", pl.all().arg_min()),
         ("min", pl.all().min()),
@@ -1070,8 +1075,9 @@ def test_agg_with_slice_then_cast_23682(
         pl.DataFrame({"a": [timedelta(seconds=10)]}, schema={"a": pl.Duration}),
     ],
 )
+@pytest.mark.parametrize("grouped", [False, True])
 def test_agg_invalid_same_engines_behavior(
-    op: str, expr: pl.Expr, df: pl.DataFrame
+    op: str, expr: pl.Expr, df: pl.DataFrame, grouped: bool
 ) -> None:
     # If the in-memory engine produces a good result, then the streaming engine
     # should also produce a good result, and then it should match the in-memory result.
@@ -1088,12 +1094,20 @@ def test_agg_invalid_same_engines_behavior(
     streaming_result, streaming_error = None, None
 
     try:
-        inmemory_result = df.select(expr)
+        if grouped:
+            inmemory_result = df.group_by("a").agg(expr)
+        else:
+            inmemory_result = df.select(expr)
     except pl.exceptions.PolarsError as e:
         inmemory_error = e
 
     try:
-        streaming_result = df.lazy().select(expr).collect(engine="streaming")
+        if grouped:
+            streaming_result = (
+                df.lazy().group_by("a").agg(expr).collect(engine="streaming")
+            )
+        else:
+            streaming_result = df.lazy().select(expr).collect(engine="streaming")
     except pl.exceptions.PolarsError as e:
         streaming_error = e
 
@@ -1356,12 +1370,37 @@ def test_min_max_by(agg_funcs: Any, by_col: str) -> None:
                 None,
                 datetime(2023, 4, 4),
             ],
+            "array": [
+                [1, 2],
+                [None, 1],
+                [7, 1],
+                [1, 4],
+                None,
+                [7, None],
+            ],
+            "list": [
+                [1],
+                [None, 1],
+                [1, 2],
+                [7],
+                None,
+                [7, None],
+            ],
+            "struct": [
+                {"x": 1, "y": "abc"},
+                {"x": 7, "y": "xyz"},
+                {"x": 7, "y": ""},
+                {"x": 1, "y": None},
+                {"x": None, "y": ""},
+                {"x": 8, "y": "z"},
+            ],
             "g": [1, 1, 1, 2, 2, 2],
         },
         schema_overrides={
             "dec": pl.Decimal(scale=5),
             "cat": pl.Categorical,
             "enum": pl.Enum(["a", "b", "c", "d", "e", "f"]),
+            "array": pl.Array(pl.Int8, 2),
         },
     )
 
@@ -1369,14 +1408,18 @@ def test_min_max_by(agg_funcs: Any, by_col: str) -> None:
     expected = df.select([agg(pl.col(c)) for c in COLS])
     assert_frame_equal(result, expected)
 
-    # TODO: remove after https://github.com/pola-rs/polars/issues/25906.
-    if by_col != "cat":
-        df = df.drop("cat")
-        cols = [c for c in COLS if c != "cat"]
+    result = df.group_by("g").agg([agg_by(pl.col(c), pl.col(by_col)) for c in COLS])
+    expected = df.group_by("g").agg([agg(pl.col(c)) for c in COLS])
+    assert_frame_equal(result, expected, check_row_order=False)
 
-        result = df.group_by("g").agg([agg_by(pl.col(c), pl.col(by_col)) for c in cols])
-        expected = df.group_by("g").agg([agg(pl.col(c)) for c in cols])
-        assert_frame_equal(result, expected, check_row_order=False)
+
+def test_group_by_categorical_min_max_25906() -> None:
+    df = pl.Series(["a", "b"], dtype=pl.Categorical).to_frame("cat")
+    df = df.with_columns(g=1)
+    result = df.group_by("g").agg(pl.col.cat.min())
+    assert result["cat"].item() == "a"
+    result = df.group_by("g").agg(pl.col.cat.max())
+    assert result["cat"].item() == "b"
 
 
 @pytest.mark.parametrize(("agg", "expected"), [("max", 2), ("min", 0)])
@@ -1458,25 +1501,113 @@ def test_min_max_by_series_length_mismatch_26049(
         q.collect(engine="in-memory")
 
 
-@pytest.mark.parametrize(
-    "by_expr",
-    [
-        pl.struct("b", "c"),
-        pl.concat_list("b", "c"),
-    ],
-)
-def test_min_by_max_by_nested_type_key_26268(by_expr: pl.Expr) -> None:
-    df = pl.DataFrame({"a": [1, 2, 3], "b": [4, 6, 5], "c": [7, 5, 2]})
-
-    with pytest.raises(
-        pl.exceptions.InvalidOperationError,
-        match="cannot use a nested type as `by` argument in `min_by`/`max_by`",
-    ):
-        df.select(pl.col("a").min_by(by_expr))
-
-
 def test_max_by_scalar_26548() -> None:
     df = pl.DataFrame({"x": 1, "y": 2, "g": 3})
     out = df.select(pl.col.x.max_by("y").over("g"))
     expected = pl.DataFrame({"x": 1})
     assert_frame_equal(out, expected)
+
+
+@pytest.mark.parametrize(
+    ("agg", "expected"),
+    [
+        (pl.Expr.min_by, 1),
+        (pl.Expr.max_by, 1),
+    ],
+)
+def test_min_max_by_on_boolean_26847(
+    agg: Callable[..., pl.Expr],
+    expected: int,
+) -> None:
+    df = pl.DataFrame({"a": [1], "b": [True]})
+    result = df.select(agg(pl.col("a"), pl.col("b")))
+    assert result.item() == expected
+
+    df = pl.DataFrame({"a": [1] * 10, "b": [True] * 10})
+    result = df.select(agg(pl.col("a"), pl.col("b")))
+    assert result.item() == expected
+
+
+@pytest.mark.parametrize("agg", [pl.Expr.min_by, pl.Expr.max_by])
+def test_min_max_by_all_null_by_group(agg: Callable[..., pl.Expr]) -> None:
+    df = pl.DataFrame(
+        {
+            "g": ["a", "a", "b"],
+            "val": [1, 2, 3],
+            "by": pl.Series([None, None, 5], dtype=pl.Int64),
+        }
+    )
+    expected = pl.DataFrame(
+        {"g": ["a", "b"], "val": pl.Series([None, 3], dtype=pl.Int64)}
+    )
+
+    eager = df.group_by("g", maintain_order=True).agg(agg(pl.col("val"), pl.col("by")))
+    assert_frame_equal(eager, expected)
+
+    streaming = (
+        df.lazy()
+        .group_by("g", maintain_order=True)
+        .agg(agg(pl.col("val"), pl.col("by")))
+        .collect(engine="streaming")
+    )
+    assert_frame_equal(streaming, expected)
+
+
+@pytest.mark.parametrize("agg", [pl.Expr.min_by, pl.Expr.max_by])
+def test_min_max_by_all_null_by_group_slice(agg: Callable[..., pl.Expr]) -> None:
+    df = pl.DataFrame(
+        {
+            "dt": [date(2020, 1, 1), date(2020, 1, 1), date(2020, 2, 1)],
+            "val": [1, 2, 3],
+            "by": pl.Series([None, None, 5], dtype=pl.Int64),
+        }
+    )
+    expected = pl.DataFrame(
+        {
+            "dt": [date(2020, 1, 1), date(2020, 2, 1)],
+            "val": pl.Series([None, 3], dtype=pl.Int64),
+        }
+    )
+
+    result = (
+        df.lazy()
+        .group_by_dynamic("dt", every="1mo")
+        .agg(agg(pl.col("val"), pl.col("by")))
+        .collect()
+    )
+    assert_frame_equal(result, expected)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "input", "expect"),
+    [
+        (pl.Int32, [1, 2, 2], [[1, 2], [2]]),
+        (pl.Boolean, [True, False, False], [[False, True], [False]]),
+        (
+            pl.Date,
+            [date(2020, 1, 1), date(2020, 1, 2), date(2020, 1, 2)],
+            [[date(2020, 1, 1), date(2020, 1, 2)], [date(2020, 1, 2)]],
+        ),
+        (pl.Decimal(), [1, 2, 2], [[1, 2], [2]]),
+        (pl.Categorical, ["A", "B", "B"], [["A", "B"], ["B"]]),
+        (pl.Enum(["A", "B"]), ["A", "B", "B"], [["A", "B"], ["B"]]),
+        (pl.String, ["A", "B", "B"], [["A", "B"], ["B"]]),
+        (pl.Binary, [b"A", b"B", b"B"], [[b"A", b"B"], [b"B"]]),
+    ],
+)
+def test_unordered_implode_reduction_27373(
+    dtype: pl.DataType, input: list[Any], expect: list[Any]
+) -> None:
+    df = pl.DataFrame(
+        {"group": ["a", "a", "b"], "val": input},
+        schema={"group": pl.String, "val": dtype},
+    )
+    expected = pl.DataFrame(
+        {"group": ["a", "b"], "val": expect},
+        schema={"group": pl.String, "val": pl.List(dtype)},
+    )
+    q = df.lazy().group_by("group").agg(pl.col("val").unique())
+    actual = q.collect(engine="streaming").with_columns(
+        pl.col("val").map_elements(sorted, return_dtype=pl.List(dtype))
+    )
+    assert_frame_equal(actual, expected, check_row_order=False)

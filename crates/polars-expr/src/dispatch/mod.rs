@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use polars_compute::rolling::QuantileMethod;
 use polars_core::error::PolarsResult;
 use polars_core::frame::DataFrame;
 use polars_core::prelude::{Column, GroupPositions};
@@ -273,7 +274,6 @@ pub fn function_expr_to_udf(func: IRFunctionExpr) -> SpecialEq<Arc<dyn ColumnsUd
             map_as_slice!(misc::hist, bin_count, include_category, include_breakpoint)
         },
         F::Rechunk => map!(misc::rechunk),
-        F::Append { upcast } => map_as_slice!(misc::append, upcast),
         F::ShiftAndFill => {
             map_as_slice!(shift_and_fill::shift_and_fill)
         },
@@ -283,6 +283,7 @@ pub fn function_expr_to_udf(func: IRFunctionExpr) -> SpecialEq<Arc<dyn ColumnsUd
         F::Clip { has_min, has_max } => {
             map_as_slice!(misc::clip, has_min, has_max)
         },
+        F::Quantile { method } => map_as_slice!(misc::quantile, method),
         #[cfg(feature = "mode")]
         F::Mode { maintain_order } => map!(misc::mode, maintain_order),
         #[cfg(feature = "moment")]
@@ -371,7 +372,7 @@ pub fn function_expr_to_udf(func: IRFunctionExpr) -> SpecialEq<Arc<dyn ColumnsUd
         F::Ceil => map!(round::ceil),
         #[cfg(feature = "fused")]
         F::Fused(op) => map_as_slice!(misc::fused, op),
-        F::ConcatExpr(rechunk) => map_as_slice!(misc::concat_expr, rechunk),
+        F::ConcatExpr { rechunk } => map_as_slice!(misc::concat_expr, rechunk),
         #[cfg(feature = "cov")]
         F::Correlation { method } => map_as_slice!(misc::corr, method),
         #[cfg(feature = "peaks")]
@@ -434,7 +435,7 @@ pub fn function_expr_to_udf(func: IRFunctionExpr) -> SpecialEq<Arc<dyn ColumnsUd
                 },
             }
         },
-        F::SetSortedFlag(sorted) => map!(misc::set_sorted_flag, sorted),
+        F::SetSortedFlag(sortedness) => map!(misc::set_sorted_flag, sortedness),
         #[cfg(feature = "ffi_plugin")]
         F::FfiPlugin {
             flags: _,
@@ -519,7 +520,7 @@ pub fn function_expr_to_udf(func: IRFunctionExpr) -> SpecialEq<Arc<dyn ColumnsUd
         F::FillNullWithStrategy(strategy) => map!(misc::fill_null_with_strategy, strategy),
         F::GatherEvery { n, offset } => map!(misc::gather_every, n, offset),
         #[cfg(feature = "reinterpret")]
-        F::Reinterpret(signed) => map!(misc::reinterpret, signed),
+        F::Reinterpret(dtype) => map!(misc::reinterpret, &dtype),
         F::ExtendConstant => map_as_slice!(misc::extend_constant),
 
         F::RowEncode(dts, variants) => {
@@ -569,6 +570,7 @@ pub fn function_expr_to_groups_udf(func: &IRFunctionExpr) -> Option<SpecialEq<Ar
     Some(match func {
         F::NullCount => wrap_groups!(groups_dispatch::null_count),
         F::Reverse => wrap_groups!(groups_dispatch::reverse),
+        F::Boolean(IRBooleanFunction::HasNulls) => wrap_groups!(groups_dispatch::has_nulls),
         F::Boolean(IRBooleanFunction::Any { ignore_nulls }) => {
             let ignore_nulls = *ignore_nulls;
             wrap_groups!(groups_dispatch::any, (ignore_nulls, v: bool))
@@ -576,6 +578,10 @@ pub fn function_expr_to_groups_udf(func: &IRFunctionExpr) -> Option<SpecialEq<Ar
         F::Boolean(IRBooleanFunction::All { ignore_nulls }) => {
             let ignore_nulls = *ignore_nulls;
             wrap_groups!(groups_dispatch::all, (ignore_nulls, v: bool))
+        },
+        F::Boolean(IRBooleanFunction::IsEmpty { ignore_nulls }) => {
+            let ignore_nulls = *ignore_nulls;
+            wrap_groups!(groups_dispatch::is_empty, (ignore_nulls, v: bool))
         },
         #[cfg(feature = "bitwise")]
         F::Bitwise(f) => {
@@ -590,6 +596,9 @@ pub fn function_expr_to_groups_udf(func: &IRFunctionExpr) -> Option<SpecialEq<Ar
         F::DropNans => wrap_groups!(groups_dispatch::drop_nans),
         F::DropNulls => wrap_groups!(groups_dispatch::drop_nulls),
 
+        F::Quantile { method } => {
+            wrap_groups!(groups_dispatch::quantile, (*method, v: QuantileMethod))
+        },
         #[cfg(feature = "moment")]
         F::Skew(bias) => wrap_groups!(groups_dispatch::skew, (*bias, v: bool)),
         #[cfg(feature = "moment")]

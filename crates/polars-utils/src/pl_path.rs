@@ -3,15 +3,68 @@ use std::ffi::OsStr;
 use std::fmt::Display;
 use std::ops::{Deref, Range};
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, RwLock};
 
-use polars_error::{PolarsResult, polars_err};
+use polars_error::{PolarsResult, polars_bail, polars_err};
 
+use crate::aliases::PlHashSet;
 use crate::format_pl_refstr;
 use crate::pl_str::PlRefStr;
 
 /// Windows paths can be prefixed with this.
 /// <https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation?tabs=registry>
 pub const WINDOWS_EXTPATH_PREFIX: &str = r#"\\?\"#;
+
+const BUILTIN_EXT_SCHEMES: &[&str] = &["hdfs"];
+
+/// Allow-list of external cloud schemes that use an external object_store builder.
+/// Superset of builtin ext_schemes to support internal testing.
+pub static ALLOWED_EXT_SCHEMES: LazyLock<RwLock<PlHashSet<&'static str>>> =
+    LazyLock::new(|| RwLock::new(PlHashSet::from_iter(BUILTIN_EXT_SCHEMES.iter().copied())));
+
+/// Look up scheme the external-scheme allow-list.
+fn get_ext_scheme(s: &str) -> Option<&'static str> {
+    ALLOWED_EXT_SCHEMES.read().unwrap().get(s).copied()
+}
+
+/// Whether the scheme is allowed (e.g. "hdfs").
+pub fn ext_scheme_allowed(s: &str) -> bool {
+    get_ext_scheme(s).is_some()
+}
+
+/// Extend allowed ext_schemes. Check for RFC 3986 compliance.
+/// Helper method for internal/test use only. Not public API (at this point).
+#[doc(hidden)]
+pub fn _allow_ext_scheme(scheme: &'static str) -> PolarsResult<()> {
+    let valid = scheme
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+
+    if !valid {
+        polars_bail!(
+            InvalidOperation:
+            "invalid scheme '{}': must start with a letter and contain only \
+             letters, digits, '+', '-', '.'",
+            scheme
+        );
+    }
+
+    ALLOWED_EXT_SCHEMES.write().unwrap().insert(scheme);
+    Ok(())
+}
+
+/// Helper method for internal/test use only. Not public API.
+#[doc(hidden)]
+pub fn _disallow_ext_scheme(scheme: &str) {
+    if BUILTIN_EXT_SCHEMES.contains(&scheme) {
+        return; // built-ins are permanent
+    }
+    ALLOWED_EXT_SCHEMES.write().unwrap().remove(scheme);
+}
 
 /// Path represented as a UTF-8 string.
 ///
@@ -162,8 +215,14 @@ impl PlPath {
     pub fn join(&self, other: impl AsRef<str>) -> PlRefPath {
         let other = other.as_ref();
 
-        if CloudScheme::from_path(other).is_some() {
+        if CloudScheme::from_path(other).is_some()
+            || other.starts_with('/')
+            || other.starts_with('\\')
+        {
             PlRefPath::new(other)
+        } else if CloudScheme::from_path(self.as_str()).is_some() {
+            let lhs = self.as_str().trim_end_matches('/');
+            PlRefPath::new(format!("{lhs}/{other}"))
         } else {
             PlRefPath::try_from_pathbuf(self.as_std_path().join(other)).unwrap()
         }
@@ -344,11 +403,12 @@ impl From<&str> for PlRefPath {
 
 macro_rules! impl_cloud_scheme {
     ($($t:ident = $n:literal,)+) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
         #[cfg_attr(feature = "dsl-schema", derive(schemars::JsonSchema))]
         pub enum CloudScheme {
             $($t,)+
+            Ext(&'static str)
         }
 
         impl CloudScheme {
@@ -356,15 +416,24 @@ macro_rules! impl_cloud_scheme {
             /// `file:/` without hostname properly.
             #[expect(unreachable_patterns)]
             fn from_scheme_str(s: &str) -> Option<Self> {
-                Some(match s {
-                    $($n => Self::$t,)+
-                    _ => return None,
-                })
+                // Allow-list of schemes with an external object_store_builder registered at runtime.
+                match s {
+                    $($n => Some(Self::$t),)+
+                    _ => get_ext_scheme(s).map(Self::Ext),
+                }
+            }
+
+            pub fn is_native_str(s: &str) -> bool {
+                match Self::from_scheme_str(s) {
+                    None | Some(Self::Ext(_)) => false,
+                    Some(_) => true,
+                }
             }
 
             pub const fn as_str(&self) -> &'static str {
                 match self {
                     $(Self::$t => $n,)+
+                    Self::Ext(s) => s,
                 }
             }
         }
@@ -531,6 +600,20 @@ mod tests {
         assert_eq!(
             PlRefPath::new("s3://.../...").join("az://.../...").as_str(),
             "az://.../..."
+        );
+
+        assert_eq!(
+            PlRefPath::new("s3://.../...")
+                .join("a=1/b=1/00000000.parquet")
+                .as_str(),
+            "s3://.../.../a=1/b=1/00000000.parquet"
+        );
+
+        assert_eq!(
+            PlRefPath::new("s3://.../...//")
+                .join("a=1/b=1/00000000.parquet")
+                .as_str(),
+            "s3://.../.../a=1/b=1/00000000.parquet"
         );
 
         fn _assert_plpath_join(base: &str, added: &str, expect: &str) {

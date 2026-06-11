@@ -23,7 +23,10 @@ use super::*;
 use crate::dsl::default_values::DefaultFieldValues;
 pub mod default_values;
 pub mod deletion;
-
+#[cfg(feature = "python")]
+pub mod python_delta_dv_provider;
+#[cfg(feature = "python")]
+pub use python_delta_dv_provider::{DELTA_DV_PROVIDER_VTABLE, DeltaDeletionVectorProviderVTable};
 #[cfg(feature = "python")]
 pub mod python_dataset;
 #[cfg(feature = "python")]
@@ -46,16 +49,24 @@ const _: () = {
 /// Note: This is cheaply cloneable.
 pub enum FileScanDsl {
     #[cfg(feature = "csv")]
-    Csv { options: Arc<CsvReadOptions> },
+    Csv {
+        options: Arc<CsvReadOptions>,
+    },
 
     #[cfg(feature = "json")]
-    NDJson { options: NDJsonReadOptions },
+    NDJson {
+        options: NDJsonReadOptions,
+    },
 
     #[cfg(feature = "parquet")]
-    Parquet { options: ParquetOptions },
+    Parquet {
+        options: ParquetOptions,
+    },
 
     #[cfg(feature = "ipc")]
-    Ipc { options: IpcScanOptions },
+    Ipc {
+        options: IpcScanOptions,
+    },
 
     #[cfg(feature = "python")]
     PythonDataset {
@@ -63,7 +74,13 @@ pub enum FileScanDsl {
     },
 
     #[cfg(feature = "scan_lines")]
-    Lines { name: PlSmallStr },
+    Lines {
+        name: PlSmallStr,
+    },
+
+    ExpandedPaths {
+        name: PlSmallStr,
+    },
 
     #[cfg_attr(any(feature = "serde", feature = "dsl-schema"), serde(skip))]
     Anonymous {
@@ -83,16 +100,28 @@ const _: () = {
 /// Note: This is cheaply cloneable.
 pub enum FileScanIR {
     #[cfg(feature = "csv")]
-    Csv { options: Arc<CsvReadOptions> },
+    Csv {
+        options: Arc<CsvReadOptions>,
+    },
 
     #[cfg(feature = "json")]
-    NDJson { options: NDJsonReadOptions },
+    NDJson {
+        options: NDJsonReadOptions,
+    },
 
     #[cfg(feature = "parquet")]
     Parquet {
         options: ParquetOptions,
-        #[cfg_attr(any(feature = "serde", feature = "dsl-schema"), serde(skip))]
-        metadata: Option<FileMetadataRef>,
+        /// Pre-decoded first-file metadata. Consumed by the streaming
+        /// `ParquetReaderBuilder` as its initial hint.
+        #[cfg_attr(feature = "dsl-schema", serde(skip))]
+        first_metadata: Option<FileMetadataRef>,
+        /// Per-source metadata for the distributed scheduler. `Some(s)`
+        /// only in `Full` resolve mode, with `s[i]` for `sources[i]`.
+        /// `s[0] == first_metadata` so callers iterate uniformly
+        /// without special-casing the first source.
+        #[cfg_attr(feature = "dsl-schema", serde(skip))]
+        metadata_per_source: Option<Arc<[FileMetadataRef]>>,
     },
 
     #[cfg(feature = "ipc")]
@@ -109,7 +138,13 @@ pub enum FileScanIR {
     },
 
     #[cfg(feature = "scan_lines")]
-    Lines { name: PlSmallStr },
+    Lines {
+        name: PlSmallStr,
+    },
+
+    ExpandedPaths {
+        name: PlSmallStr,
+    },
 
     #[cfg_attr(any(feature = "serde", feature = "dsl-schema"), serde(skip))]
     Anonymous {
@@ -134,19 +169,6 @@ impl FileScanIR {
         }
     }
 
-    pub(crate) fn sort_projection(&self, _has_row_index: bool) -> bool {
-        match self {
-            #[cfg(feature = "csv")]
-            Self::Csv { .. } => true,
-            #[cfg(feature = "ipc")]
-            Self::Ipc { .. } => _has_row_index,
-            #[cfg(feature = "parquet")]
-            Self::Parquet { .. } => false,
-            #[allow(unreachable_patterns)]
-            _ => false,
-        }
-    }
-
     pub fn streamable(&self) -> bool {
         match self {
             #[cfg(feature = "csv")]
@@ -159,6 +181,65 @@ impl FileScanIR {
             Self::NDJson { .. } => false,
             #[allow(unreachable_patterns)]
             _ => false,
+        }
+    }
+
+    /// Re-index pre-decoded per-source state after a source-list filter.
+    ///
+    /// `surviving_indices` yields ascending indices into the pre-filter list.
+    pub fn gather_after_filter<I>(&mut self, first_file_dropped: bool, surviving_indices: I)
+    where
+        I: Iterator<Item = usize>,
+    {
+        // Parquet: clear `first_metadata` if file 0 dropped; gather
+        // `metadata_per_source` by surviving indices so slice[i] still
+        // matches sources[i]. We re-index instead of clearing because
+        // the surviving footers are already decoded; tossing them would
+        // force the scheduler to refetch and re-decode the same bytes.
+        // Ipc / PythonDataset: file-0-keyed state cleared when file 0 dropped.
+        match self {
+            #[cfg(feature = "parquet")]
+            Self::Parquet {
+                options: _,
+                first_metadata,
+                metadata_per_source,
+            } => {
+                if first_file_dropped {
+                    *first_metadata = None;
+                }
+                if let Some(slice) = metadata_per_source {
+                    *slice = surviving_indices.map(|i| slice[i].clone()).collect();
+                }
+            },
+            #[cfg(feature = "ipc")]
+            Self::Ipc {
+                options: _,
+                metadata,
+            } => {
+                if first_file_dropped {
+                    *metadata = None;
+                }
+            },
+            #[cfg(feature = "csv")]
+            Self::Csv { options: _ } => {},
+            #[cfg(feature = "json")]
+            Self::NDJson { options: _ } => {},
+            #[cfg(feature = "python")]
+            Self::PythonDataset {
+                dataset_object: _,
+                cached_ir,
+            } => {
+                if first_file_dropped {
+                    *cached_ir.lock().unwrap() = None;
+                }
+            },
+            #[cfg(feature = "scan_lines")]
+            Self::Lines { name: _ } => {},
+            Self::ExpandedPaths { name: _ } => {},
+            Self::Anonymous {
+                options: _,
+                function: _,
+            } => {},
         }
     }
 }
@@ -364,7 +445,6 @@ mod _file_scan_eq_hash {
     use std::hash::{Hash, Hasher};
     use std::sync::Arc;
 
-    #[cfg(feature = "scan_lines")]
     use polars_utils::pl_str::PlSmallStr;
 
     use super::FileScanIR;
@@ -401,7 +481,8 @@ mod _file_scan_eq_hash {
         #[cfg(feature = "parquet")]
         Parquet {
             options: &'a polars_io::prelude::ParquetOptions,
-            metadata: Option<usize>,
+            first_metadata: Option<usize>,
+            metadata_per_source: Option<usize>,
         },
 
         #[cfg(feature = "ipc")]
@@ -417,7 +498,13 @@ mod _file_scan_eq_hash {
         },
 
         #[cfg(feature = "scan_lines")]
-        Lines { name: &'a PlSmallStr },
+        Lines {
+            name: &'a PlSmallStr,
+        },
+
+        ExpandedPaths {
+            name: &'a PlSmallStr,
+        },
 
         Anonymous {
             options: &'a crate::dsl::AnonymousScanOptions,
@@ -439,9 +526,14 @@ mod _file_scan_eq_hash {
                 FileScanIR::NDJson { options } => FileScanEqHashWrap::NDJson { options },
 
                 #[cfg(feature = "parquet")]
-                FileScanIR::Parquet { options, metadata } => FileScanEqHashWrap::Parquet {
+                FileScanIR::Parquet {
                     options,
-                    metadata: metadata.as_ref().map(arc_as_ptr),
+                    first_metadata,
+                    metadata_per_source,
+                } => FileScanEqHashWrap::Parquet {
+                    options,
+                    first_metadata: first_metadata.as_ref().map(arc_as_ptr),
+                    metadata_per_source: metadata_per_source.as_ref().map(arc_as_ptr),
                 },
 
                 #[cfg(feature = "ipc")]
@@ -461,6 +553,8 @@ mod _file_scan_eq_hash {
 
                 #[cfg(feature = "scan_lines")]
                 FileScanIR::Lines { name } => FileScanEqHashWrap::Lines { name },
+
+                FileScanIR::ExpandedPaths { name } => FileScanEqHashWrap::ExpandedPaths { name },
 
                 FileScanIR::Anonymous { options, function } => FileScanEqHashWrap::Anonymous {
                     options,

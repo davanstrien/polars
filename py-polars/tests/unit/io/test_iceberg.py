@@ -7,6 +7,7 @@ import itertools
 import os
 import pickle
 import sys
+import uuid
 import warnings
 import zoneinfo
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pydantic
 import pyiceberg
+import pyiceberg.exceptions
+import pyiceberg.table
 import pytest
 from pyiceberg.expressions import literal
 from pyiceberg.partitioning import (
@@ -29,6 +32,7 @@ from pyiceberg.partitioning import (
     PartitionSpec,
 )
 from pyiceberg.schema import Schema as IcebergSchema
+from pyiceberg.table import StaticTable
 from pyiceberg.types import (
     BinaryType,
     BooleanType,
@@ -52,8 +56,15 @@ from pyiceberg.types import (
 
 import polars as pl
 from polars._utils.various import parse_version
+from polars.io._expand_paths import _expand_paths
 from polars.io.cloud._utils import NoPickleOption
-from polars.io.iceberg._dataset import IcebergDataset, _NativeIcebergScanData
+from polars.io.iceberg._dataset import (
+    IcebergScanResolver,
+    IcebergScanTableSerializer,
+    IcebergTableWrap,
+    _NativeIcebergScanData,
+)
+from polars.io.iceberg._sink import IcebergSinkState, PlIcebergPathProviderConfig
 from polars.io.iceberg._utils import (
     _convert_predicate,
     _normalize_windows_iceberg_file_uri,
@@ -64,25 +75,27 @@ from polars.testing import assert_frame_equal
 from tests.unit.io.conftest import normalize_path_separator_pl
 
 if TYPE_CHECKING:
-    from pyiceberg.table import Table
-
     from tests.conftest import PlMonkeyPatch
 
     # Mypy does not understand the constructors and we can't construct the inputs
     # explicitly since they are abstract base classes.
-    And = Any
-    EqualTo = Any
-    GreaterThan = Any
-    GreaterThanOrEqual = Any
-    In = Any
-    IsNull = Any
-    LessThan = Any
-    LessThanOrEqual = Any
-    Not = Any
-    Or = Any
-    Reference = Any
+    AlwaysFalse: Any
+    AlwaysTrue: Any
+    And: Any
+    EqualTo: Any
+    GreaterThan: Any
+    GreaterThanOrEqual: Any
+    In: Any
+    IsNull: Any
+    LessThan: Any
+    LessThanOrEqual: Any
+    Not: Any
+    Or: Any
+    Reference: Any
 else:
     from pyiceberg.expressions import (
+        AlwaysFalse,
+        AlwaysTrue,
         And,
         EqualTo,
         GreaterThan,
@@ -106,19 +119,43 @@ with warnings.catch_warnings():
     from pyiceberg.io.pyarrow import schema_to_pyarrow
 
 
-def new_pl_iceberg_dataset(source: str | Table) -> IcebergDataset:
-    from pyiceberg.table import Table
-
-    return IcebergDataset(
-        table_=NoPickleOption(source if isinstance(source, Table) else None),
-        metadata_path_=source if not isinstance(source, Table) else None,
+def new_iceberg_scan_resolver(
+    source: str | pyiceberg.table.Table,
+) -> IcebergScanResolver:
+    return IcebergScanResolver(
+        table=IcebergTableWrap(
+            table_=NoPickleOption(
+                source if isinstance(source, pyiceberg.table.Table) else None
+            ),
+            table_descriptor_=source
+            if not isinstance(source, pyiceberg.table.Table)
+            else None,
+            serializer=IcebergScanTableSerializer(),
+            iceberg_storage_properties=None,
+        ),
         snapshot_id=None,
-        iceberg_storage_properties=None,
         reader_override=None,
         use_metadata_statistics=True,
         fast_deletion_count=False,
         use_pyiceberg_filter=True,
     )
+
+
+def new_iceberg_table(
+    tmp_path: Path,
+    *,
+    schema: IcebergSchema,
+    name: str = "table",
+) -> tuple[pyiceberg.table.Table, SqlCatalog]:
+    catalog = SqlCatalog(
+        "default",
+        uri=f"sqlite:///{tmp_path / 'iceberg_catalog.sqlite'}?mode=memory&cache=shared",
+        warehouse=format_file_uri_iceberg(tmp_path),
+    )
+    namespace = uuid.uuid4().bytes.hex()
+    catalog.create_namespace(namespace)
+
+    return catalog.create_table((namespace, name), schema), catalog
 
 
 # PyIceberg on Windows uses `file://C:/` rather than `file:///C:/`.
@@ -223,6 +260,26 @@ class TestIcebergScanIO:
             (3, "3", datetime(2023, 3, 2, 22, 0)),
         ]
 
+    def test_scan_iceberg_filter_is_in_empty(self, tmp_path: Path) -> None:
+        tbl, _ = new_iceberg_table(
+            tmp_path,
+            schema=IcebergSchema(
+                NestedField(1, "my_column", LongType(), required=False)
+            ),
+        )
+
+        tbl.append(
+            pa.table(
+                {"my_column": [1, 2, 3, 4, 5]},
+                schema=pa.schema([("my_column", pa.int64())]),
+            )
+        )
+
+        result = pl.scan_iceberg(tbl).filter(pl.col("my_column").is_in([])).collect()
+
+        assert result.is_empty()
+        assert result.schema == {"my_column": pl.Int64}
+
 
 @pytest.mark.ci_only
 class TestIcebergExpressions:
@@ -288,6 +345,14 @@ class TestIcebergExpressions:
     def test_bare_boolean_field_negated(self) -> None:
         expr = try_convert_pyarrow_predicate("~pa.compute.field('is_active')")
         assert expr == Not(EqualTo("is_active", True))
+
+    def test_scalar_false_expression(self) -> None:
+        expr = try_convert_pyarrow_predicate("pa.compute.scalar(False)")
+        assert expr == AlwaysFalse()
+
+    def test_scalar_true_expression(self) -> None:
+        expr = try_convert_pyarrow_predicate("pa.compute.scalar(True)")
+        assert expr == AlwaysTrue()
 
 
 @dataclass(kw_only=True)
@@ -400,18 +465,10 @@ class _TableDataAllTypes:
 def test_iceberg_sink_parquet_arrow_schema_roundtrip_all_iceberg_types(
     tmp_path: Path,
 ) -> None:
-    catalog = SqlCatalog(
-        "default",
-        uri="sqlite:///:memory:",
-        warehouse=format_file_uri_iceberg(tmp_path / "catalog"),
-    )
-
-    catalog.create_namespace("namespace")
-
     table_data = _TableDataAllTypes.new()
     iceberg_schema = table_data.iceberg_schema
 
-    tbl = catalog.create_table("namespace.table", iceberg_schema)
+    tbl, _ = new_iceberg_table(tmp_path, schema=iceberg_schema)
 
     data_file_path = str(tmp_path / "data.parquet")
 
@@ -426,6 +483,176 @@ def test_iceberg_sink_parquet_arrow_schema_roundtrip_all_iceberg_types(
 
     assert_frame_equal(pl.scan_iceberg(tbl).collect(), table_data.polars_df)
     assert_frame_equal(pl.DataFrame(tbl.scan().to_arrow()), table_data.polars_df)
+
+
+@pytest.mark.write_disk
+def test_sink_iceberg_all_types(tmp_path: Path) -> None:
+    table_data = _TableDataAllTypes.new()
+
+    tbl, _ = new_iceberg_table(tmp_path, schema=table_data.iceberg_schema)
+
+    original_md_path = tbl.metadata_location
+
+    new_md_path = table_data.polars_df.lazy().sink_iceberg(tbl, mode="append").item()
+    assert tbl.metadata_location != original_md_path
+    assert new_md_path == tbl.metadata_location
+
+    table_data.polars_df.lazy().sink_iceberg(tbl, mode="append")
+
+    assert_frame_equal(
+        pl.scan_iceberg(tbl).collect(),
+        pl.concat(2 * [table_data.polars_df]),
+    )
+
+    table_data.polars_df.lazy().sink_iceberg(tbl, mode="overwrite")
+
+    assert_frame_equal(
+        pl.scan_iceberg(tbl).collect(),
+        table_data.polars_df,
+    )
+
+
+@pytest.mark.write_disk
+def test_sink_iceberg_raises_on_static_table(tmp_path: Path) -> None:
+    tbl, _ = new_iceberg_table(
+        tmp_path, schema=IcebergSchema(NestedField(1, "a", LongType()))
+    )
+
+    err_cx = pytest.raises(
+        TypeError,
+        match=r"cannot sink to static Iceberg table.*class.*StaticTable.*class.*NoopCatalog",
+    )
+
+    with err_cx:
+        IcebergSinkState.new(StaticTable.from_metadata(tbl.metadata_location))
+
+    with err_cx:
+        pl.LazyFrame({"a": 1}).sink_iceberg(
+            StaticTable.from_metadata(tbl.metadata_location), mode="append"
+        )
+
+    with pytest.raises(TypeError, match="cannot use NoopCatalog with sink_iceberg"):
+        pl.LazyFrame({"a": 1}).sink_iceberg(
+            "namespace.table",
+            catalog=StaticTable.from_metadata(tbl.metadata_location).catalog,
+            mode="append",
+        )
+
+
+@pytest.mark.write_disk
+def test_sink_iceberg_pickle(tmp_path: Path) -> None:
+    tbl, catalog = new_iceberg_table(
+        tmp_path,
+        schema=IcebergSchema(NestedField(1, "a", LongType())),
+    )
+
+    sink_state = IcebergSinkState.new(tbl)
+    sink_q = sink_state.attach_sink(pl.LazyFrame({"a": 1}))
+    sink_q.collect()
+    rdf = sink_state.commit_result_df.get()
+    assert rdf is not None
+    new_md_path = rdf.item(0, "metadata_path")
+
+    tbl = sink_state.table()
+
+    assert_frame_equal(pl.scan_iceberg(tbl).collect(), pl.DataFrame({"a": 1}))
+    assert new_md_path == tbl.metadata_location
+
+    sink_state = IcebergSinkState.new(tbl)
+    sink_q = sink_state.attach_sink(pl.LazyFrame({"a": 2}))
+    sink_q = pickle.loads(pickle.dumps(sink_q))
+    sink_q.collect()
+
+    new_tbl = catalog.load_table(tbl.name())
+    new_md_path = new_tbl.metadata_location
+
+    assert new_tbl.metadata_location != tbl.metadata_location
+
+    tbl = new_tbl
+
+    assert_frame_equal(
+        pl.scan_iceberg(tbl).collect(),
+        pl.DataFrame({"a": [2, 1]}),
+    )
+
+    assert new_md_path == tbl.metadata_location
+
+
+@pytest.mark.write_disk
+def test_sink_iceberg__attach_resolved_sink_deferred_to_ir_resolution(
+    tmp_path: Path,
+) -> None:
+    sink_state = IcebergSinkState.new(
+        "x.x",
+        catalog=SqlCatalog(
+            "default",
+            uri="sqlite:///:memory:",
+            warehouse=format_file_uri_iceberg(tmp_path / "catalog"),
+        ),
+    )
+    q = sink_state.attach_sink(pl.LazyFrame())
+
+    with pytest.raises(pyiceberg.exceptions.NoSuchTableError):
+        q.collect()
+
+
+@pytest.mark.write_disk
+def test_sink_iceberg_internal_path_provider(tmp_path: Path) -> None:
+    df = pl.DataFrame({"a": [None, ""]})
+
+    df.lazy().sink_parquet(
+        pl.PartitionBy(
+            tmp_path / "keyed",
+            file_path_provider=PlIcebergPathProviderConfig(),
+            key="a",
+        )
+    )
+
+    assert_frame_equal(
+        pl.scan_parquet(tmp_path / "keyed").sort("*").collect(),
+        df,
+    )
+
+    assert (
+        _expand_paths(tmp_path / "keyed")
+        .with_columns(
+            part_prefix=pl.col("path").str.extract(r"/\w{32}(\w{32})00000000\.parquet$")
+        )
+        .select(
+            (pl.col("part_prefix").len() == 2)
+            & (pl.col("part_prefix").null_count() == 0)
+            & (pl.col("part_prefix").n_unique() == 1)
+        )
+        .collect()
+        .item()
+    )
+
+    df.lazy().sink_parquet(
+        pl.PartitionBy(
+            tmp_path / "max-rows",
+            file_path_provider=PlIcebergPathProviderConfig(),
+            max_rows_per_file=1,
+        )
+    )
+
+    assert_frame_equal(
+        pl.scan_parquet(tmp_path / "max-rows").sort("*").collect(),
+        df,
+    )
+
+    assert (
+        _expand_paths(tmp_path / "max-rows/**/*0000000[01].parquet")
+        .with_columns(
+            part_prefix=pl.col("path").str.extract(r"/(\w{32})0000000[01]\.parquet$"),
+        )
+        .select(
+            (pl.col("part_prefix").len() == 2)
+            & (pl.col("part_prefix").null_count() == 0)
+            & (pl.col("part_prefix").n_unique() == 1)
+        )
+        .collect()
+        .item()
+    )
 
 
 @pytest.mark.write_disk
@@ -453,13 +680,13 @@ def test_iceberg_dataset_does_not_pickle_table_object(tmp_path: Path) -> None:
 
     df.write_iceberg(tbl, mode="append")
 
-    dataset = new_pl_iceberg_dataset(tbl)
+    dataset = new_iceberg_scan_resolver(tbl)
 
-    assert dataset.table_.get() is not None
+    assert dataset.table.table_.get() is not None
     dataset = pickle.loads(pickle.dumps(dataset))
-    assert dataset.table_.get() is None
+    assert dataset.table.table_.get() is None
 
-    assert_frame_equal(dataset.to_dataset_scan()[0].collect(), df)  # type: ignore[index]
+    assert_frame_equal(dataset.to_dataset_scan()[0].collect(), df)
 
 
 @pytest.mark.slow
@@ -538,7 +765,7 @@ def test_scan_iceberg_row_index_renamed(tmp_path: Path) -> None:
         },
         _column_mapping=(
             "iceberg-column-mapping",
-            new_pl_iceberg_dataset(tbl).arrow_schema(),
+            new_iceberg_scan_resolver(tbl).table.arrow_schema(),
         ),
         include_file_paths="file_path",
         row_index_name="row_index",
@@ -561,6 +788,40 @@ def test_scan_iceberg_row_index_renamed(tmp_path: Path) -> None:
                 "file_path": pl.String,
             },
         ),
+    )
+
+
+@pytest.mark.write_disk
+def test_scan_iceberg_table_name(tmp_path: Path) -> None:
+    tbl, catalog = new_iceberg_table(
+        tmp_path,
+        schema=IcebergSchema(
+            NestedField(1, "a", LongType()),
+        ),
+    )
+
+    pl.DataFrame({"a": 1}).lazy().sink_iceberg(tbl, mode="append")
+    pl.DataFrame({"a": 2}).lazy().sink_iceberg(
+        ".".join(tbl.name()),
+        mode="append",
+        catalog=catalog,
+    )
+
+    tbl = catalog.load_table(tbl.name())
+
+    assert_frame_equal(
+        pl.scan_iceberg(tbl).collect(),
+        pl.DataFrame({"a": [2, 1]}),
+    )
+
+    assert_frame_equal(
+        pl.scan_iceberg(tbl.metadata_location).collect(),
+        pl.DataFrame({"a": [2, 1]}),
+    )
+
+    assert_frame_equal(
+        pl.scan_iceberg(".".join(tbl.name()), catalog=catalog).collect(),
+        pl.DataFrame({"a": [2, 1]}),
     )
 
 
@@ -676,7 +937,7 @@ def test_scan_iceberg_collect_without_version_scans_latest(
     assert_frame_equal(q_with_id.collect(), pl.DataFrame({"a": 1}))
 
     assert (
-        "IcebergDataset: to_dataset_scan(): early return (snapshot_id_key = "
+        "IcebergScanResolver: to_dataset_scan(): early return (snapshot_id_key = "
         in capfd.readouterr().err
     )
 
@@ -720,7 +981,7 @@ def test_scan_iceberg_extra_columns(tmp_path: Path) -> None:
         schema={"a": pl.Int32},
         _column_mapping=(
             "iceberg-column-mapping",
-            new_pl_iceberg_dataset(tbl).arrow_schema(),
+            new_iceberg_scan_resolver(tbl).table.arrow_schema(),
         ),
     )
 
@@ -738,7 +999,7 @@ def test_scan_iceberg_extra_columns(tmp_path: Path) -> None:
         schema={"a": pl.Int32},
         _column_mapping=(
             "iceberg-column-mapping",
-            new_pl_iceberg_dataset(tbl).arrow_schema(),
+            new_iceberg_scan_resolver(tbl).table.arrow_schema(),
         ),
         extra_columns="ignore",
         missing_columns="insert",
@@ -794,7 +1055,7 @@ def test_scan_iceberg_extra_struct_fields(tmp_path: Path) -> None:
         schema={"a": pl.Struct({"a": pl.Int32})},
         _column_mapping=(
             "iceberg-column-mapping",
-            new_pl_iceberg_dataset(tbl).arrow_schema(),
+            new_iceberg_scan_resolver(tbl).table.arrow_schema(),
         ),
     )
 
@@ -812,7 +1073,7 @@ def test_scan_iceberg_extra_struct_fields(tmp_path: Path) -> None:
         schema={"a": pl.Struct({"a": pl.Int32})},
         _column_mapping=(
             "iceberg-column-mapping",
-            new_pl_iceberg_dataset(tbl).arrow_schema(),
+            new_iceberg_scan_resolver(tbl).table.arrow_schema(),
         ),
         cast_options=pl.ScanCastOptions(
             extra_struct_fields="ignore", missing_struct_fields="insert"
@@ -1863,13 +2124,13 @@ def test_scan_iceberg_min_max_statistics_filter(
 
     # Begin inspecting statistics
 
-    scan_data = new_pl_iceberg_dataset(tbl)._to_dataset_scan_impl()
+    scan_data = new_iceberg_scan_resolver(tbl)._to_dataset_scan_impl()
 
     assert isinstance(scan_data, _NativeIcebergScanData)
     assert scan_data.statistics_loader is None
     assert scan_data.min_max_statistics is None
 
-    scan_data = new_pl_iceberg_dataset(tbl)._to_dataset_scan_impl(
+    scan_data = new_iceberg_scan_resolver(tbl)._to_dataset_scan_impl(
         filter_columns=["height_provider"]
     )
 
@@ -1894,7 +2155,7 @@ def test_scan_iceberg_min_max_statistics_filter(
         ),
     )
 
-    scan_data = new_pl_iceberg_dataset(tbl)._to_dataset_scan_impl(
+    scan_data = new_iceberg_scan_resolver(tbl)._to_dataset_scan_impl(
         filter_columns=pl_schema.names()
     )
 

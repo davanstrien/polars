@@ -14,7 +14,6 @@ from typing import (
     ClassVar,
     Literal,
     NoReturn,
-    Union,
     overload,
 )
 
@@ -55,11 +54,11 @@ from polars._utils.deprecation import (
     issue_deprecation_warning,
 )
 from polars._utils.getitem import get_series_item_by_key
-from polars._utils.unstable import unstable
+from polars._utils.unstable import issue_unstable_warning, unstable
 from polars._utils.various import (
     BUILDING_SPHINX_DOCS,
+    NO_DEFAULT,
     _is_generator,
-    no_default,
     parse_version,
     qualified_type_name,
     require_same_type,
@@ -126,12 +125,10 @@ if TYPE_CHECKING:
     from collections.abc import Collection, Generator, Mapping
 
     import jax
-    import numpy.typing as npt
 
     from polars import DataFrame, DataType, Expr
     from polars._typing import (
-        ArrowArrayExportable,
-        ArrowStreamExportable,
+        ArrayLike,
         BufferInfo,
         ClosedInterval,
         ComparisonOperator,
@@ -171,18 +168,6 @@ elif BUILDING_SPHINX_DOCS:
     # (ref: https://github.com/davidhalter/jedi/issues/2057)
     current_module = sys.modules[__name__]
     current_module.property = sphinx_accessor
-
-ArrayLike = Union[
-    Sequence[Any],
-    "Series",
-    "pa.Array",
-    "pa.ChunkedArray",
-    "np.ndarray[Any, Any]",
-    "pd.Series[Any]",
-    "pd.DatetimeIndex",
-    "ArrowArrayExportable",
-    "ArrowStreamExportable",
-]
 
 
 @expr_dispatch
@@ -227,9 +212,9 @@ class Series:
     shape: (3,)
     Series: 'a' [i64]
     [
-            1
-            2
-            3
+        1
+        2
+        3
     ]
 
     Notice that the dtype is automatically inferred as a polars Int64:
@@ -258,9 +243,9 @@ class Series:
     shape: (3,)
     Series: '' [i64]
     [
-            1
-            2
-            3
+        1
+        2
+        3
     ]
     """
 
@@ -904,7 +889,7 @@ class Series:
 
         elif isinstance(other, timedelta) and self.dtype == Duration:
             time_unit = self.dtype.time_unit  # type: ignore[attr-defined]
-            td = timedelta_to_int(other, time_unit)  # type: ignore[arg-type]
+            td = timedelta_to_int(other, time_unit)
             f = get_ffi_func(op + "_<>", Int64, self._s)
             assert f is not None
             return self._from_pyseries(f(td))
@@ -1176,8 +1161,14 @@ class Series:
             return self._from_pyseries(getattr(self._s, op_s)(other._s))
         elif _check_for_numpy(other) and isinstance(other, np.ndarray):
             return self._from_pyseries(getattr(self._s, op_s)(Series(other)._s))
+        elif isinstance(other, timedelta):
+            _s = sequence_to_pyseries(self.name, [other])
+            if "rhs" in op_ffi:
+                return self._from_pyseries(getattr(_s, op_s)(self._s))
+            else:
+                return self._from_pyseries(getattr(self._s, op_s)(_s))
         elif (
-            isinstance(other, (float, date, datetime, timedelta, str))
+            isinstance(other, (float, date, datetime, str))
             and not self.dtype.is_float()
         ):
             _s = sequence_to_pyseries(self.name, [other])
@@ -1498,6 +1489,49 @@ class Series:
         key: int | Series | np.ndarray[Any, Any] | Sequence[object] | tuple[object],
         value: Any,
     ) -> None:
+        """
+        Set Series values in-place using a single index, boolean mask, or index array.
+
+        Parameters
+        ----------
+        key
+            Determines which elements to update:
+
+            - ``int``: a single row index.
+            - ``Series`` (Boolean): a boolean mask.
+            - ``Series`` (Integer): an index array.
+            - ``ndarray``: a NumPy boolean mask or integer index array.
+            - ``list`` / ``tuple``: an index sequence (cast to UInt32).
+        value
+            Scalar or sequence of values to assign.
+
+        Examples
+        --------
+        Set a single element by index:
+
+        >>> s = pl.Series("a", [1, 2, 3])
+        >>> s[0] = 10
+        >>> s
+        shape: (3,)
+        Series: 'a' [i64]
+        [
+            10
+            2
+            3
+        ]
+
+        Set elements with a boolean mask:
+
+        >>> s[pl.Series([False, True, True])] = 99
+        >>> s
+        shape: (3,)
+        Series: 'a' [i64]
+        [
+            10
+            99
+            99
+        ]
+        """
         # do the single idx as first branch as those are likely in a tight loop
         if isinstance(key, int) and not isinstance(key, bool):
             self.scatter(key, value)
@@ -1514,10 +1548,11 @@ class Series:
         if isinstance(key, Series):
             if key.dtype == Boolean:
                 self._s = self.set(key, value)._s
-            elif key.dtype == UInt64:
-                self._s = self.scatter(key.cast(UInt32), value)._s
-            elif key.dtype == UInt32:
+            elif key.dtype.is_integer():
                 self._s = self.scatter(key, value)._s
+            else:
+                msg = f"cannot use Series of dtype {key.dtype!r} for indexing; expected boolean or integer dtype"
+                raise TypeError(msg)
 
         # TODO: implement for these types without casting to series
         elif _check_for_numpy(key) and isinstance(key, np.ndarray):
@@ -1538,7 +1573,7 @@ class Series:
 
     def __array__(
         self,
-        dtype: npt.DTypeLike | None = None,
+        dtype: np.dtype[Any] | None = None,
         copy: bool | None = None,  # noqa: FBT001
     ) -> np.ndarray[Any, Any]:
         """
@@ -1683,9 +1718,9 @@ class Series:
 
             # We're using a regular ufunc, that operates value by value. That
             # means we allowed missing data in the input, so filter it out:
-            validity_mask = self.is_not_null()
+            validity_mask = self.is_not_null() if self.has_nulls() else F.lit(True)
             for arg in inputs:
-                if isinstance(arg, Series):
+                if isinstance(arg, Series) and arg.has_nulls():
                     validity_mask &= arg.is_not_null()
             return (
                 result.to_frame()
@@ -2004,9 +2039,9 @@ class Series:
         shape: (3,)
         Series: '' [f64]
         [
-                1.0
-                3.0
-                NaN
+            1.0
+            3.0
+            NaN
         ]
         """
 
@@ -2032,9 +2067,9 @@ class Series:
         shape: (3,)
         Series: '' [f64]
         [
-                1.0
-                null
-                3.0
+            1.0
+            null
+            3.0
         ]
         """
 
@@ -2236,10 +2271,10 @@ class Series:
         shape: (4,)
         Series: 'foo' [f64]
         [
-                1.0
-                0.125
-                0.037037
-                0.015625
+            1.0
+            0.125
+            0.037037
+            0.015625
         ]
         """
         if _check_for_numpy(exponent) and isinstance(exponent, np.ndarray):
@@ -2541,13 +2576,13 @@ class Series:
             Set the intervals to be left-closed instead of right-closed.
         include_breaks
             Include a column with the right endpoint of the bin each observation falls
-            in. This will change the data type of the output from a
-            :class:`Categorical` to a :class:`Struct`.
+            in. This will change the data type of the output from an
+            :class:`Enum` to a :class:`Struct`.
 
         Returns
         -------
         Series
-            Series of data type :class:`Categorical` if `include_breaks` is set to
+            Series of data type :class:`Enum` if `include_breaks` is set to
             `False` (default), otherwise a Series of data type :class:`Struct`.
 
         See Also
@@ -2561,13 +2596,13 @@ class Series:
         >>> s = pl.Series("foo", [-2, -1, 0, 1, 2])
         >>> s.cut([-1, 1], labels=["a", "b", "c"])
         shape: (5,)
-        Series: 'foo' [cat]
+        Series: 'foo' [enum]
         [
-                "a"
-                "a"
-                "b"
-                "b"
-                "c"
+            "a"
+            "a"
+            "b"
+            "b"
+            "c"
         ]
 
         Create a DataFrame with the breakpoint and category for each value.
@@ -2578,7 +2613,7 @@ class Series:
         ┌─────┬────────────┬────────────┐
         │ foo ┆ breakpoint ┆ category   │
         │ --- ┆ ---        ┆ ---        │
-        │ i64 ┆ f64        ┆ cat        │
+        │ i64 ┆ f64        ┆ enum       │
         ╞═════╪════════════╪════════════╡
         │ -2  ┆ -1.0       ┆ (-inf, -1] │
         │ -1  ┆ -1.0       ┆ (-inf, -1] │
@@ -2644,11 +2679,11 @@ class Series:
         shape: (5,)
         Series: 'foo' [cat]
         [
-                "a"
-                "a"
-                "b"
-                "b"
-                "c"
+            "a"
+            "a"
+            "b"
+            "b"
+            "c"
         ]
 
         Divide a column into two categories using uniform quantile probabilities.
@@ -2657,11 +2692,11 @@ class Series:
         shape: (5,)
         Series: 'foo' [cat]
         [
-                "low"
-                "low"
-                "high"
-                "high"
-                "high"
+            "low"
+            "low"
+            "high"
+            "high"
+            "high"
         ]
 
         Create a DataFrame with the breakpoint and category for each value.
@@ -3010,9 +3045,9 @@ class Series:
         shape: (3,)
         Series: 'b' [i64]
         [
-                1
-                2
-                3
+            1
+            2
+            3
         ]
         """
         s = self.clone()
@@ -3037,9 +3072,9 @@ class Series:
         shape: (3,)
         Series: 'b' [i64]
         [
-                1
-                2
-                3
+            1
+            2
+            3
         ]
         """
         return self.alias(name)
@@ -3202,10 +3237,10 @@ class Series:
         shape: (4,)
         Series: '' [u32]
         [
-                1
-                2
-                2
-                3
+            1
+            2
+            2
+            3
         ]
         """
 
@@ -3228,8 +3263,8 @@ class Series:
         shape: (2,)
         Series: 'a' [i64]
         [
-                2
-                3
+            2
+            3
         ]
         """
         return self._from_pyseries(self._s.slice(offset=offset, length=length))
@@ -3358,8 +3393,8 @@ class Series:
         shape: (2,)
         Series: 'a' [i64]
         [
-                1
-                3
+            1
+            3
         ]
         """
         if not isinstance(predicate, Series):
@@ -3387,9 +3422,9 @@ class Series:
         shape: (3,)
         Series: 'a' [i64]
         [
-                1
-                2
-                3
+            1
+            2
+            3
         ]
 
         Pass a negative value to get all rows `except` the last `abs(n)`.
@@ -3398,8 +3433,8 @@ class Series:
         shape: (2,)
         Series: 'a' [i64]
         [
-                1
-                2
+            1
+            2
         ]
         """
         if n < 0:
@@ -3427,9 +3462,9 @@ class Series:
         shape: (3,)
         Series: 'a' [i64]
         [
-                3
-                4
-                5
+            3
+            4
+            5
         ]
 
         Pass a negative value to get all rows `except` the first `abs(n)`.
@@ -3438,8 +3473,8 @@ class Series:
         shape: (2,)
         Series: 'a' [i64]
         [
-                4
-                5
+            4
+            5
         ]
         """
         if n < 0:
@@ -3480,8 +3515,8 @@ class Series:
         shape: (2,)
         Series: 'a' [i64]
         [
-                1
-                2
+            1
+            2
         ]
         """
         return self.head(n)
@@ -3627,19 +3662,19 @@ class Series:
         shape: (4,)
         Series: 'a' [i64]
         [
-                1
-                2
-                3
-                4
+            1
+            2
+            3
+            4
         ]
         >>> s.sort(descending=True)
         shape: (4,)
         Series: 'a' [i64]
         [
-                4
-                3
-                2
-                1
+            4
+            3
+            2
+            1
         ]
         """
         if in_place:
@@ -3868,9 +3903,9 @@ class Series:
         shape: (3,)
         Series: 'a' [u32]
         [
-                0
-                1
-                3
+            0
+            1
+            3
         ]
         """
 
@@ -3918,7 +3953,7 @@ class Series:
     @overload
     def search_sorted(
         self,
-        element: list_[NonNestedLiteral | None] | np.ndarray[Any, Any] | Expr | Series,
+        element: list_[Any] | np.ndarray[Any, Any] | Expr | Series,
         side: SearchSortedSide = ...,
         *,
         descending: bool = ...,
@@ -3961,25 +3996,25 @@ class Series:
         shape: (3,)
         Series: 'set' [u32]
         [
-                0
-                3
-                5
+            0
+            3
+            5
         ]
         >>> s.search_sorted([1, 4, 5], "left")
         shape: (3,)
         Series: 'set' [u32]
         [
-                0
-                3
-                5
+            0
+            3
+            5
         ]
         >>> s.search_sorted([1, 4, 5], "right")
         shape: (3,)
         Series: 'set' [u32]
         [
-                1
-                5
-                6
+            1
+            5
+            6
         ]
         """
         df = F.select(F.lit(self).search_sorted(element, side, descending=descending))
@@ -3993,6 +4028,8 @@ class Series:
     def unique(self, *, maintain_order: bool = False) -> Series:
         """
         Get unique elements in series.
+
+        `null` is considered to be a unique value for the purposes of this operation.
 
         Parameters
         ----------
@@ -4013,7 +4050,10 @@ class Series:
         """
 
     def gather(
-        self, indices: int | list_[int] | Expr | Series | np.ndarray[Any, Any]
+        self,
+        indices: int | list_[int] | Expr | Series | np.ndarray[Any, Any],
+        *,
+        null_on_oob: bool = False,
     ) -> Series:
         """
         Take values by index.
@@ -4022,6 +4062,11 @@ class Series:
         ----------
         indices
             Index location used for selection.
+        null_on_oob
+            Behavior if an index is out of bounds:
+
+            - True  -> set the result to null
+            - False -> raise an error
 
         Examples
         --------
@@ -4030,8 +4075,18 @@ class Series:
         shape: (2,)
         Series: 'a' [i64]
         [
-                2
-                4
+            2
+            4
+        ]
+
+        Use `null_on_oob=True` to return null for out-of-bounds indices.
+
+        >>> s.gather([1, 10], null_on_oob=True)
+        shape: (2,)
+        Series: 'a' [i64]
+        [
+            2
+            null
         ]
         """
 
@@ -4074,17 +4129,35 @@ class Series:
         """
         return self._s.has_nulls()
 
-    def is_empty(self) -> bool:
+    def is_empty(self, *, ignore_nulls: bool = False) -> bool:
         """
         Check if the Series is empty.
+
+        Parameters
+        ----------
+        ignore_nulls
+            If true a series containing only nulls will also be considered empty.
+            The default is false.
+
+            .. warning::
+                This functionality is considered **unstable**. It may be changed
+                at any point without it being considered a breaking change.
 
         Examples
         --------
         >>> s = pl.Series("a", [], dtype=pl.Float32)
         >>> s.is_empty()
         True
+        >>> s = pl.Series("a", [None], dtype=pl.Float32)
+        >>> s.is_empty()
+        False
+        >>> s.is_empty(ignore_nulls=True)
+        True
         """
-        return self.len() == 0
+        if ignore_nulls:
+            msg = "the `ignore_nulls` parameter of `Series.is_empty()` is considered unstable."
+            issue_unstable_warning(msg)
+        return self._s.is_empty(ignore_nulls=ignore_nulls)
 
     def is_sorted(self, *, descending: bool = False, nulls_last: bool = False) -> bool:
         """
@@ -4195,9 +4268,9 @@ class Series:
         shape: (3,)
         Series: 'a' [bool]
         [
-                true
-                true
-                false
+            true
+            true
+            false
         ]
         """
 
@@ -4218,9 +4291,9 @@ class Series:
         shape: (3,)
         Series: 'a' [bool]
         [
-                false
-                false
-                true
+            false
+            false
+            true
         ]
         """
 
@@ -4241,10 +4314,10 @@ class Series:
         shape: (4,)
         Series: 'a' [bool]
         [
-                false
-                false
-                false
-                true
+            false
+            false
+            false
+            true
         ]
         """
 
@@ -4265,10 +4338,10 @@ class Series:
         shape: (4,)
         Series: 'a' [bool]
         [
-                true
-                true
-                true
-                false
+            true
+            true
+            true
+            false
         ]
         """
 
@@ -4301,18 +4374,18 @@ class Series:
         shape: (3,)
         Series: 'b' [bool]
         [
-                true
-                false
-                null
+            true
+            false
+            null
         ]
         >>> # when nulls_equal=True, None is treated as a distinct value
         >>> s2.is_in(s, nulls_equal=True)
         shape: (3,)
         Series: 'b' [bool]
         [
-                true
-                false
-                false
+            true
+            false
+            false
         ]
 
         >>> # check if some values are a member of sublists
@@ -4360,7 +4433,7 @@ class Series:
         shape: (1,)
         Series: 'a' [u32]
         [
-                1
+            1
         ]
         """
         return F.arg_where(self, eager=True)
@@ -4381,10 +4454,10 @@ class Series:
         shape: (4,)
         Series: 'a' [bool]
         [
-                true
-                false
-                false
-                true
+            true
+            false
+            false
+            true
         ]
         """
 
@@ -4404,11 +4477,11 @@ class Series:
         shape: (5,)
         Series: '' [bool]
         [
-                true
-                false
-                true
-                true
-                false
+            true
+            false
+            true
+            true
+            false
         ]
         """
 
@@ -4428,11 +4501,11 @@ class Series:
         shape: (5,)
         Series: '' [bool]
         [
-                false
-                true
-                false
-                true
-                true
+            false
+            true
+            false
+            true
+            true
         ]
         """
 
@@ -4452,10 +4525,10 @@ class Series:
         shape: (4,)
         Series: 'a' [bool]
         [
-                false
-                true
-                true
-                false
+            false
+            true
+            true
+            false
         ]
         """
 
@@ -4488,19 +4561,19 @@ class Series:
         shape: (2,)
         Series: 'a' [list[i64]]
         [
-                [1, 2, 3]
-                [4, 5, 6]
+            [1, 2, 3]
+            [4, 5, 6]
         ]
         >>> s.explode()
         shape: (6,)
         Series: 'a' [i64]
         [
-                1
-                2
-                3
-                4
-                5
-                6
+            1
+            2
+            3
+            4
+            5
+            6
         ]
         """
 
@@ -4672,12 +4745,12 @@ class Series:
         shape: (6,)
         Series: 'a' [i64]
         [
-                1
-                2
-                3
-                4
-                5
-                6
+            1
+            2
+            3
+            4
+            5
+            6
         ]
         >>> s.n_chunks()
         1
@@ -5291,9 +5364,9 @@ class Series:
         shape: (3,)
         Series: 'a' [i64]
         [
-                1
-                10
-                3
+            1
+            10
+            3
         ]
 
         It is better to implement this as follows:
@@ -5343,9 +5416,9 @@ class Series:
         shape: (3,)
         Series: 'a' [i64]
         [
-                1
-                10
-                3
+            1
+            10
+            3
         ]
 
         It is better to implement this as follows:
@@ -5463,9 +5536,9 @@ class Series:
         shape: (3,)
         Series: 'a' [i64]
         [
-                1
-                2
-                3
+            1
+            2
+            3
         ]
         """
         return self._from_pyseries(self._s.clone())
@@ -5495,10 +5568,10 @@ class Series:
         shape: (4,)
         Series: 'a' [f64]
         [
-                1.0
-                2.0
-                3.0
-                0.0
+            1.0
+            2.0
+            3.0
+            0.0
         ]
         """
 
@@ -5615,9 +5688,9 @@ class Series:
         shape: (3,)
         Series: 'a' [f64]
         [
-                1.0
-                2.0
-                3.0
+            1.0
+            2.0
+            3.0
         ]
         """
 
@@ -5634,9 +5707,9 @@ class Series:
         shape: (3,)
         Series: 'a' [f64]
         [
-                2.0
-                3.0
-                4.0
+            2.0
+            3.0
+            4.0
         ]
         """
 
@@ -5730,9 +5803,9 @@ class Series:
         shape: (3,)
         Series: 'a' [f64]
         [
-                1.12
-                2.57
-                3.9
+            1.12
+            2.57
+            3.9
         ]
 
         >>> s = pl.Series([-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5])
@@ -5767,9 +5840,9 @@ class Series:
         shape: (3,)
         Series: '' [f64]
         [
-                0.012
-                3.3
-                3500.0
+            0.012
+            3.3
+            3500.0
         ]
         """
 
@@ -5815,7 +5888,7 @@ class Series:
         shape: (1,)
         Series: 'a' [i64]
         [
-                2
+            2
         ]
         """
 
@@ -5838,12 +5911,12 @@ class Series:
         shape: (6,)
         Series: 'a' [f64]
         [
-                -1.0
-                -0.0
-                0.0
-                1.0
-                NaN
-                null
+            -1.0
+            -0.0
+            0.0
+            1.0
+            NaN
+            null
         ]
         """
 
@@ -6083,6 +6156,7 @@ class Series:
         return_dtype: PolarsDataType | None = None,
         *,
         skip_nulls: bool = True,
+        _disable_inefficient_map_warning: bool = False,
     ) -> Self:
         """
         Map a custom/user-defined function (UDF) over elements in this Series.
@@ -6149,9 +6223,9 @@ class Series:
         shape: (3,)
         Series: 'a' [i64]
         [
-                11
-                12
-                13
+            11
+            12
+            13
         ]
 
         Returns
@@ -6165,7 +6239,9 @@ class Series:
         else:
             pl_return_dtype = parse_into_dtype(return_dtype)
 
-        warn_on_inefficient_map(function, columns=[self.name], map_target="series")
+        if not _disable_inefficient_map_warning:
+            warn_on_inefficient_map(function, columns=[self.name], map_target="series")
+
         return self._from_pyseries(
             self._s.map_elements(
                 function, return_dtype=pl_return_dtype, skip_nulls=skip_nulls
@@ -6199,10 +6275,10 @@ class Series:
         shape: (4,)
         Series: '' [i64]
         [
-                null
-                1
-                2
-                3
+            null
+            1
+            2
+            3
         ]
 
         Pass a negative value to shift in the opposite direction instead.
@@ -6211,10 +6287,10 @@ class Series:
         shape: (4,)
         Series: '' [i64]
         [
-                3
-                4
-                null
-                null
+            3
+            4
+            null
+            null
         ]
 
         Specify `fill_value` to fill the resulting null values.
@@ -6223,10 +6299,10 @@ class Series:
         shape: (4,)
         Series: '' [i64]
         [
-                3
-                4
-                100
-                100
+            3
+            4
+            100
+            100
         ]
         """
 
@@ -6256,22 +6332,22 @@ class Series:
         shape: (5,)
         Series: '' [i64]
         [
-                1
-                2
-                3
-                2
-                1
+            1
+            2
+            3
+            2
+            1
         ]
         >>> mask = pl.Series([True, False, True, False, True])
         >>> s1.zip_with(mask, s2)
         shape: (5,)
         Series: '' [i64]
         [
-                1
-                4
-                3
-                2
-                5
+            1
+            4
+            3
+            2
+            5
         ]
         """
         require_same_type(self, other)
@@ -6826,7 +6902,7 @@ class Series:
         by: IntoExpr,
         window_size: timedelta | str_,
         *,
-        min_samples: int = 1,
+        min_samples: int = 0,
         closed: ClosedInterval = "right",
     ) -> Self:
         """
@@ -7101,17 +7177,17 @@ class Series:
         shape: (25,)
         Series: 'date' [datetime[μs]]
         [
-                2001-01-01 00:00:00
-                2001-01-01 01:00:00
-                2001-01-01 02:00:00
-                2001-01-01 03:00:00
-                2001-01-01 04:00:00
-                …
-                2001-01-01 20:00:00
-                2001-01-01 21:00:00
-                2001-01-01 22:00:00
-                2001-01-01 23:00:00
-                2001-01-02 00:00:00
+            2001-01-01 00:00:00
+            2001-01-01 01:00:00
+            2001-01-01 02:00:00
+            2001-01-01 03:00:00
+            2001-01-01 04:00:00
+            …
+            2001-01-01 20:00:00
+            2001-01-01 21:00:00
+            2001-01-01 22:00:00
+            2001-01-01 23:00:00
+            2001-01-02 00:00:00
         ]
 
         Compute the rolling std with the temporal windows
@@ -7180,12 +7256,12 @@ class Series:
         shape: (6,)
         Series: 'a' [f64]
         [
-                null
-                null
-                1.0
-                1.0
-                1.527525
-                2.0
+            null
+            null
+            1.0
+            1.0
+            1.527525
+            2.0
         ]
         """
 
@@ -7368,12 +7444,12 @@ class Series:
         shape: (6,)
         Series: 'a' [f64]
         [
-                null
-                null
-                1.0
-                1.0
-                2.333333
-                4.0
+            null
+            null
+            1.0
+            1.0
+            2.333333
+            4.0
         ]
         """
 
@@ -7426,11 +7502,11 @@ class Series:
         shape: (5,)
         Series: '' [f64]
         [
-                null
-                null
-                22.0
-                11.0
-                17.0
+            null
+            null
+            22.0
+            11.0
+            17.0
         ]
         """
 
@@ -7608,12 +7684,12 @@ class Series:
         shape: (6,)
         Series: 'a' [f64]
         [
-                null
-                null
-                2.0
-                3.0
-                4.0
-                6.0
+            null
+            null
+            2.0
+            3.0
+            4.0
+            6.0
         ]
         """
 
@@ -7802,23 +7878,23 @@ class Series:
         shape: (6,)
         Series: 'a' [f64]
         [
-                null
-                null
-                2.0
-                3.0
-                4.0
-                6.0
+            null
+            null
+            2.0
+            3.0
+            4.0
+            6.0
         ]
         >>> s.rolling_quantile(quantile=0.33, interpolation="linear", window_size=3)
         shape: (6,)
         Series: 'a' [f64]
         [
-                null
-                null
-                1.66
-                2.66
-                3.66
-                5.32
+            null
+            null
+            1.66
+            2.66
+            3.66
+            5.32
         ]
         """  # noqa: W505
 
@@ -8133,11 +8209,11 @@ class Series:
         shape: (5,)
         Series: 'a' [bool]
         [
-                false
-                false
-                false
-                false
-                true
+            false
+            false
+            false
+            false
+            true
         ]
         """
 
@@ -8164,9 +8240,11 @@ class Series:
         """
         Count the number of unique values in this Series.
 
+        `null` is considered to be a unique value for the purposes of this operation.
+
         Examples
         --------
-        >>> s = pl.Series("a", [1, 2, 2, 3])
+        >>> s = pl.Series("a", [1, 2, 2, None])
         >>> s.n_unique()
         3
         """
@@ -8229,17 +8307,28 @@ class Series:
         ]
         """
 
-    def reinterpret(self, *, signed: bool = True) -> Series:
+    def reinterpret(
+        self,
+        *,
+        signed: bool | None = None,
+        dtype: type[int | float] | PolarsDataType | None = None,
+    ) -> Series:
         """
-        Reinterpret the underlying bits as a signed/unsigned integer.
+        Reinterpret the underlying bits as a signed/unsigned integer or float.
 
-        This operation is only allowed for 64bit integers. For lower bits integers,
-        you can safely use that cast operation.
+        This operation is only allowed for numeric types of the same size.
+        For lower bits numbers, you can safely use the cast operation.
+
+        Either `signed` or `dtype` can be specified.
+        Defaults to `signed=True` otherwise.
 
         Parameters
         ----------
         signed
-            If True, reinterpret as `pl.Int64`. Otherwise, reinterpret as `pl.UInt64`.
+            If True, reinterpret as signed integer. Otherwise, reinterpret
+            as unsigned integer.
+        dtype
+            DataType to reinterpret to.
 
         Examples
         --------
@@ -8248,16 +8337,24 @@ class Series:
         shape: (3,)
         Series: 'a' [i64]
         [
-                -1152921504606846976
-                -2
-                3
+            -1152921504606846976
+            -2
+            3
         ]
         >>> s.reinterpret(signed=False)
         shape: (3,)
         Series: 'a' [u64]
         [
-                17293822569102704640
-                18446744073709551614
+            17293822569102704640
+            18446744073709551614
+            3
+        ]
+        >>> s.reinterpret(dtype=pl.Int64)
+        shape: (3,)
+        Series: 'a' [i64]
+        [
+                -1152921504606846976
+                -2
                 3
         ]
         """
@@ -8621,10 +8718,10 @@ class Series:
         shape: (4,)
         Series: '' [i64]
         [
-                1
-                5
-                10
-                null
+            1
+            5
+            10
+            null
         ]
 
         Specifying only a single bound:
@@ -8633,10 +8730,10 @@ class Series:
         shape: (4,)
         Series: '' [i64]
         [
-                -50
-                5
-                10
-                null
+            -50
+            5
+            10
+            null
         ]
         """
 
@@ -8697,9 +8794,9 @@ class Series:
     def replace(
         self,
         old: IntoExpr | Sequence[Any] | Mapping[Any, Any],
-        new: IntoExpr | Sequence[Any] | NoDefault = no_default,
+        new: IntoExpr | Sequence[Any] | NoDefault = NO_DEFAULT,
         *,
-        default: IntoExpr | NoDefault = no_default,
+        default: IntoExpr | NoDefault = NO_DEFAULT,
         return_dtype: PolarsDataType | None = None,
     ) -> Self:
         """
@@ -8738,10 +8835,6 @@ class Series:
         replace_strict
         str.replace
 
-        Notes
-        -----
-        The global string cache must be enabled when replacing categorical values.
-
         Examples
         --------
         Replace a single value by another value. Values that were not replaced remain
@@ -8752,10 +8845,10 @@ class Series:
         shape: (4,)
         Series: '' [i64]
         [
-                1
-                100
-                100
-                3
+            1
+            100
+            100
+            3
         ]
 
         Replace multiple values by passing sequences to the `old` and `new` parameters.
@@ -8764,10 +8857,10 @@ class Series:
         shape: (4,)
         Series: '' [i64]
         [
-                1
-                100
-                100
-                200
+            1
+            100
+            100
+            200
         ]
 
         Passing a mapping with replacements is also supported as syntactic sugar.
@@ -8777,10 +8870,10 @@ class Series:
         shape: (4,)
         Series: '' [i64]
         [
-                1
-                100
-                100
-                200
+            1
+            100
+            100
+            200
         ]
 
         The original data type is preserved when replacing by values of a different
@@ -8793,18 +8886,18 @@ class Series:
         shape: (3,)
         Series: '' [str]
         [
-                "1"
-                "2"
-                "3"
+            "1"
+            "2"
+            "3"
         ]
         """
 
     def replace_strict(
         self,
         old: IntoExpr | Sequence[Any] | Mapping[Any, Any],
-        new: IntoExpr | Sequence[Any] | NoDefault = no_default,
+        new: IntoExpr | Sequence[Any] | NoDefault = NO_DEFAULT,
         *,
-        default: IntoExpr | NoDefault = no_default,
+        default: IntoExpr | NoDefault = NO_DEFAULT,
         return_dtype: PolarsDataType | None = None,
     ) -> Self:
         """
@@ -8838,10 +8931,6 @@ class Series:
         replace
         str.replace
 
-        Notes
-        -----
-        The global string cache must be enabled when replacing categorical values.
-
         Examples
         --------
         Replace values by passing sequences to the `old` and `new` parameters.
@@ -8851,10 +8940,10 @@ class Series:
         shape: (4,)
         Series: '' [i64]
         [
-                100
-                200
-                200
-                300
+            100
+            200
+            200
+            300
         ]
 
         Passing a mapping with replacements is also supported as syntactic sugar.
@@ -8864,10 +8953,10 @@ class Series:
         shape: (4,)
         Series: '' [i64]
         [
-                100
-                200
-                200
-                300
+            100
+            200
+            200
+            300
         ]
 
         By default, an error is raised if any non-null values were not replaced.
@@ -8882,10 +8971,10 @@ class Series:
         shape: (4,)
         Series: '' [i64]
         [
-                -1
-                200
-                200
-                300
+            -1
+            200
+            200
+            300
         ]
 
         The default can be another Series.
@@ -8895,10 +8984,10 @@ class Series:
         shape: (4,)
         Series: '' [f64]
         [
-                2.5
-                200.0
-                200.0
-                10.0
+            2.5
+            200.0
+            200.0
+            10.0
         ]
 
         Replacing by values of a different data type sets the return type based on
@@ -8910,17 +8999,17 @@ class Series:
         shape: (3,)
         Series: '' [i64]
         [
-                1
-                2
-                3
+            1
+            2
+            3
         ]
         >>> s.replace_strict(mapping, default="x")
         shape: (3,)
         Series: '' [str]
         [
-                "1"
-                "2"
-                "3"
+            "1"
+            "2"
+            "3"
         ]
 
         Set the `return_dtype` parameter to control the resulting data type directly.
@@ -8929,9 +9018,9 @@ class Series:
         shape: (3,)
         Series: '' [u8]
         [
-                1
-                2
-                3
+            1
+            2
+            3
         ]
         """  # noqa: W505
 
@@ -8965,23 +9054,23 @@ class Series:
         shape: (3,)
         Series: 'foo' [array[i64, 3]]
         [
-                [1, 2, 3]
-                [4, 5, 6]
-                [7, 8, 9]
+            [1, 2, 3]
+            [4, 5, 6]
+            [7, 8, 9]
         ]
         >>> square.reshape((9,))
         shape: (9,)
         Series: 'foo' [i64]
         [
-                1
-                2
-                3
-                4
-                5
-                6
-                7
-                8
-                9
+            1
+            2
+            3
+            4
+            5
+            6
+            7
+            8
+            9
         ]
         """
         return self._from_pyseries(self._s.reshape(dimensions))
@@ -9003,9 +9092,9 @@ class Series:
         shape: (3,)
         Series: 'a' [i64]
         [
-                2
-                3
-                1
+            2
+            3
+            1
         ]
         """
 
@@ -9087,9 +9176,9 @@ class Series:
         shape: (3,)
         Series: '' [f64]
         [
-                1.0
-                1.666667
-                2.428571
+            1.0
+            1.666667
+            2.428571
         ]
         """
 
@@ -9170,11 +9259,11 @@ class Series:
         shape: (5,)
         Series: 'values' [f64]
         [
-                0.0
-                0.292893
-                1.492474
-                null
-                3.254508
+            0.0
+            0.292893
+            1.492474
+            null
+            3.254508
         ]
         """
 
@@ -9373,11 +9462,11 @@ class Series:
         shape: (5,)
         Series: '' [i64]
         [
-                1
-                2
-                3
-                99
-                99
+            1
+            2
+            3
+            99
+            99
         ]
         """
 
@@ -9437,23 +9526,23 @@ class Series:
         shape: (6,)
         Series: 'a' [i64]
         [
-                1
-                2
-                3
-                4
-                5
-                6
+            1
+            2
+            3
+            4
+            5
+            6
         ]
         >>> s.shrink_dtype()
         shape: (6,)
         Series: 'a' [i8]
         [
-                1
-                2
-                3
-                4
-                5
-                6
+            1
+            2
+            3
+            4
+            5
+            6
         ]
         """
         return wrap_s(self._s.shrink_dtype())
@@ -9471,15 +9560,15 @@ class Series:
         [shape: (3,)
         Series: 'a' [i64]
         [
-                1
-                2
-                3
+            1
+            2
+            3
         ], shape: (3,)
         Series: 'a' [i64]
         [
-                4
-                5
-                6
+            4
+            5
+            6
         ]]
         """
         return self._s.get_chunks()

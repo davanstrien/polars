@@ -45,6 +45,7 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
+          env-vars: ImageVersion
           save-if: ${{ github.ref_name == 'main' }}
 
       - name: Run cargo clippy with all features enabled
@@ -65,6 +66,7 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
+          env-vars: ImageVersion
           save-if: ${{ github.ref_name == 'main' }}
 
       - name: Run cargo clippy
@@ -88,6 +90,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Free some disk space (remove unused packages)
+        uses: jlumbroso/free-disk-space@v1.3.1
+
       - name: Set up Rust
         run: rustup component add miri
 
@@ -103,3 +108,15 @@ jobs:
           --features object
           -p polars-core
 #          -p polars-arrow
+
+  deny:
+    if: github.ref_name != 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Run cargo deny
+        run: cargo deny check

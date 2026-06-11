@@ -23,7 +23,7 @@ from polars.testing import assert_frame_equal, assert_series_equal
 from polars.testing.parametric import column, dataframes, series
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from polars._typing import PolarsDataType, TimeUnit
     from tests.conftest import PlMonkeyPatch
@@ -66,6 +66,16 @@ def test_group_by() -> None:
     result = df.group_by("b", maintain_order=True).agg(pl.count("a"))
     assert result.rows() == [("a", 2), ("b", 3)]
     assert result.columns == ["b", "a"]
+
+
+def test_group_by_count_respects_inner_nulls_in_aggregated_list_27031() -> None:
+    df = pl.DataFrame({"g": [1, 1, 1], "x": [1, 2, None]})
+
+    result = df.group_by("g", maintain_order=True).agg(
+        pl.col("x").cum_sum().count().alias("x_count")
+    )
+
+    assert result.rows() == [(1, 2)]
 
 
 @pytest.mark.parametrize(
@@ -565,6 +575,36 @@ def test_group_by_iteration() -> None:
         ((3,), [(6,)]),
     ]
     assert result3 == expected3
+
+
+def test_group_by_next_raises_type_error() -> None:
+    # Calling next() directly on a GroupBy (not an iterator) should raise TypeError,
+    # not AttributeError. Regression test for https://github.com/pola-rs/polars/issues/12868
+    gb = pl.DataFrame({"a": [1, 2, 3]}).group_by("a")
+    with pytest.raises(TypeError):
+        next(gb)  # type: ignore[call-overload]
+
+    # iter() then next() must still work correctly, and the iterator is its own __iter__
+    it = iter(
+        pl.DataFrame({"a": [1, 1, 2], "b": [10, 20, 30]}).group_by(
+            "a", maintain_order=True
+        )
+    )
+    assert iter(it) is it  # GroupByIter.__iter__ returns self
+    name, group = next(it)
+    assert name == (1,)
+    assert group.shape == (2, 2)
+
+    # RollingGroupByIter is also its own iterator
+    dates = pl.date_range(date(2020, 1, 1), date(2020, 1, 4), eager=True)
+    df_roll = pl.DataFrame({"dt": dates, "v": [1, 2, 3, 4]})
+    roll_it = iter(df_roll.rolling("dt", period="2d"))
+    assert iter(roll_it) is roll_it  # RollingGroupByIter.__iter__ returns self
+
+    # DynamicGroupByIter is also its own iterator
+    df_dyn = pl.DataFrame({"dt": dates, "v": [1, 2, 3, 4]})
+    dyn_it = iter(df_dyn.group_by_dynamic("dt", every="2d"))
+    assert iter(dyn_it) is dyn_it  # DynamicGroupByIter.__iter__ returns self
 
 
 def test_group_by_iteration_selector() -> None:
@@ -2038,7 +2078,7 @@ def test_group_by_unique_parametric(
     ],
 )
 def test_group_by_any_all(expr: Callable[[pl.Expr], pl.Expr]) -> None:
-    combinations = [
+    combinations: Sequence[list[bool | None]] = [
         [True, None],
         [None, None],
         [False, None],
@@ -2212,7 +2252,7 @@ def test_group_by_explode_none_dtype_25045() -> None:
 def test_group_by_forward_backward_fill(
     expr: Callable[[pl.Expr], pl.Expr], is_scalar: bool
 ) -> None:
-    combinations = [
+    combinations: Sequence[list[int | None]] = [
         [1, None, 2, None, None],
         [None, 1, 2, 3, 4],
         [None, None, None, None, None],
@@ -2401,7 +2441,7 @@ def test_group_by_drop_nans(s: pl.Series) -> None:
             True,
         ),
         (
-            lambda e: e.fill_null(strategy="forward").over([e, e]),
+            lambda e: e.fill_null(strategy="forward").over([e]),
             True,
             False,
             True,
@@ -2973,3 +3013,144 @@ def test_group_by_agg_get_oob_error_26747() -> None:
 
     with pytest.raises(ComputeError, match="get index is out of bounds"):
         df.group_by("x").agg(y=pl.col.x.get(100))
+
+
+def test_group_by_arg_max_boolean_26978() -> None:
+    # https://github.com/pola-rs/polars/issues/26978
+    df = pl.DataFrame(
+        {
+            "group": ["A"] * 5,
+            "val": [False, False, True, True, True],
+        }
+    )
+
+    result = df.group_by("group").agg(pl.col("val").arg_max())
+    assert_frame_equal(
+        result,
+        pl.DataFrame(
+            {"group": ["A"], "val": pl.Series([2], dtype=pl.get_index_type())}
+        ),
+    )
+
+    result = df.with_columns(pl.row_index().max_by("val").over("group"))
+    # max_by doesn't guarantee which tied row is returned, so extract the
+    # actual value and verify it is one of the valid True-indices (2, 3, 4).
+    idx_val = result["index"][0]
+    assert idx_val in {2, 3, 4}
+    assert_frame_equal(
+        result,
+        pl.DataFrame(
+            {
+                "group": ["A", "A", "A", "A", "A"],
+                "val": [False, False, True, True, True],
+                "index": pl.Series([idx_val] * 5, dtype=pl.get_index_type()),
+            }
+        ),
+    )
+
+
+def test_structify_keyword_27147() -> None:
+    df = pl.DataFrame({"b": [1, 1, 2]})
+    result = df.group_by("b").agg(__structify=pl.len()).sort("b")
+    expected = pl.DataFrame(
+        {"b": [1, 2], "__structify": [2, 1]},
+        schema_overrides={"__structify": pl.UInt32},
+    )
+    assert_frame_equal(result, expected)
+
+
+def test_group_by_arg_max_arg_min_binary_27171() -> None:
+    idx_dtype = pl.get_index_type()
+    df = pl.DataFrame({"key": ["a", "a", "b"], "val": [b"x", b"y", b"z"]})
+    result = df.group_by("key", maintain_order=True).agg(pl.col("val").arg_max())
+    assert_frame_equal(
+        result,
+        pl.DataFrame({"key": ["a", "b"], "val": pl.Series([1, 0], dtype=idx_dtype)}),
+    )
+    result = df.group_by("key", maintain_order=True).agg(pl.col("val").arg_min())
+    assert_frame_equal(
+        result,
+        pl.DataFrame({"key": ["a", "b"], "val": pl.Series([0, 0], dtype=idx_dtype)}),
+    )
+
+
+def test_group_by_arg_max_string_single_element_27171() -> None:
+    idx_dtype = pl.get_index_type()
+    df = pl.DataFrame({"key": ["a", "a", "b"], "val": ["x", "y", "z"]})
+    result = df.group_by("key", maintain_order=True).agg(pl.col("val").arg_max())
+    assert_frame_equal(
+        result,
+        pl.DataFrame({"key": ["a", "b"], "val": pl.Series([1, 0], dtype=idx_dtype)}),
+    )
+
+
+def test_group_by_arg_min_string_nullable_single_element_27171() -> None:
+    idx_dtype = pl.get_index_type()
+    df = pl.DataFrame({"key": ["a", "a", "b", "c"], "val": ["x", None, "z", "w"]})
+    result = df.group_by("key", maintain_order=True).agg(pl.col("val").arg_min())
+    assert_frame_equal(
+        result,
+        pl.DataFrame(
+            {
+                "key": ["a", "b", "c"],
+                "val": pl.Series([0, 0, 0], dtype=idx_dtype),
+            }
+        ),
+    )
+
+
+def test_group_by_max_by_min_by_string_single_element_27171() -> None:
+    df = pl.DataFrame(
+        {"key": ["a", "a", "b"], "val": [10, 20, 30], "by": ["x", "y", "z"]}
+    )
+    result = df.group_by("key", maintain_order=True).agg(pl.col("val").max_by("by"))
+    assert result.filter(pl.col("key") == "a")["val"][0] == 20
+    assert result.filter(pl.col("key") == "b")["val"][0] == 30
+
+    result = df.group_by("key", maintain_order=True).agg(pl.col("val").min_by("by"))
+    assert result.filter(pl.col("key") == "a")["val"][0] == 10
+    assert result.filter(pl.col("key") == "b")["val"][0] == 30
+
+
+def test_group_by_sort_flag_27672() -> None:
+    df = pl.DataFrame(
+        {
+            "s": ["a", "b", "b", "b"],
+            "z": [1, 2, 0, None],
+        }
+    )
+
+    out = (
+        df.sort("z").group_by("s", maintain_order=True).max().sort("z", descending=True)
+    )
+    expected = pl.DataFrame({"s": ["b", "a"], "z": [2, 1]})
+    assert_frame_equal(out, expected)
+
+
+def test_group_by_when_then_with_mutated_idxs() -> None:
+    df = pl.DataFrame({"g": ["A", "A"], "v": [10.0, None], "m": [True, True]})
+    out = df.select(
+        ffill=pl.when("m").then(pl.col("v").forward_fill()).otherwise(None).over("g"),
+    )
+
+    assert_frame_equal(
+        out,
+        pl.DataFrame(
+            {
+                "ffill": [10.0, 10.0],
+            }
+        ),
+    )
+
+    out = df.select(
+        rev=pl.when("m").then(pl.col("v").reverse()).otherwise(None).over("g"),
+    )
+
+    assert_frame_equal(
+        out,
+        pl.DataFrame(
+            {
+                "rev": [None, 10.0],
+            }
+        ),
+    )

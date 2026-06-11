@@ -51,7 +51,6 @@ pub use fused::FusedOperator;
 pub use list::IRListFunction;
 pub use polars_core::datatypes::ReshapeDimension;
 use polars_core::prelude::*;
-use polars_core::series::IsSorted;
 use polars_core::series::ops::NullBehavior;
 use polars_core::utils::SuperTypeFlags;
 #[cfg(feature = "random")]
@@ -87,7 +86,6 @@ pub use self::struct_::IRStructFunction;
 #[cfg(feature = "trigonometry")]
 pub use self::trigonometry::IRTrigonometricFunction;
 use super::*;
-use crate::plans::optimizer::DynamicPred;
 
 #[cfg_attr(feature = "ir_serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, PartialEq, Debug)]
@@ -157,13 +155,13 @@ pub enum IRFunctionExpr {
         options: RollingOptionsDynamicWindow,
     },
     Rechunk,
-    Append {
-        upcast: bool,
-    },
     ShiftAndFill,
     Shift,
     DropNans,
     DropNulls,
+    Quantile {
+        method: QuantileMethod,
+    },
     #[cfg(feature = "mode")]
     Mode {
         maintain_order: bool,
@@ -279,7 +277,9 @@ pub enum IRFunctionExpr {
     Ceil,
     #[cfg(feature = "fused")]
     Fused(fused::FusedOperator),
-    ConcatExpr(bool),
+    ConcatExpr {
+        rechunk: bool,
+    },
     #[cfg(feature = "cov")]
     Correlation {
         method: correlation::IRCorrelationMethod,
@@ -313,7 +313,7 @@ pub enum IRFunctionExpr {
         method: IRRandomMethod,
         seed: Option<u64>,
     },
-    SetSortedFlag(IsSorted),
+    SetSortedFlag(AExprSorted),
     #[cfg(feature = "ffi_plugin")]
     /// Creating this node is unsafe
     /// This will lead to calls over FFI.
@@ -386,14 +386,14 @@ pub enum IRFunctionExpr {
         offset: usize,
     },
     #[cfg(feature = "reinterpret")]
-    Reinterpret(bool),
+    Reinterpret(DataType),
     ExtendConstant,
 
     RowEncode(Vec<DataType>, RowEncodingVariant),
     #[cfg(feature = "dtype-struct")]
     RowDecode(Vec<Field>, RowEncodingVariant),
     DynamicPred {
-        pred: DynamicPred,
+        pred: DynamicPredWeakRef,
     },
 }
 
@@ -502,15 +502,15 @@ impl Hash for IRFunctionExpr {
             },
             MaxHorizontal | MinHorizontal | DropNans | DropNulls | Reverse | ArgUnique | ArgMin
             | ArgMax | Product | Shift | ShiftAndFill | Rechunk | MinBy | MaxBy => {},
-            Append { upcast } => {
-                upcast.hash(state);
-            },
             ArgSort {
                 descending,
                 nulls_last,
             } => {
                 descending.hash(state);
                 nulls_last.hash(state);
+            },
+            Quantile { method } => {
+                method.hash(state);
             },
             #[cfg(feature = "mode")]
             Mode { maintain_order } => {
@@ -618,7 +618,7 @@ impl Hash for IRFunctionExpr {
             IRFunctionExpr::Floor => {},
             #[cfg(feature = "round_series")]
             Ceil => {},
-            ConcatExpr(a) => a.hash(state),
+            ConcatExpr { rechunk } => rechunk.hash(state),
             #[cfg(feature = "peaks")]
             PeakMin => {},
             #[cfg(feature = "peaks")]
@@ -686,7 +686,7 @@ impl Hash for IRFunctionExpr {
             FillNullWithStrategy(strategy) => strategy.hash(state),
             GatherEvery { n, offset } => (n, offset).hash(state),
             #[cfg(feature = "reinterpret")]
-            Reinterpret(signed) => signed.hash(state),
+            Reinterpret(dtype) => dtype.hash(state),
             ExtendConstant => {},
             #[cfg(feature = "top_k")]
             TopKBy { descending } => descending.hash(state),
@@ -760,10 +760,10 @@ impl Display for IRFunctionExpr {
             #[cfg(feature = "rolling_window_by")]
             RollingExprBy { function_by, .. } => return write!(f, "{function_by}"),
             Rechunk => "rechunk",
-            Append { .. } => "append",
             ShiftAndFill => "shift_and_fill",
             DropNans => "drop_nans",
             DropNulls => "drop_nulls",
+            Quantile { method: _ } => "quantile",
             #[cfg(feature = "mode")]
             Mode { maintain_order } => {
                 if *maintain_order {
@@ -859,7 +859,7 @@ impl Display for IRFunctionExpr {
             Ceil => "ceil",
             #[cfg(feature = "fused")]
             Fused(fused) => return Display::fmt(fused, f),
-            ConcatExpr(_) => "concat_expr",
+            ConcatExpr { .. } => "concat_expr",
             #[cfg(feature = "cov")]
             Correlation { method, .. } => return Display::fmt(method, f),
             #[cfg(feature = "peaks")]
@@ -1067,7 +1067,6 @@ impl IRFunctionExpr {
             #[cfg(feature = "rolling_window_by")]
             F::RollingExprBy { .. } => FunctionOptions::length_preserving(),
             F::Rechunk => FunctionOptions::length_preserving(),
-            F::Append { .. } => FunctionOptions::groupwise(),
             F::ShiftAndFill => FunctionOptions::length_preserving(),
             F::Shift => FunctionOptions::length_preserving(),
             F::DropNans => {
@@ -1075,6 +1074,9 @@ impl IRFunctionExpr {
             },
             F::DropNulls => FunctionOptions::row_separable()
                 .flag(FunctionFlags::ALLOW_EMPTY_INPUTS | FunctionFlags::NON_ORDER_PRODUCING),
+            F::Quantile { method: _ } => {
+                FunctionOptions::aggregation().flag(FunctionFlags::NON_ORDER_OBSERVING)
+            },
             #[cfg(feature = "mode")]
             F::Mode { maintain_order } => FunctionOptions::groupwise().with_flags(|f| {
                 let f = f | FunctionFlags::NON_ORDER_PRODUCING;
@@ -1177,7 +1179,7 @@ impl IRFunctionExpr {
             },
             #[cfg(feature = "fused")]
             F::Fused(_) => FunctionOptions::elementwise(),
-            F::ConcatExpr(_) => FunctionOptions::groupwise()
+            F::ConcatExpr { .. } => FunctionOptions::groupwise()
                 .with_flags(|f| f | FunctionFlags::INPUT_WILDCARD_EXPANSION)
                 .with_supertyping(Default::default()),
             #[cfg(feature = "cov")]
@@ -1187,7 +1189,11 @@ impl IRFunctionExpr {
             #[cfg(feature = "peaks")]
             F::PeakMin | F::PeakMax => FunctionOptions::length_preserving(),
             #[cfg(feature = "cutqcut")]
-            F::Cut { .. } | F::QCut { .. } => FunctionOptions::length_preserving()
+            F::Cut { .. } => {
+                FunctionOptions::elementwise().with_flags(|f| f | FunctionFlags::PASS_NAME_TO_APPLY)
+            },
+            #[cfg(feature = "cutqcut")]
+            F::QCut { .. } => FunctionOptions::length_preserving()
                 .with_flags(|f| f | FunctionFlags::PASS_NAME_TO_APPLY),
             #[cfg(feature = "rle")]
             F::RLE => FunctionOptions::groupwise(),
@@ -1207,11 +1213,18 @@ impl IRFunctionExpr {
             F::SetSortedFlag(_) => FunctionOptions::elementwise(),
             #[cfg(feature = "ffi_plugin")]
             F::FfiPlugin { flags, .. } => *flags,
-            F::MaxHorizontal | F::MinHorizontal => FunctionOptions::elementwise().with_flags(|f| {
-                f | FunctionFlags::INPUT_WILDCARD_EXPANSION | FunctionFlags::ALLOW_RENAME
-            }),
-            F::MeanHorizontal { .. } | F::SumHorizontal { .. } => FunctionOptions::elementwise()
+            F::MaxHorizontal | F::MinHorizontal => FunctionOptions::elementwise()
+                .with_flags(|f| {
+                    f | FunctionFlags::INPUT_WILDCARD_EXPANSION | FunctionFlags::ALLOW_RENAME
+                })
+                .with_supertyping(
+                    (SuperTypeFlags::default() & !SuperTypeFlags::ALLOW_PRIMITIVE_TO_STRING).into(),
+                ),
+            F::MeanHorizontal { .. } => FunctionOptions::elementwise()
                 .with_flags(|f| f | FunctionFlags::INPUT_WILDCARD_EXPANSION),
+            F::SumHorizontal { .. } => FunctionOptions::elementwise()
+                .with_flags(|f| f | FunctionFlags::INPUT_WILDCARD_EXPANSION)
+                .with_supertyping(Default::default()),
 
             F::FoldHorizontal { returns_scalar, .. }
             | F::ReduceHorizontal { returns_scalar, .. } => FunctionOptions::groupwise()

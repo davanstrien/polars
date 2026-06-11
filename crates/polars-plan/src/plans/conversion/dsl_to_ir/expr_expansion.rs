@@ -60,7 +60,7 @@ pub fn rewrite_projections(
 }
 
 fn toggle_cse_for_structs(opt_flags: &mut OptFlags) {
-    if opt_flags.contains(OptFlags::EAGER) && !opt_flags.contains(OptFlags::NEW_STREAMING) {
+    if opt_flags.contains(OptFlags::EAGER) && !opt_flags.contains(OptFlags::STREAMING) {
         use polars_core::config::verbose;
         if verbose() {
             eprintln!("CSE turned on because of struct expansion")
@@ -81,7 +81,7 @@ fn function_input_wildcard_expansion(function: &FunctionExpr) -> FunctionExpansi
         F::Boolean(BooleanFunction::AnyHorizontal | BooleanFunction::AllHorizontal)
             | F::Coalesce
             | F::ListExpr(ListFunction::Concat)
-            | F::ConcatExpr(_)
+            | F::ConcatExpr(..)
             | F::MinHorizontal
             | F::MaxHorizontal
             | F::FoldHorizontal { .. }
@@ -389,26 +389,6 @@ fn expand_expression_rec(
                 },
             )?
         },
-        Expr::Agg(AggExpr::Quantile {
-            expr,
-            quantile,
-            method,
-        }) => {
-            _ = expand_expression_by_combination(
-                &[expr.as_ref().clone(), quantile.as_ref().clone()],
-                ignored_selector_columns,
-                schema,
-                out,
-                opt_flags,
-                |e| {
-                    Expr::Agg(AggExpr::Quantile {
-                        expr: Arc::new(e[0].clone()),
-                        quantile: Arc::new(e[1].clone()),
-                        method: *method,
-                    })
-                },
-            )?
-        },
         Expr::Agg(agg) => {
             _ = match agg {
                 AggExpr::Min {
@@ -512,13 +492,21 @@ fn expand_expression_rec(
                     opt_flags,
                     |e| Expr::Agg(AggExpr::Mean(Arc::new(e))),
                 )?,
-                AggExpr::Implode(expr) => expand_single(
-                    expr.as_ref(),
+                AggExpr::Implode {
+                    input,
+                    maintain_order,
+                } => expand_single(
+                    input.as_ref(),
                     ignored_selector_columns,
                     schema,
                     out,
                     opt_flags,
-                    |e| Expr::Agg(AggExpr::Implode(Arc::new(e))),
+                    |e| {
+                        Expr::Agg(AggExpr::Implode {
+                            input: Arc::new(e),
+                            maintain_order: *maintain_order,
+                        })
+                    },
                 )?,
                 AggExpr::Count {
                     input,
@@ -567,24 +555,6 @@ fn expand_expression_rec(
                     out,
                     opt_flags,
                     |e| Expr::Agg(AggExpr::Var(Arc::new(e), *ddof)),
-                )?,
-                AggExpr::Quantile {
-                    expr,
-                    quantile,
-                    method,
-                } => expand_expression_by_combination(
-                    &[expr.as_ref().clone(), quantile.as_ref().clone()],
-                    ignored_selector_columns,
-                    schema,
-                    out,
-                    opt_flags,
-                    |e| {
-                        Expr::Agg(AggExpr::Quantile {
-                            expr: Arc::new(e[0].clone()),
-                            quantile: Arc::new(e[1].clone()),
-                            method: *method,
-                        })
-                    },
                 )?,
             }
         },

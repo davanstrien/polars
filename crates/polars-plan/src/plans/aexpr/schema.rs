@@ -196,6 +196,8 @@ impl AExpr {
                             },
                             Boolean => Some(IDX_DTYPE),
                             UInt8 | Int8 | Int16 | UInt16 => Some(Int64),
+                            #[cfg(feature = "dtype-decimal")]
+                            Decimal(_, scale) => Some(Decimal(DEC128_MAX_PREC, *scale)),
                             _ => None,
                         };
                         if let Some(dt) = dt {
@@ -213,8 +215,11 @@ impl AExpr {
                         let mapper = FieldsMapper::new(&field);
                         mapper.moment_dtype()
                     },
-                    Implode(expr) => {
-                        let mut field = ctx.arena.get(*expr).to_field_impl(ctx)?;
+                    Implode {
+                        input,
+                        maintain_order: _,
+                    } => {
+                        let mut field = ctx.arena.get(*input).to_field_impl(ctx)?;
                         field.coerce(DataType::List(field.dtype().clone().into()));
                         Ok(field)
                     },
@@ -242,11 +247,6 @@ impl AExpr {
                         let mut field = ctx.arena.get(*expr).to_field_impl(ctx)?;
                         field.coerce(IDX_DTYPE.implode());
                         Ok(field)
-                    },
-                    Quantile { expr, .. } => {
-                        let field = [ctx.arena.get(*expr).to_field_impl(ctx)?];
-                        let mapper = FieldsMapper::new(&field);
-                        mapper.moment_dtype()
                     },
                 }
             },
@@ -372,7 +372,19 @@ impl AExpr {
 
                 let fields = func_args_to_fields(input, ctx)?;
                 polars_ensure!(!fields.is_empty(), ComputeError: "expression: '{}' didn't get any inputs", function);
-                let out = function.get_field(ctx.schema, &fields)?;
+
+                #[cfg(feature = "dtype-array")]
+                if let IRFunctionExpr::ArrayExpr(IRArrayFunction::Get(false)) = function
+                    && let DataType::Array(_, width) = fields[0].dtype()
+                    && let AExpr::Literal(LiteralValue::Dyn(DynLiteralValue::Int(index))) =
+                        ctx.arena.get(input[1].node())
+                {
+                    polars_ensure!(*index < *width as i128 && *index >= -(*width as i128),
+                        ComputeError: "get index {index:?} is out of bounds for array of width {width:?}"
+                    )
+                }
+
+                let out = function.get_field(&fields)?;
 
                 Ok(out)
             },
@@ -429,13 +441,12 @@ impl AExpr {
             | Agg(Sum(expr))
             | Agg(Median(expr))
             | Agg(Mean(expr))
-            | Agg(Implode(expr))
+            | Agg(Implode { input: expr, .. })
             | Agg(Std(expr, _))
             | Agg(Var(expr, _))
             | Agg(NUnique(expr))
             | Agg(Count { input: expr, .. })
-            | Agg(AggGroups(expr))
-            | Agg(Quantile { expr, .. }) => expr_arena.get(*expr).to_name(expr_arena),
+            | Agg(AggGroups(expr)) => expr_arena.get(*expr).to_name(expr_arena),
             AnonymousFunction { input, fmt_str, .. } | AnonymousAgg { input, fmt_str, .. } => {
                 if input.is_empty() {
                     fmt_str.as_ref().clone()

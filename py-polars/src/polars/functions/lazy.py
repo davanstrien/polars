@@ -23,7 +23,7 @@ from polars._utils.parse import (
 from polars._utils.unstable import issue_unstable_warning, unstable
 from polars._utils.various import extend_bool, qualified_type_name
 from polars._utils.wrap import wrap_df, wrap_expr, wrap_s
-from polars.datatypes import DTYPE_TEMPORAL_UNITS, Date, Datetime
+from polars.datatypes import DTYPE_TEMPORAL_UNITS, Date, Datetime, Int64
 from polars.datatypes._parse import parse_into_datatype_expr
 from polars.lazyframe.opt_flags import (
     DEFAULT_QUERY_OPT_FLAGS,
@@ -268,7 +268,7 @@ def cum_count(*columns: str, reverse: bool = False) -> Expr:
     return F.col(*columns).cum_count(reverse=reverse)
 
 
-def implode(*columns: str) -> Expr:
+def implode(*columns: str, maintain_order: bool = True) -> Expr:
     """
     Aggregate all column values into a list.
 
@@ -278,6 +278,10 @@ def implode(*columns: str) -> Expr:
     ----------
     *columns
         One or more column names.
+
+    maintain_order
+        Whether to preserve the order of elements in the list. Setting this
+        to `False` can improve performance, especially within `group_by`.
 
     Examples
     --------
@@ -308,7 +312,7 @@ def implode(*columns: str) -> Expr:
     └───────────┴───────────────────────┘
 
     """
-    return F.col(*columns).implode()
+    return F.col(*columns).implode(maintain_order=maintain_order)
 
 
 def std(column: str, ddof: int = 1) -> Expr:
@@ -485,6 +489,8 @@ def n_unique(*columns: str) -> Expr:
 
     This function is syntactic sugar for `pl.col(columns).n_unique()`.
 
+    `null` is considered to be a unique value for the purposes of this operation.
+
     Parameters
     ----------
     columns
@@ -494,7 +500,7 @@ def n_unique(*columns: str) -> Expr:
     --------
     >>> df = pl.DataFrame(
     ...     {
-    ...         "a": [1, 8, 1],
+    ...         "a": [1, 1, None],
     ...         "b": [4, 5, 2],
     ...         "c": ["foo", "bar", "foo"],
     ...     }
@@ -2137,13 +2143,25 @@ def collect_all(
             This functionality is considered **unstable**. It may be changed
             at any point without it being considered a breaking change.
     engine
-        Select the engine used to process the query, optional.
-        At the moment, if set to `"auto"` (default), the query
-        is run using the polars in-memory engine. Polars will also
-        attempt to use the engine set by the `POLARS_ENGINE_AFFINITY`
-        environment variable. If it cannot run the query using the
-        selected engine, the query is run using the polars in-memory
-        engine.
+        Select the engine used to process the query (default ``"auto"``):
+
+        * ``"auto"``: use the engine set by
+          :meth:`Config.set_engine_affinity <polars.Config.set_engine_affinity>`
+          or the ``POLARS_ENGINE_AFFINITY`` environment variable, falling
+          back to ``"in-memory"`` if unset (this default may change in
+          a future release).
+        * ``"in-memory"``: use the in-memory engine, this is the default engine.
+        * ``"streaming"``: use the streaming engine, which processes
+          queries in batches, reducing memory pressure and often
+          outperforming the in-memory engine. This will soon become
+          the default engine of Polars.
+        * ``"gpu"``: use the CUDA GPU engine (requires an Nvidia GPU and
+          ``cudf-polars``). Pass a :class:`~.GPUEngine` object for
+          fine-grained control (e.g. device selection on multi-GPU
+          systems).
+
+        If the selected engine cannot run the query, Polars falls back to
+        the in-memory engine.
 
         .. note::
            The GPU engine does not support async, or running in the
@@ -2240,13 +2258,25 @@ def collect_all_async(
             This functionality is considered **unstable**. It may be changed
             at any point without it being considered a breaking change.
     engine
-        Select the engine used to process the query, optional.
-        At the moment, if set to `"auto"` (default), the query
-        is run using the polars in-memory engine. Polars will also
-        attempt to use the engine set by the `POLARS_ENGINE_AFFINITY`
-        environment variable. If it cannot run the query using the
-        selected engine, the query is run using the polars in-memory
-        engine.
+        Select the engine used to process the query (default ``"auto"``):
+
+        * ``"auto"``: use the engine set by
+          :meth:`Config.set_engine_affinity <polars.Config.set_engine_affinity>`
+          or the ``POLARS_ENGINE_AFFINITY`` environment variable, falling
+          back to ``"in-memory"`` if unset (this default may change in
+          a future release).
+        * ``"in-memory"``: use the in-memory engine, this is the default engine.
+        * ``"streaming"``: use the streaming engine, which processes
+          queries in batches, reducing memory pressure and often
+          outperforming the in-memory engine. This will soon become
+          the default engine of Polars.
+        * ``"gpu"``: use the CUDA GPU engine (requires an Nvidia GPU and
+          ``cudf-polars``). Pass a :class:`~.GPUEngine` object for
+          fine-grained control (e.g. device selection on multi-GPU
+          systems).
+
+        If the selected engine cannot run the query, Polars falls back to
+        the in-memory engine.
 
         .. note::
            The GPU engine does not support async, or running in the
@@ -2269,9 +2299,6 @@ def collect_all_async(
     If `gevent=True` then returns wrapper that has
     `.get(block=True, timeout=None)` method.
     """
-    if engine == "streaming":
-        issue_unstable_warning("streaming mode is considered unstable.")
-
     result: (
         _GeventDataFrameResult[list[DataFrame]] | _AioDataFrameResult[list[DataFrame]]
     ) = _GeventDataFrameResult() if gevent else _AioDataFrameResult()
@@ -2628,6 +2655,11 @@ def from_epoch(
     if time_unit == "d":
         return column.cast(Date)
     if time_unit in (scale := {"s": 1_000_000, "ms": 1_000}):
+        if isinstance(column, pl.Expr):
+            column = column * F.lit(scale[time_unit], dtype=Int64)
+            return column.cast(Datetime("us"))
+        if column.dtype.is_integer():
+            column = column.cast(Int64)
         return (column * scale[time_unit]).cast(Datetime("us"))
     if time_unit in DTYPE_TEMPORAL_UNITS:
         return column.cast(Datetime(time_unit))  # type: ignore[arg-type]
@@ -2711,9 +2743,17 @@ def rolling_corr(
         The number of values in the window that should be non-null before computing
         a result. If None, it will be set equal to window size.
     ddof
-        Delta degrees of freedom. The divisor used in calculations
-        is `N - ddof`, where `N` represents the number of elements.
+        Has no effect, do not use.
+
+        .. deprecated:: 1.40.0
     """
+    if ddof != 1:
+        issue_deprecation_warning(
+            "the `ddof` parameter for `rolling_corr` is deprecated."
+            " Correlation is invariant of `ddof`.",
+            version="1.40.0",
+        )
+
     if min_samples is None:
         min_samples = window_size
     if isinstance(a, str):

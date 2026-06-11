@@ -179,6 +179,10 @@ impl PartialEq for DataType {
                 (Array(left_inner, left_width), Array(right_inner, right_width)) => {
                     left_width == right_width && left_inner == right_inner
                 },
+                #[cfg(feature = "dtype-extension")]
+                (Extension(ext_l, storage_l), Extension(ext_r, storage_r)) => {
+                    ext_l == ext_r && storage_l == storage_r
+                },
                 (Unknown(l), Unknown(r)) => match (l, r) {
                     (UnknownKind::Int(_), UnknownKind::Int(_)) => true,
                     _ => l == r,
@@ -441,6 +445,10 @@ impl DataType {
             #[cfg(feature = "dtype-categorical")]
             (D::Categorical(_, _) | D::Enum(_, _), D::Binary)
             | (D::Binary, D::Categorical(_, _) | D::Enum(_, _)) => false, // TODO @ cat-rework: why can we not cast to Binary?
+
+            #[cfg(feature = "dtype-categorical")]
+            (D::Categorical(_, _) | D::Enum(_, _), D::String)
+            | (D::String, D::Categorical(_, _) | D::Enum(_, _)) => true,
 
             #[cfg(feature = "object")]
             (D::Object(_), D::Object(_)) => true,
@@ -896,6 +904,8 @@ impl DataType {
                 PlSmallStr::from_static(PL_KEY),
                 PlSmallStr::from_static(MAINTAIN_PL_TYPE),
             )])),
+            #[cfg(feature = "dtype-extension")]
+            DataType::Extension(_ext, storage) => storage.to_arrow_field_metadata(),
             _ => None,
         }
     }
@@ -1028,7 +1038,7 @@ impl DataType {
                 Ok(ArrowDataType::Dictionary(
                     arrow_phys,
                     Box::new(values),
-                    false,
+                    matches!(self, Enum(_, _)),
                 ))
             },
             #[cfg(feature = "dtype-struct")]
@@ -1175,6 +1185,19 @@ impl DataType {
 
     pub fn is_numeric(&self) -> bool {
         self.is_integer() || self.is_float() || self.is_decimal()
+    }
+
+    pub fn numeric_to_unsigned_bit_repr(&self) -> Option<DataType> {
+        use DataType::*;
+
+        Some(match self {
+            Int8 | UInt8 => UInt8,
+            Int16 | UInt16 | Float16 => UInt16,
+            Int32 | UInt32 | Float32 => UInt32,
+            Int64 | UInt64 | Float64 => UInt64,
+            Int128 | UInt128 => UInt128,
+            _ => return None,
+        })
     }
 }
 

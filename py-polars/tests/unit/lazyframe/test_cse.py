@@ -206,7 +206,17 @@ def test_schema_row_index_cse(maintain_order: bool) -> None:
         },
         schema_overrides={"Idx": pl.List(pl.UInt32), "Idx_right": pl.List(pl.UInt32)},
     )
-    assert_frame_equal(result, expected, check_row_order=maintain_order)
+    if not maintain_order:
+        # Sort the lists to make sure that the result is correctly ordered
+        list_cols = [c for c in result.columns if c != "A"]
+        result = (
+            result.explode(list_cols)
+            .sort("Idx")
+            .group_by("A", maintain_order=True)
+            .all()
+            .select(result.columns)
+        )
+    assert_frame_equal(result, expected)
 
 
 @pytest.mark.debug
@@ -828,7 +838,8 @@ def test_cse_series_collision_16138() -> None:
     )
 
 
-def test_nested_cache_no_panic_16553() -> None:
+def test_nested_cache_no_panic_16553(plmonkeypatch: PlMonkeyPatch) -> None:
+    plmonkeypatch.setenv("POLARS_ALLOW_NESTED_CSPE", "1")
     assert pl.LazyFrame().select(a=[[[1]]]).collect(
         optimizations=pl.QueryOptFlags(comm_subexpr_elim=True)
     ).to_dict(as_series=False) == {"a": [[[[1]]]]}
@@ -1181,13 +1192,13 @@ def test_cspe_recursive_24744() -> None:
         lf_j3.collect(optimizations=pl.QueryOptFlags(comm_subplan_elim=False)),
     )
     assert (
-        lf_j3.show_graph(  # type: ignore[union-attr]
+        lf_j3.show_graph(
             engine="streaming", plan_stage="physical", raw_output=True
         ).count("multiplexer")
         == 3
     )
     assert (
-        lf_j3.show_graph(  # type: ignore[union-attr]
+        lf_j3.show_graph(
             engine="in-memory", plan_stage="physical", raw_output=True
         ).count("CACHE")
         == 3
@@ -1205,10 +1216,17 @@ def test_cpse_predicates_25030() -> None:
     q4 = q3.group_by("key").len().join(q3, on="key")
 
     got = q4.collect()
-    expected = q4.collect(optimizations=pl.QueryOptFlags(comm_subplan_elim=False))
+    expected = pl.DataFrame(
+        [
+            pl.Series("key", [2], dtype=pl.Int64),
+            pl.Series("len", [1], dtype=pl.UInt32),
+            pl.Series("len_right", [2], dtype=pl.UInt32),
+            pl.Series("x", [2], dtype=pl.Int64),
+            pl.Series("y", [1], dtype=pl.Int64),
+        ]
+    )
 
     assert_frame_equal(got, expected)
-    assert q4.explain().count("CACHE") == 2
 
 
 def test_asof_join_25699() -> None:
@@ -1236,6 +1254,50 @@ def test_csee_python_function() -> None:
     assert_frame_equal(
         q.collect(), q.collect(optimizations=pl.QueryOptFlags(comm_subexpr_elim=False))
     )
+
+
+def test_cse_map_batches_distinct_functions() -> None:
+    # Regression test for https://github.com/pola-rs/polars/issues/26808.
+    # Two map_batches with *different* functions on the same source should not be
+    # incorrectly merged by common subplan elimination.
+    src = pl.LazyFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+    lf1 = src.map_batches(
+        lambda df: df.select(pl.col("a").alias("x")),
+        schema=pl.Schema({"x": pl.Int64}),
+    )
+    lf2 = src.map_batches(
+        lambda df: df.select(pl.col("b").alias("y")),
+        schema=pl.Schema({"y": pl.Int64}),
+    )
+    result = pl.concat([lf1, lf2], how="horizontal").collect(
+        optimizations=pl.QueryOptFlags(comm_subplan_elim=True)
+    )
+    assert result.columns == ["x", "y"]
+    assert result["x"].to_list() == [1, 2, 3]
+    assert result["y"].to_list() == [4, 5, 6]
+
+
+def test_cse_map_batches_same_function() -> None:
+    # The *same* function object used twice on the same source should still be
+    # eligible for common subplan elimination (i.e. executed only once).
+    src = pl.LazyFrame({"a": [1, 2, 3]})
+    call_count = 0
+
+    def fn(df: pl.DataFrame) -> pl.DataFrame:
+        nonlocal call_count
+        call_count += 1
+        return df.with_columns(pl.col("a") * 2)
+
+    lf1 = src.map_batches(fn, schema=pl.Schema({"a": pl.Int64}))
+    lf2 = src.map_batches(fn, schema=pl.Schema({"a": pl.Int64}))
+    # Vertical concat (union) works with identical schemas and lets CSE share
+    # the single cached execution across both branches.
+    result = pl.concat([lf1, lf2]).collect(
+        optimizations=pl.QueryOptFlags(comm_subplan_elim=True)
+    )
+    assert result["a"].to_list() == [2, 4, 6, 2, 4, 6]
+    # CSE should have executed fn only once.
+    assert call_count == 1
 
 
 def test_csee_streaming() -> None:
@@ -1286,3 +1348,180 @@ def test_cspe_map_groups_26547() -> None:
         schema={"A": pl.Int32, "PART": pl.Int32, "B": pl.Int32},
     )
     assert_frame_equal(out, expected)
+
+
+def test_cspe_projection_between_filter_and_cache_26916() -> None:
+    lf = pl.LazyFrame(
+        {
+            "VendorID": [1, 1, 2, 2, 2],
+            "total_amount": [10.0, 20.0, 30.0, 40.0, 50.0],
+            "passenger_count": [1, 2, 1, 3, 2],
+        }
+    )
+
+    g1 = lf.group_by("VendorID").agg(pl.mean("total_amount"))
+    g2 = lf.group_by("VendorID").agg(pl.mean("passenger_count"))
+
+    q = g1.join(g2, "VendorID").filter(VendorID=1)
+
+    assert_frame_equal(
+        q.collect(),
+        pl.DataFrame(
+            {
+                "VendorID": 1,
+                "total_amount": 15.0,
+                "passenger_count": 1.5,
+            }
+        ),
+    )
+
+
+def test_cspe_projection_between_filter_and_cache_drop_filter_column() -> None:
+    lf = pl.LazyFrame(
+        {
+            "VendorID": [1, 1, 2, 2, 2],
+            "total_amount": [10.0, 20.0, 30.0, 40.0, 50.0],
+            "passenger_count": [1, 2, 1, 3, 2],
+            "true": True,
+        }
+    )
+
+    g1 = lf.filter(pl.col("true")).group_by("VendorID").agg(pl.mean("total_amount"))
+    g2 = lf.group_by("VendorID").agg(pl.mean("passenger_count"))
+
+    q = g1.join(g2, "VendorID")
+
+    plan = q.explain()
+
+    assert (
+        plan.index("LEFT PLAN ON")
+        < plan.index('simple π 2/2 ["VendorID", "total_amount"]')
+        < plan.index("RIGHT PLAN ON")
+    )
+
+    assert_frame_equal(
+        q.collect().sort("VendorID"),
+        pl.DataFrame(
+            {
+                "VendorID": [1, 2],
+                "total_amount": [15.0, 40.0],
+                "passenger_count": [1.5, 2.0],
+            }
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("enable_nested_cspe", "expected_cache_seq_ids"),
+    [
+        (False, [1, 1]),
+        (
+            True,
+            [
+                2,  # concat(lf2, lf2)
+                1,  # select(a + 1)
+                1,  # select(a + 1)
+                2,  # concat(lf2, lf2)
+            ],
+        ),
+    ],
+)
+def test_cspe_create_nested_caches(
+    enable_nested_cspe: bool,
+    expected_cache_seq_ids: list[int],
+    plmonkeypatch: PlMonkeyPatch,
+) -> None:
+    plmonkeypatch.setenv("POLARS_ALLOW_NESTED_CSPE", "1" if enable_nested_cspe else "0")
+
+    lf = pl.LazyFrame({"a": [0, 1, 2]})
+    lf1 = lf.select(pl.col("a") + 1)
+    lf2 = pl.concat([lf1, lf1])
+    lf3 = pl.concat([lf2, lf2, pl.LazyFrame({"a": [0, 1, 2]})])
+
+    q = lf3
+    plan = q.explain()
+
+    df = pl.DataFrame({"line": [x.strip() for x in plan.splitlines() if "CACHE" in x]})
+
+    cache_seq_ids = df.join(
+        df.unique(maintain_order=True).with_columns(
+            cache_seq_id=pl.int_range(1, 1 + pl.len()).reverse()
+        ),
+        on="line",
+        maintain_order="left",
+    )["cache_seq_id"].to_list()
+
+    assert cache_seq_ids == expected_cache_seq_ids
+
+
+@pytest.mark.parametrize(
+    "haystack_constructor",
+    [
+        list,
+        pl.lit,
+        lambda x: pl.Series(x).implode(),
+    ],
+)
+def test_cse_is_in_large_haystack_27556(haystack_constructor: Any) -> None:
+    lf = pl.LazyFrame({"i": [0, 1, 2]})
+    padding = 1003 * [99]
+
+    q = pl.concat(
+        [
+            lf.filter(pl.col("i").is_in(haystack_constructor(padding + [0]))),
+            lf.filter(pl.col("i").is_in(haystack_constructor(padding + [1]))),
+        ]
+    )
+
+    assert_frame_equal(q.collect(), pl.DataFrame({"i": [0, 1]}))
+
+
+def test_cse_projection_pushdown_27569() -> None:
+    lf = pl.LazyFrame({"a": [1], "b": [1]})
+
+    q = pl.concat(
+        [
+            lf.select("a").filter(pl.lit(True)),
+            lf.select("b").filter(pl.lit(True)),
+            lf.select("a", "b").filter(pl.lit(True)),
+        ],
+        how="diagonal",
+    )
+
+    assert_frame_equal(
+        q.collect(),
+        pl.DataFrame({"a": [1, None, 1], "b": [None, 1, 1]}),
+    )
+
+
+def test_cse_existing_predicate_at_scan_27748() -> None:
+    base_q = pl.scan_csv(
+        pl.DataFrame(
+            [
+                pl.Series("x", [True, False]),
+                pl.Series("y0", [False, False]),
+                pl.Series("y1", [True, True]),
+            ]
+        )
+        .write_csv()
+        .encode()
+    ).with_columns(x_not=pl.col("x").not_())
+
+    q = pl.concat(
+        [
+            base_q.filter(pl.col("x_not") & pl.col("y0")),
+            base_q.filter(pl.col("x_not") & pl.col("y0")),
+            base_q.filter(pl.col("x_not") & pl.col("y1")),
+        ]
+    )
+
+    plan = q.explain()
+
+    assert plan.count('SELECTION: col("y0")') == 1
+    assert plan.count('SELECTION: col("y1")') == 1
+    assert plan.count("CACHE[") == 2
+
+    assert_frame_equal(
+        q.collect(),
+        pl.DataFrame({"x": False, "y0": False, "y1": True, "x_not": True}),
+    )

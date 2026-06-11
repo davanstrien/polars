@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+from typing import cast
 
 from polars._utils.deprecation import issue_deprecation_warning
 
@@ -43,6 +44,7 @@ class QueryOptFlags:
         collapse_joins: None | bool = None,
         check_order_observe: None | bool = None,
         fast_projection: None | bool = None,
+        sort_collapse: None | bool = None,
     ) -> None:
         self._pyoptflags = PyOptFlags.default()
         self.update(
@@ -56,6 +58,7 @@ class QueryOptFlags:
             collapse_joins=collapse_joins,
             check_order_observe=check_order_observe,
             fast_projection=fast_projection,
+            sort_collapse=sort_collapse,
         )
 
     @classmethod
@@ -77,6 +80,7 @@ class QueryOptFlags:
         collapse_joins: None | bool = None,
         check_order_observe: None | bool = None,
         fast_projection: None | bool = None,
+        sort_collapse: None | bool = None,
     ) -> QueryOptFlags:
         """Create new empty set off optimizations."""
         optflags = QueryOptFlags()
@@ -92,6 +96,7 @@ class QueryOptFlags:
             collapse_joins=collapse_joins,
             check_order_observe=check_order_observe,
             fast_projection=fast_projection,
+            sort_collapse=sort_collapse,
         )
 
     def update(
@@ -107,6 +112,7 @@ class QueryOptFlags:
         collapse_joins: None | bool = None,
         check_order_observe: None | bool = None,
         fast_projection: None | bool = None,
+        sort_collapse: None | bool = None,
     ) -> QueryOptFlags:
         """Update the current optimization flags."""
         if predicate_pushdown is not None:
@@ -135,6 +141,8 @@ class QueryOptFlags:
             self.check_order_observe = check_order_observe
         if fast_projection is not None:
             self.fast_projection = fast_projection
+        if sort_collapse is not None:
+            self.sort_collapse = sort_collapse
 
         return self
 
@@ -238,6 +246,15 @@ class QueryOptFlags:
     def fast_projection(self, value: bool) -> None:
         self._pyoptflags.fast_projection = value
 
+    @property
+    def sort_collapse(self) -> bool:
+        """Collapse sequential sort nodes into a single sort node."""
+        return self._pyoptflags.sort_collapse
+
+    @sort_collapse.setter
+    def sort_collapse(self, value: bool) -> None:
+        self._pyoptflags.sort_collapse = value
+
     def __str__(self) -> str:
         return f"""
 QueryOptFlags {{
@@ -253,6 +270,7 @@ QueryOptFlags {{
     cluster_with_columns: {self.cluster_with_columns}
     check_order_observe: {self.check_order_observe}
     fast_projection: {self.fast_projection}
+    sort_collapse: {self.sort_collapse}
 
     eager: {self._pyoptflags.eager}
     streaming: {self._pyoptflags.streaming}
@@ -309,14 +327,14 @@ def forward_old_opt_flags() -> IdentityFunction:
     def decorate(function: Callable[P, T]) -> Callable[P, T]:
         @wraps(function)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-            optflags: QueryOptFlags = kwargs.get(
-                "optimizations", DEFAULT_QUERY_OPT_FLAGS
-            )  # type: ignore[assignment]
+            optflags = cast(
+                "QueryOptFlags", kwargs.get("optimizations", DEFAULT_QUERY_OPT_FLAGS)
+            )
             optflags = optflags.__copy__()
             for key in list(kwargs.keys()):
                 cb = OLD_OPT_PARAMETERS_MAPPING.get(key)
                 if cb is not None:
-                    from polars._utils.various import issue_warning
+                    from polars._warnings import issue_warning
 
                     message = f"optimization flag `{key}` is deprecated. Please use `optimizations` parameter\n(Deprecated in version 1.30.0)"
                     issue_warning(message, DeprecationWarning)

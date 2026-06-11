@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from decimal import Decimal as D
 from math import ceil, floor
 from random import choice, randrange, seed
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import pyarrow as pa
 import pytest
@@ -817,6 +817,38 @@ def test_decimal32_decimal64_22946() -> None:
     )
 
 
+def test_decimal32_decimal64_from_arrow_with_various_scales() -> None:
+    # Test decimal32/64 with different precision and scale combinations
+    tbl = pa.Table.from_pydict(
+        mapping={
+            "d32_no_frac": [D("100"), D("200"), D("300")],
+            "d32_high_scale": [D("1.2345"), D("6.7890"), D("0.1111")],
+            "d64_large": [D("123456.78"), D("999999.99"), D("000001.00")],
+        },
+        schema=pa.schema(
+            [
+                ("d32_no_frac", pa.decimal32(9, 0)),
+                ("d32_high_scale", pa.decimal32(9, 4)),
+                ("d64_large", pa.decimal64(18, 2)),
+            ]
+        ),
+    )
+
+    result = pl.DataFrame(tbl)
+    assert result.dtypes == [pl.Decimal(9, 0), pl.Decimal(9, 4), pl.Decimal(18, 2)]
+    assert result["d32_no_frac"].to_list() == [D("100"), D("200"), D("300")]
+    assert result["d32_high_scale"].to_list() == [
+        D("1.2345"),
+        D("6.7890"),
+        D("0.1111"),
+    ]
+    assert result["d64_large"].to_list() == [
+        D("123456.78"),
+        D("999999.99"),
+        D("1.00"),
+    ]
+
+
 def test_decimal_cast_limit() -> None:
     fits = pl.Series([10**38 - 1, -(10**38 - 1)])
     assert_series_equal(fits.cast(pl.Decimal(38, 0)).cast(pl.Int128), fits)
@@ -897,4 +929,18 @@ def test_product_decimal_26721() -> None:
     )
     out = df.select(pl.col.x.product())
     expected = pl.DataFrame({"x": ["1.25512"]}).cast(pl.Decimal(precision=38, scale=5))
+    assert_frame_equal(out, expected)
+
+
+@pytest.mark.parametrize("engine", ["streaming", "in-memory"])
+def test_decimal_sum_widens_precision_27576(
+    engine: Literal["streaming", "in-memory"],
+) -> None:
+    df = pl.DataFrame({"v": ["99999.99", "99999.99", "1.00"]}).cast(
+        pl.Decimal(precision=7, scale=2)
+    )
+    out = df.lazy().select(pl.col("v").sum()).collect(engine=engine)
+    expected = pl.DataFrame({"v": ["200000.98"]}).cast(
+        pl.Decimal(precision=38, scale=2)
+    )
     assert_frame_equal(out, expected)

@@ -162,7 +162,16 @@ impl fmt::Debug for Expr {
                             write!(f, "{input:?}.item()")
                         }
                     },
-                    Implode(expr) => write!(f, "{expr:?}.list()"),
+                    Implode {
+                        input,
+                        maintain_order,
+                    } => {
+                        if *maintain_order {
+                            write!(f, "{input:?}.implode()")
+                        } else {
+                            write!(f, "{input:?}.implode(maintain_order=False)")
+                        }
+                    },
                     NUnique(expr) => write!(f, "{expr:?}.n_unique()"),
                     Sum(expr) => write!(f, "{expr:?}.sum()"),
                     AggGroups(expr) => write!(f, "{expr:?}.groups()"),
@@ -176,7 +185,6 @@ impl fmt::Debug for Expr {
                     } => write!(f, "{input:?}.len()"),
                     Var(expr, _) => write!(f, "{expr:?}.var()"),
                     Std(expr, _) => write!(f, "{expr:?}.std()"),
-                    Quantile { expr, .. } => write!(f, "{expr:?}.quantile()"),
                 }
             },
             Cast {

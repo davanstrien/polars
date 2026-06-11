@@ -23,6 +23,8 @@ pub use ndjson::*;
 pub use parquet::*;
 use polars_compute::rolling::QuantileMethod;
 use polars_core::error::feature_gated;
+#[cfg(feature = "pivot")]
+use polars_core::frame::PivotColumnNaming;
 use polars_core::prelude::*;
 use polars_core::query_result::QueryResult;
 use polars_io::RowIndex;
@@ -189,9 +191,14 @@ impl LazyFrame {
         self
     }
 
-    #[cfg(feature = "new_streaming")]
-    pub fn with_new_streaming(mut self, toggle: bool) -> Self {
-        self.opt_state.set(OptFlags::NEW_STREAMING, toggle);
+    #[cfg(feature = "streaming")]
+    pub fn with_streaming(mut self, toggle: bool) -> Self {
+        self.opt_state.set(OptFlags::STREAMING, toggle);
+        self
+    }
+
+    pub fn with_gpu(mut self, toggle: bool) -> Self {
+        self.opt_state.set(OptFlags::GPU, toggle);
         self
     }
 
@@ -615,15 +622,28 @@ impl LazyFrame {
     ///
     /// The query is optimized prior to execution.
     pub fn collect_with_engine(mut self, engine: Engine) -> PolarsResult<QueryResult> {
-        #[cfg(feature = "new_streaming")]
-        {
-            if let Some(result) = self.try_new_streaming_if_requested() {
-                return result;
-            }
-        }
+        let engine = match engine {
+            Engine::Streaming => Engine::Streaming,
+            _ if std::env::var("POLARS_FORCE_STREAMING").as_deref() == Ok("1") => Engine::Streaming,
+            Engine::Auto => Engine::InMemory,
+            v => v,
+        };
 
-        if let Engine::Streaming = engine {
-            feature_gated!("new_streaming", self = self.with_new_streaming(true))
+        if engine != Engine::Streaming
+            && std::env::var("POLARS_AUTO_STREAMING").as_deref() == Ok("1")
+        {
+            feature_gated!("streaming", {
+                if let Some(r) = self.clone()._collect_with_streaming_suppress_todo_panic() {
+                    return r;
+                }
+            })
+        }
+        match engine {
+            Engine::Streaming => {
+                feature_gated!("streaming", self = self.with_streaming(true))
+            },
+            Engine::Gpu => self = self.with_gpu(true),
+            _ => (),
         }
 
         let mut ir_plan = self.to_alp_optimized()?;
@@ -631,14 +651,14 @@ impl LazyFrame {
         ir_plan.ensure_root_node_is_sink();
 
         match engine {
-            Engine::Streaming => feature_gated!("new_streaming", {
+            Engine::Streaming => feature_gated!("streaming", {
                 polars_stream::run_query(
                     ir_plan.lp_top,
                     &mut ir_plan.lp_arena,
                     &mut ir_plan.expr_arena,
                 )
             }),
-            Engine::Auto | Engine::InMemory | Engine::Gpu => {
+            Engine::InMemory | Engine::Gpu => {
                 if let IR::SinkMultiple { inputs } = ir_plan.root() {
                     polars_ensure!(
                         engine != Engine::Gpu,
@@ -665,6 +685,7 @@ impl LazyFrame {
                 let mut state = ExecutionState::new();
                 physical_plan.execute(&mut state).map(QueryResult::Single)
             },
+            Engine::Auto => unreachable!(),
         }
     }
 
@@ -744,9 +765,8 @@ impl LazyFrame {
             chunk_size,
         )?;
         let runner = move || {
-            // We use a tokio spawn_blocking here as it has a high blocking
-            // thread pool limit.
-            polars_io::pl_async::get_runtime().spawn_blocking(move || {
+            // We use spawn_blocking here as it has a high blocking thread pool limit.
+            polars_core::runtime::ASYNC.spawn_blocking(move || {
                 if let Err(e) = ldf.collect_with_engine(engine) {
                     runner_send.send(Err(e)).ok();
                 }
@@ -819,57 +839,46 @@ impl LazyFrame {
         Ok(self)
     }
 
-    #[cfg(feature = "new_streaming")]
-    pub fn try_new_streaming_if_requested(
-        &mut self,
+    /// Collect with the streaming engine. Returns `None` if the streaming engine panics with a todo!.
+    #[cfg(feature = "streaming")]
+    fn _collect_with_streaming_suppress_todo_panic(
+        mut self,
     ) -> Option<PolarsResult<polars_core::query_result::QueryResult>> {
-        let auto_new_streaming = std::env::var("POLARS_AUTO_NEW_STREAMING").as_deref() == Ok("1");
-        let force_new_streaming = std::env::var("POLARS_FORCE_NEW_STREAMING").as_deref() == Ok("1");
+        self.opt_state |= OptFlags::STREAMING;
+        let mut ir_plan = match self.to_alp_optimized() {
+            Ok(v) => v,
+            Err(e) => return Some(Err(e)),
+        };
 
-        if auto_new_streaming || force_new_streaming {
-            // Try to run using the new streaming engine, falling back
-            // if it fails in a todo!() error if auto_new_streaming is set.
-            let mut new_stream_lazy = self.clone();
-            new_stream_lazy.opt_state |= OptFlags::NEW_STREAMING;
-            let mut ir_plan = match new_stream_lazy.to_alp_optimized() {
-                Ok(v) => v,
-                Err(e) => return Some(Err(e)),
-            };
+        ir_plan.ensure_root_node_is_sink();
 
-            ir_plan.ensure_root_node_is_sink();
+        let f = || {
+            polars_stream::run_query(
+                ir_plan.lp_top,
+                &mut ir_plan.lp_arena,
+                &mut ir_plan.expr_arena,
+            )
+        };
 
-            let f = || {
-                polars_stream::run_query(
-                    ir_plan.lp_top,
-                    &mut ir_plan.lp_arena,
-                    &mut ir_plan.expr_arena,
-                )
-            };
-
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-                Ok(v) => return Some(v),
-                Err(e) => {
-                    // Fallback to normal engine if error is due to not being implemented
-                    // and auto_new_streaming is set, otherwise propagate error.
-                    if !force_new_streaming
-                        && auto_new_streaming
-                        && e.downcast_ref::<&str>()
-                            .map(|s| s.starts_with("not yet implemented"))
-                            .unwrap_or(false)
-                    {
-                        if polars_core::config::verbose() {
-                            eprintln!(
-                                "caught unimplemented error in new streaming engine, falling back to normal engine"
-                            );
-                        }
-                    } else {
-                        std::panic::resume_unwind(e);
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                // Fallback to normal engine if error is due to not being implemented
+                // and auto_streaming is set, otherwise propagate error.
+                if e.downcast_ref::<&str>()
+                    .is_some_and(|s| s.starts_with("not yet implemented"))
+                {
+                    if polars_core::config::verbose() {
+                        eprintln!(
+                            "caught unimplemented error in new streaming engine, falling back to normal engine"
+                        );
                     }
-                },
-            }
+                    None
+                } else {
+                    std::panic::resume_unwind(e)
+                }
+            },
         }
-
-        None
     }
 
     pub fn sink(
@@ -1404,6 +1413,18 @@ impl LazyFrame {
         JoinBuilder::new(self)
     }
 
+    /// Gathers rows from this DataFrame based on the indices in idxs.
+    ///
+    /// idxs must only have a single column of indices.
+    pub fn gather(self, idxs: LazyFrame, null_on_oob: bool) -> LazyFrame {
+        let opt_state = self.get_opt_state();
+        let lp = self
+            .get_plan_builder()
+            .gather(idxs.logical_plan, null_on_oob)
+            .build();
+        Self::from_logical_plan(lp, opt_state)
+    }
+
     /// Add or replace a column, given as an expression, to a DataFrame.
     ///
     /// # Example
@@ -1770,6 +1791,7 @@ impl LazyFrame {
         agg: Expr,
         maintain_order: bool,
         separator: PlSmallStr,
+        column_naming: PivotColumnNaming,
     ) -> LazyFrame {
         let opt_state = self.get_opt_state();
         let lp = self
@@ -1782,6 +1804,7 @@ impl LazyFrame {
                 agg,
                 maintain_order,
                 separator,
+                column_naming,
             )
             .build();
         Self::from_logical_plan(lp, opt_state)
@@ -1880,7 +1903,10 @@ impl LazyFrame {
                 unified_scan_args,
                 ..
             } if unified_scan_args.row_index.is_none()
-                && !matches!(&**scan_type, FileScanDsl::Anonymous { .. }) =>
+                && !matches!(
+                    &**scan_type,
+                    FileScanDsl::Anonymous { .. } | FileScanDsl::ExpandedPaths { .. }
+                ) =>
             {
                 let DslPlan::Scan {
                     sources,
@@ -1925,7 +1951,12 @@ impl LazyFrame {
     }
 
     #[cfg(feature = "merge_sorted")]
-    pub fn merge_sorted<S>(self, other: LazyFrame, key: S) -> PolarsResult<LazyFrame>
+    pub fn merge_sorted<S>(
+        self,
+        other: LazyFrame,
+        key: S,
+        maintain_order: bool,
+    ) -> PolarsResult<LazyFrame>
     where
         S: Into<PlSmallStr>,
     {
@@ -1935,6 +1966,7 @@ impl LazyFrame {
             input_left: Arc::new(self.logical_plan),
             input_right: Arc::new(other.logical_plan),
             key,
+            maintain_order,
         };
         Ok(LazyFrame::from_logical_plan(lp, self.opt_state))
     }
@@ -2360,11 +2392,11 @@ impl JoinBuilder {
 }
 
 pub const BUILD_STREAMING_EXECUTOR: Option<polars_mem_engine::StreamingExecutorBuilder> = {
-    #[cfg(not(feature = "new_streaming"))]
+    #[cfg(not(feature = "streaming"))]
     {
         None
     }
-    #[cfg(feature = "new_streaming")]
+    #[cfg(feature = "streaming")]
     {
         Some(polars_stream::build_streaming_query_executor)
     }

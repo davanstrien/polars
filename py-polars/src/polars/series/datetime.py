@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     import sys
     from collections.abc import Iterable
 
-    from polars import Series
+    from polars import Expr, Series
     from polars._plr import PySeries
     from polars._typing import (
         Ambiguous,
@@ -50,7 +50,7 @@ class DateTimeNameSpace:
         self,
         n: int | IntoExpr,
         week_mask: Iterable[bool] = (True, True, True, True, True, False, False),
-        holidays: Iterable[dt.date] = (),
+        holidays: Iterable[dt.date] | Expr | Series = (),
         roll: Roll = "raise",
     ) -> Series:
         """
@@ -495,7 +495,7 @@ class DateTimeNameSpace:
         self,
         *,
         week_mask: Iterable[bool] = (True, True, True, True, True, False, False),
-        holidays: Iterable[dt.date] = (),
+        holidays: Iterable[dt.date] | Expr | Series = (),
     ) -> Series:
         """
         Determine whether each day lands on a business day.
@@ -1917,6 +1917,10 @@ class DateTimeNameSpace:
         Series
             Series of data type :class:`Date` or :class:`Datetime`.
 
+        See Also
+        --------
+        Series.dt.round : Map to the nearest bucket.
+
         Examples
         --------
         >>> from datetime import timedelta, datetime
@@ -2029,6 +2033,10 @@ class DateTimeNameSpace:
         By "calendar day", we mean the corresponding time on the next day (which may
         not be 24 hours, due to daylight savings). Similarly for "calendar week",
         "calendar month", "calendar quarter", and "calendar year".
+
+        See Also
+        --------
+        Series.dt.truncate : Map to start of the bucket.
 
         Examples
         --------

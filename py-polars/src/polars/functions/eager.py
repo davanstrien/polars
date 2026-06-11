@@ -9,7 +9,13 @@ from typing import TYPE_CHECKING, get_args
 import polars._reexport as pl
 from polars import functions as F
 from polars._typing import ConcatMethod
-from polars._utils.various import ordered_unique, qualified_type_name
+from polars._utils.reduce_balanced import reduce_balanced
+from polars._utils.unstable import unstable
+from polars._utils.various import (
+    is_non_empty_sequence_of,
+    ordered_unique,
+    qualified_type_name,
+)
 from polars._utils.wrap import wrap_df, wrap_expr, wrap_ldf, wrap_s
 from polars.exceptions import InvalidOperationError
 
@@ -169,7 +175,7 @@ def concat(
     └─────┴─────┴─────┴─────┘
     """  # noqa: W505
     # unpack/standardise (handles generator input)
-    elems = list(items)
+    elems: Sequence[PolarsType] = list(items)
 
     if not elems:
         msg = "cannot concat empty list"
@@ -180,7 +186,11 @@ def concat(
         return elems[0]
 
     if how.startswith("align"):
-        if not isinstance(elems[0], (pl.DataFrame, pl.LazyFrame)):
+        if not is_non_empty_sequence_of(
+            elems, pl.DataFrame
+        ) and not is_non_empty_sequence_of(  # type: ignore[redundant-expr]
+            elems, pl.LazyFrame
+        ):
             msg = f"{how!r} strategy is not supported for {qualified_type_name(elems[0])!r}"
             raise TypeError(msg)
 
@@ -205,29 +215,33 @@ def concat(
         join_method: JoinStrategy = (
             "full" if how == "align" else how.removeprefix("align_")  # type: ignore[assignment]
         )
-        lf: LazyFrame = (
-            reduce(
-                lambda x, y: x.join(
-                    y,
-                    on=common_cols,
-                    how=join_method,
-                    maintain_order="right_left",
-                    coalesce=True,
-                ),
-                [df.lazy() for df in elems],
+        join_frames = [df.lazy() for df in elems]
+
+        def join_fn(x: pl.LazyFrame, y: pl.LazyFrame) -> pl.LazyFrame:
+            return x.join(
+                y,
+                on=common_cols,
+                how=join_method,
+                maintain_order="right_left",
+                coalesce=True,
             )
-            .sort(by=common_cols, maintain_order=True)
-            .select(*output_column_order)
-        )
+
+        if join_method in ("full", "inner"):
+            # associative => balanced tree, recursion depth is O(log(n))
+            lf = reduce_balanced(join_fn, join_frames)
+        else:
+            # not associative => linear chain, recursion depth is O(n)
+            lf = reduce(join_fn, join_frames)
+        lf = lf.sort(by=common_cols, maintain_order=True).select(*output_column_order)
+
         eager = isinstance(elems[0], pl.DataFrame)
         return lf.collect() if eager else lf  # type: ignore[return-value]
 
     out: Series | DataFrame | LazyFrame | Expr
-    first = elems[0]
 
     from polars.lazyframe.opt_flags import QueryOptFlags
 
-    if isinstance(first, pl.DataFrame):
+    if is_non_empty_sequence_of(elems, pl.DataFrame):
         if how == "vertical":
             out = wrap_df(plr.concat_df(elems))
         elif how == "vertical_relaxed":
@@ -260,7 +274,7 @@ def concat(
             msg = f"DataFrame `how` must be one of {{{allowed}}}, got {how!r}"
             raise ValueError(msg)
 
-    elif isinstance(first, pl.LazyFrame):
+    elif is_non_empty_sequence_of(elems, pl.LazyFrame):
         if how in ("vertical", "vertical_relaxed"):
             return wrap_ldf(
                 plr.concat_lf(
@@ -294,17 +308,17 @@ def concat(
             msg = f"LazyFrame `how` must be one of {{{allowed}}}, got {how!r}"
             raise ValueError(msg)
 
-    elif isinstance(first, pl.Series):
+    elif is_non_empty_sequence_of(elems, pl.Series):
         if how == "vertical":
             out = wrap_s(plr.concat_series(elems))
         else:
             msg = "Series only supports 'vertical' concat strategy"
             raise ValueError(msg)
 
-    elif isinstance(first, pl.Expr):
+    elif is_non_empty_sequence_of(elems, pl.Expr):
         return wrap_expr(plr.concat_expr([e._pyexpr for e in elems], rechunk))
     else:
-        msg = f"did not expect type: {qualified_type_name(first)!r} in `concat`"
+        msg = f"did not expect type: {qualified_type_name(elems[0])!r} in `concat`"
         raise TypeError(msg)
 
     if rechunk:
@@ -455,7 +469,7 @@ def union(
     └─────┴─────┴─────┴─────┘
     """  # noqa: W505
     # unpack/standardise (handles generator input)
-    elems = list(items)
+    elems: Sequence[PolarsType] = list(items)
 
     if not elems:
         msg = "cannot concat empty list"
@@ -466,7 +480,11 @@ def union(
         return elems[0]
 
     if how.startswith("align"):
-        if not isinstance(elems[0], (pl.DataFrame, pl.LazyFrame)):
+        if not is_non_empty_sequence_of(
+            elems, pl.DataFrame
+        ) and not is_non_empty_sequence_of(  # type: ignore[redundant-expr]
+            elems, pl.LazyFrame
+        ):
             msg = f"{how!r} strategy is not supported for {qualified_type_name(elems[0])!r}"
             raise TypeError(msg)
 
@@ -491,29 +509,33 @@ def union(
         join_method: JoinStrategy = (
             "full" if how == "align" else how.removeprefix("align_")  # type: ignore[assignment]
         )
-        lf: LazyFrame = (
-            reduce(
-                lambda x, y: x.join(
-                    y,
-                    on=common_cols,
-                    how=join_method,
-                    maintain_order="none",
-                    coalesce=True,
-                ),
-                [df.lazy() for df in elems],
+        join_frames = [df.lazy() for df in elems]
+
+        def join_fn(x: pl.LazyFrame, y: pl.LazyFrame) -> pl.LazyFrame:
+            return x.join(
+                y,
+                on=common_cols,
+                how=join_method,
+                maintain_order="none",
+                coalesce=True,
             )
-            .sort(by=common_cols, maintain_order=False)
-            .select(*output_column_order)
-        )
+
+        if join_method in ("full", "inner"):
+            # associative => balanced tree, recursion depth is O(log(n))
+            lf = reduce_balanced(join_fn, join_frames)
+        else:
+            # not associative => linear chain, recursion depth is O(n)
+            lf = reduce(join_fn, join_frames)
+        lf = lf.sort(by=common_cols, maintain_order=False).select(*output_column_order)
+
         eager = isinstance(elems[0], pl.DataFrame)
         return lf.collect() if eager else lf  # type: ignore[return-value]
 
     out: Series | DataFrame | LazyFrame | Expr
-    first = elems[0]
 
     from polars.lazyframe.opt_flags import QueryOptFlags
 
-    if isinstance(first, pl.DataFrame):
+    if is_non_empty_sequence_of(elems, pl.DataFrame):
         if how in ("vertical", "vertical_relaxed"):
             out = wrap_ldf(
                 plr.concat_lf(
@@ -541,7 +563,7 @@ def union(
             msg = f"DataFrame `how` must be one of {{{allowed}}}, got {how!r}"
             raise ValueError(msg)
 
-    elif isinstance(first, pl.LazyFrame):
+    elif is_non_empty_sequence_of(elems, pl.LazyFrame):
         if how in ("vertical", "vertical_relaxed"):
             return wrap_ldf(
                 plr.concat_lf(
@@ -575,20 +597,111 @@ def union(
             msg = f"LazyFrame `how` must be one of {{{allowed}}}, got {how!r}"
             raise ValueError(msg)
 
-    elif isinstance(first, pl.Series):
+    elif is_non_empty_sequence_of(elems, pl.Series):
         if how == "vertical":
             out = wrap_s(plr.concat_series(elems))
         else:
             msg = "Series only supports 'vertical' concat strategy"
             raise ValueError(msg)
 
-    elif isinstance(first, pl.Expr):
+    elif is_non_empty_sequence_of(elems, pl.Expr):
         return wrap_expr(plr.concat_expr([e._pyexpr for e in elems], False))
     else:
-        msg = f"did not expect type: {qualified_type_name(first)!r} in `concat`"
+        msg = f"did not expect type: {qualified_type_name(elems[0])!r} in `concat`"
         raise TypeError(msg)
 
     return out
+
+
+@unstable()
+def merge_sorted(
+    items: Iterable[PolarsType],
+    key: str,
+    *,
+    maintain_order: bool = False,
+) -> PolarsType:
+    """
+    Merge multiple sorted DataFrames or LazyFrames by the sorted key.
+
+    The output of this operation will also be sorted.
+    It is the callers responsibility that the frames
+    are sorted in ascending order by that key otherwise
+    the output will not make sense.
+
+    .. warning::
+        This functionality is considered **unstable**. It may be changed
+        at any point without it being considered a breaking change.
+
+    Parameters
+    ----------
+    items
+        DataFrames or LazyFrames to merge.
+    key
+        Key that is sorted.
+    maintain_order
+        If ``True``, the output is guaranteed to have left-biased ordering
+        for equal keys: rows from the left frame appear before rows from
+        the right frame when their keys are equal.
+
+    Examples
+    --------
+    >>> df0 = pl.DataFrame(
+    ...     {"name": ["steve", "elise", "bob"], "age": [42, 44, 18]}
+    ... ).sort("age")
+    >>> df1 = pl.DataFrame(
+    ...     {"name": ["anna", "megan", "steve", "thomas"], "age": [21, 33, 17, 20]}
+    ... ).sort("age")
+    >>> df2 = pl.DataFrame({"name": ["ida", "maya"], "age": [37, 27]}).sort("age")
+    >>> pl.merge_sorted([df0, df1, df2], key="age")
+    shape: (9, 2)
+    ┌────────┬─────┐
+    │ name   ┆ age │
+    │ ---    ┆ --- │
+    │ str    ┆ i64 │
+    ╞════════╪═════╡
+    │ steve  ┆ 17  │
+    │ bob    ┆ 18  │
+    │ thomas ┆ 20  │
+    │ anna   ┆ 21  │
+    │ maya   ┆ 27  │
+    │ megan  ┆ 33  │
+    │ ida    ┆ 37  │
+    │ steve  ┆ 42  │
+    │ elise  ┆ 44  │
+    └────────┴─────┘
+
+
+    Notes
+    -----
+    Unless ``maintain_order=True``, no guarantee is given over the output
+    row order when the key is equal between dataframes.
+
+    The key must be sorted in ascending order.
+    """
+    elems: Sequence[PolarsType] = list(items)
+
+    if not elems:
+        msg = "cannot merge_sort empty list"
+        raise ValueError(msg)
+    if len(elems) == 1 and isinstance(elems[0], (pl.DataFrame, pl.LazyFrame)):
+        return elems[0]
+
+    if not is_non_empty_sequence_of(
+        elems, pl.DataFrame
+    ) and not is_non_empty_sequence_of(  # type: ignore[redundant-expr]
+        elems, pl.LazyFrame
+    ):
+        msg = f"merge_sorted is not supported for {qualified_type_name(elems[0])!r}"
+        raise TypeError(msg)
+
+    frames = [df.lazy() for df in elems]
+
+    def reduce_fn(x: pl.LazyFrame, y: pl.LazyFrame) -> pl.LazyFrame:
+        return x.merge_sorted(y, key=key, maintain_order=maintain_order)
+
+    lf = reduce_balanced(reduce_fn, frames)
+    eager = isinstance(elems[0], pl.DataFrame)
+    return lf.collect() if eager else lf  # type: ignore[return-value]
 
 
 def _alignment_join(

@@ -174,7 +174,7 @@ class Config(contextlib.ContextDecorator):
     Alternatively, you can use as a decorator in order to scope the duration of the
     selected options to a specific function:
 
-    >>> @pl.Config(verbose=True)
+    >>> @pl.Config(verbose=True, apply_on_context_enter=True)
     ... def test():
     ...     pass
     """
@@ -208,6 +208,13 @@ class Config(contextlib.ContextDecorator):
         **options
             keyword args that will set the option; equivalent to calling the
             named "set_<option>" method with the given value.
+
+        Notes
+        -----
+        The `apply_on_context_enter` parameter should almost *always* be set True
+        when using `Config` as a decorator to ensure that the options are applied
+        only within the scope of the decorated function (and not globally at
+        module import time).
 
         Examples
         --------
@@ -1166,10 +1173,10 @@ class Config(contextlib.ContextDecorator):
             os.environ.pop("POLARS_FMT_TABLE_FORMATTING", None)
         else:
             valid_format_names = get_args(TableFormatNames)
-            if (format := format.upper()) not in valid_format_names:  # type: ignore[assignment]
+            if (format_upper := format.upper()) not in valid_format_names:
                 msg = f"invalid table format name: {format!r}\nExpected one of: {', '.join(valid_format_names)}"
                 raise ValueError(msg)
-            os.environ["POLARS_FMT_TABLE_FORMATTING"] = format
+            os.environ["POLARS_FMT_TABLE_FORMATTING"] = format_upper
         plr.config_reload_env_var("POLARS_FMT_TABLE_FORMATTING")
 
         if rounded_corners is None:

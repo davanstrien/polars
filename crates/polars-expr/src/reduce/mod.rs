@@ -6,12 +6,18 @@ mod approx_n_unique;
 mod bitwise;
 mod convert;
 mod count;
+#[cfg(feature = "cov")]
+mod cov;
 mod first_last;
 mod first_last_nonnull;
-mod len;
+mod has_nulls;
+mod implode;
+mod is_empty;
 mod mean;
 mod min_max;
 mod min_max_by;
+#[cfg(feature = "moment")]
+mod skew_kurtosis;
 mod sum;
 mod var_std;
 
@@ -531,8 +537,8 @@ impl GroupedReduction for NullGroupedReduction {
         _group_idx: IdxSize,
         _seq_id: u64,
     ) -> PolarsResult<()> {
-        let &[values] = values else { unreachable!() };
-        assert!(values.dtype().is_null());
+        assert!(!values.is_empty());
+        assert!(values.iter().any(|v| v.dtype().is_null()));
         Ok(())
     }
 
@@ -543,8 +549,8 @@ impl GroupedReduction for NullGroupedReduction {
         group_idxs: &[EvictIdx],
         _seq_id: u64,
     ) -> PolarsResult<()> {
-        let &[values] = values else { unreachable!() };
-        assert!(values.dtype().is_null());
+        assert!(!values.is_empty());
+        assert!(values.iter().any(|v| v.dtype().is_null()));
         assert!(subset.len() == group_idxs.len());
         for g in group_idxs {
             self.num_evictions += g.should_evict() as IdxSize;
